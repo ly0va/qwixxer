@@ -1540,3 +1540,45 @@ across phases as regression guards — including catching nothing-burgers
 bugs (CSV resume, tie-null bias). Remaining ideas, none pre-committed:
 representation work for lock/endgame interactions, a third distillation leg
 on fresh rollouts (flywheel), or accepting the ~60% structural ceiling.
+
+## Phase 21: Search Improvements — Passive Search, Lock Adjudication, Stratified Dice
+
+**Status: implemented; screens running (pre-registered below).**
+
+Three changes to pair-search, each behind a `SearchConfig` flag (default =
+production, bench output verified byte-identical after every commit):
+
+1. **Passive search** (`passive`). Pair-search never searched passive
+   (white-sum) decisions — about half of all 1v1 decisions, and ~90% of the
+   residual endgame regret in Phase 20. Gated passive decisions now get the
+   same truncated search: each shortlisted mark is completed through the rest
+   of the turn by `passive_entry` (moved from `pair_train::pp1_entry`, now
+   shared with distillation), and rollouts start at the seat after the active
+   player.
+2. **Lock adjudication** (`lock=N`). At every forced safe lock (active p1/p2,
+   passive) the lock is compared with the best rule-free non-lock alternative
+   and the runner-up safe lock by N full-game CRN rollouts each — the Phase 16
+   adjudication method, now at play time. Ties keep the lock. Targets the
+   largest measured pool (Phase 16: ~0.0074 wp/game removable), which Phase 17
+   could not recover by handing the decision back to the static net.
+3. **Stratified rollout dice** (`strat`). Each player's first rollout roll gets
+   a fixed ordered white-pair stratum per sample (per-player permuted
+   schedule, deterministic seed search); with K a multiple of 36 the
+   first-roll white dice are exactly balanced. Targets Phase 13's finding that
+   search is sample-noise-bound.
+
+Bench support: `pair-search-exp` / `pair-search-exp-b` read a config spec
+from `QWIXXER_SEARCH` / `QWIXXER_SEARCH_B` (e.g. `passive,lock=256`).
+
+### Pre-registration
+
+- **Screen** (20k games, seed 42, head-to-head): passive vs production;
+  `lock=256` vs production; `k=144,strat` vs `k=144` (isolates
+  stratification from the sample increase); combined
+  `k=144,passive,lock=252,strat` vs production. Metric: win margin
+  (A wins − B wins)/N with the bench's paired SE. **Pass: margin > 0 at
+  z ≥ 2.**
+- **Confirm** (arms that pass): 50k head-to-head on seed 7, plus 50k vs GA
+  (seed 42) — no regression from 60.7%, aiming for ≥ +0.1pp.
+- Pre-run estimates (pp vs GA): lock +0.2–0.4, passive +0.1–0.3,
+  stratification +0.1–0.2. Cost is reported per arm (games/s).
