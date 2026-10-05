@@ -69,6 +69,18 @@ pub(crate) fn find_safe_lock(state: &State, marks: &[Mark]) -> Option<Mark> {
         })
 }
 
+/// Is `mark` a safe lock from `state` (locks a row without ending the game)?
+pub(crate) fn is_safe_lock(state: &State, mark: Option<Mark>) -> bool {
+    match mark {
+        Some(m) if state.would_lock_row(m) => {
+            let mut s = *state;
+            s.apply_mark(m);
+            !s.would_end_game()
+        }
+        _ => false,
+    }
+}
+
 /// Outcome of the pure-logic half of a decision pipeline: either the meta
 /// rules fully determine the move, or a filtered+pruned candidate list
 /// remains for value-based selection.

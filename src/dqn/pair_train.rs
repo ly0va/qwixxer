@@ -8,13 +8,12 @@ use crate::dqn::pair::{pair_features, PairModel, PairModelConfig, PairStrategy, 
 use crate::dqn::{MyBackend, LOG_VAR_MAX, LOG_VAR_MIN, TRAIN_SEED};
 use crate::state::{Mark, State};
 use crate::strategy::bot_impl::{
-    active_phase1_choices, active_phase2_choices, eval_decision, find_safe_lock, mark_choices_with,
+    active_phase1_choices, active_phase2_choices, eval_decision, find_safe_lock, is_safe_lock, mark_choices_with,
     opp_best_phase1_score, passive_phase1_impl, phase1_plan_choices_with, Decision,
 };
 use crate::strategy::search::{
-    context_seed, gates, phase1_entry, phase2_entry, rollout_final_states, SearchBot,
+    context_seed, gates, passive_entry, phase1_entry, phase2_entry, rollout_final_states, SearchBot,
 };
-use crate::strategy::sim::SimGame;
 use crate::strategy::{Bot, Strategy};
 use burn::{
     backend::Autodiff,
@@ -305,7 +304,7 @@ enum DistillCtx {
         ctx: LockCtx,
         state: State,
         opps: Vec<State>,
-        sim_opp: Vec<State>,  // ap1 only; empty otherwise
+        sim_opp: Vec<State>, // ap1 only; empty otherwise
         dice: [u8; 6],
         active_player: usize, // pp1 only (opp-relative index of the active player); 0 otherwise
         cands: Vec<(Option<Mark>, State)>,
@@ -359,11 +358,8 @@ fn collapse_plans(plans: &[(Option<Mark>, State)], values: &[f32]) -> Vec<(Optio
 /// Pair each choice with its static value and sort descending (no collapse;
 /// for ap2/pp1 where each choice is already a distinct mark).
 fn value_sort(choices: &[(Option<Mark>, State)], values: &[f32]) -> Vec<(Option<Mark>, State, f32)> {
-    let mut cands: Vec<(Option<Mark>, State, f32)> = choices
-        .iter()
-        .zip(values)
-        .map(|((m, s), &v)| (*m, *s, v))
-        .collect();
+    let mut cands: Vec<(Option<Mark>, State, f32)> =
+        choices.iter().zip(values).map(|((m, s), &v)| (*m, *s, v)).collect();
     cands.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap());
     cands
 }
@@ -645,97 +641,6 @@ impl Strategy for RecordingPair {
     }
 }
 
-/// Is `mark` a safe lock from `state` (locks a row without ending the game)?
-fn is_safe_lock(state: &State, mark: Option<Mark>) -> bool {
-    match mark {
-        Some(m) if state.would_lock_row(m) => {
-            let mut s = *state;
-            s.apply_mark(m);
-            !s.would_end_game()
-        }
-        _ => false,
-    }
-}
-
-/// Complete the WHOLE current turn deterministically for a passive-phase-1
-/// candidate, in the entry's `[us, opps...]` frame.
-///
-/// Frame mapping (verified against `Game::play`): the game passes player i's
-/// opponents as `opp_states = [pre_phase1[(i+1)%n], ..]` (turn-ordered from i)
-/// and `active_player` = `(active + n − i) % n − 1` = the index of the active
-/// player *within that opp_states array* (relative-to-receiver, 0-based into
-/// opps), NOT an absolute seat. So in the entry `[us, opps...]`, the active
-/// player sits at entry index `active_player + 1`, and the player who acts
-/// first in the rollout (the seat after the active one) is at entry index
-/// `(active_player + 2) % n` in our-relative frame.
-///
-/// Approximation (identical across candidates, which is all that matters for
-/// the contrast): the real phase-1 was simultaneous; here our candidate mark
-/// is applied first, then every OTHER passive player's phase 1, then the
-/// active player's phase 1 + phase 2, with lock propagation between steps.
-fn pp1_entry(
-    bot: &PairStrategy,
-    state: &State,
-    opps: &[State],
-    dice: [u8; 6],
-    active_player: usize,
-    mark: Option<Mark>,
-) -> (Vec<State>, bool) {
-    let n = opps.len() + 1;
-    // entry index of the active player (us = 0, opps start at 1).
-    let active_idx = active_player + 1;
-
-    let mut all: Vec<State> = std::iter::once(*state).chain(opps.iter().copied()).collect();
-    if let Some(m) = mark {
-        all[0].apply_mark(m);
-    }
-    SimGame::propagate_locks(&mut all);
-    if SimGame::game_over(&all) {
-        return (all, true);
-    }
-
-    // Other passive players' (simultaneous) phase 1 — every entry seat that is
-    // neither us (0) nor the active player. We apply sequentially with lock
-    // propagation; this is the same approximation search makes for sim_opp.
-    for j in 1..n {
-        if j == active_idx {
-            continue;
-        }
-        let view = SimGame::opp_view(&all, j);
-        if let Some(m) = passive_phase1_impl(bot, &all[j], &view, dice) {
-            all[j].apply_mark(m);
-        }
-    }
-    SimGame::propagate_locks(&mut all);
-    if SimGame::game_over(&all) {
-        return (all, true);
-    }
-
-    // Active player's phase 1.
-    let view = SimGame::opp_view(&all, active_idx);
-    let (d, _) = active_phase1_choices(bot, &all[active_idx], &view, dice);
-    let p1 = eval_decision(bot, d, &view);
-    if let Some(m) = p1 {
-        all[active_idx].apply_mark(m);
-    }
-    SimGame::propagate_locks(&mut all);
-    if SimGame::game_over(&all) {
-        return (all, true);
-    }
-
-    // Active player's phase 2.
-    let view = SimGame::opp_view(&all, active_idx);
-    let d = active_phase2_choices(&all[active_idx], &view, dice, p1.is_some());
-    match eval_decision(bot, d, &view) {
-        Some(m) => all[active_idx].apply_mark(m),
-        None if p1.is_none() => all[active_idx].apply_strike(),
-        None => {}
-    }
-    SimGame::propagate_locks(&mut all);
-    let ended = SimGame::game_over(&all);
-    (all, ended)
-}
-
 /// Emit distill samples for one game's captured contexts. Per candidate:
 /// complete the turn deterministically (entries), run K full-game CRN
 /// rollouts, and emit `m_gated`/`m_lock` samples per opponent pairing —
@@ -841,7 +746,7 @@ fn build_distill_samples(
                         let n = opps.len() + 1;
                         let e: Vec<(Vec<State>, bool)> = compared
                             .iter()
-                            .map(|(m, _)| pp1_entry(boot, state, opps, *dice, *active_player, *m))
+                            .map(|(m, _)| passive_entry(boot, state, opps, *dice, *active_player, *m))
                             .collect();
                         // first_active = seat after the active player, our-relative.
                         ((e), (active_player + 2) % n, n)
@@ -1240,7 +1145,11 @@ pub fn self_play_train(
                 mins,
                 secs,
             );
-            if let Ok(mut f) = std::fs::OpenOptions::new().append(true).create(true).open(&scores_log_path) {
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .append(true)
+                .create(true)
+                .open(&scores_log_path)
+            {
                 writeln!(f, "{},{avg_score:.2},{:.2}", global_iter + 1, winrate * 100.0).ok();
             }
             Some(winrate)
@@ -1252,7 +1161,11 @@ pub fn self_play_train(
                 mins,
                 secs,
             );
-            if let Ok(mut f) = std::fs::OpenOptions::new().append(true).create(true).open(&scores_log_path) {
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .append(true)
+                .create(true)
+                .open(&scores_log_path)
+            {
                 writeln!(f, "{},{avg_score:.2}", global_iter + 1).ok();
             }
             None
@@ -1590,7 +1503,10 @@ mod tests {
             opps: vec![opp],
             sim_opp: vec![opp],
             dice,
-            cands: vec![(Some(Mark { row: 0, number: 5 }), post_a), (Some(Mark { row: 1, number: 6 }), post_b)],
+            cands: vec![
+                (Some(Mark { row: 0, number: 5 }), post_a),
+                (Some(Mark { row: 1, number: 6 }), post_b),
+            ],
         };
 
         let (samples, lock_samples) = build_distill_samples(&boot, std::slice::from_ref(&ctx), cfg, 0);
@@ -1634,7 +1550,10 @@ mod tests {
                 assert!((f.value - exp_value).abs() < 1e-5, "all m samples share the mean value");
             }
             for (r, f) in fwds.iter().enumerate() {
-                assert!((f.final_diff - diffs[r % diffs.len()]).abs() < 1e-5, "final_diff = individual rollout diff");
+                assert!(
+                    (f.final_diff - diffs[r % diffs.len()]).abs() < 1e-5,
+                    "final_diff = individual rollout diff"
+                );
             }
             // The rollouts produce spread (not a degenerate single value).
             assert!(
@@ -1661,11 +1580,10 @@ mod tests {
         let dice = [6u8, 6, 6, 1, 1, 1];
         let marks = state.generate_color_moves(dice);
         let lock = crate::strategy::bot_impl::find_safe_lock(&state, &marks).expect("fixture must have a safe lock");
-        let rule_free =
-            match crate::strategy::bot_impl::mark_choices_with(&state, &marks, state, 0, false) {
-                crate::strategy::bot_impl::Decision::Choices(c) => c,
-                _ => panic!("rule-free fixture must yield choices"),
-            };
+        let rule_free = match crate::strategy::bot_impl::mark_choices_with(&state, &marks, state, 0, false) {
+            crate::strategy::bot_impl::Decision::Choices(c) => c,
+            _ => panic!("rule-free fixture must yield choices"),
+        };
         let ctx = DistillCtx::Lock {
             ctx: LockCtx::Ap2,
             state,
@@ -1683,7 +1601,11 @@ mod tests {
         // 2 cands × 1 opp × m_lock(5) × 2 swap = 20 — m_gated(2) must NOT
         // apply here.
         assert_eq!(samples.len(), 20, "lock ctx must emit with m_lock");
-        assert_eq!(lock_samples, samples.len(), "all samples from a lock ctx count as lock-pool");
+        assert_eq!(
+            lock_samples,
+            samples.len(),
+            "all samples from a lock ctx count as lock-pool"
+        );
     }
 
     #[test]
@@ -1710,7 +1632,11 @@ mod tests {
         // semantics) — equal to eval_decision over that set.
         let lock = Mark { row: 0, number: 12 };
         let mut keep = make(0.0);
-        assert_eq!(keep.passive_phase1(&s, &opps, dice, 0), Some(lock), "no decline ⇒ forced lock");
+        assert_eq!(
+            keep.passive_phase1(&s, &opps, dice, 0),
+            Some(lock),
+            "no decline ⇒ forced lock"
+        );
 
         let boot = PairStrategy::from_model(model.clone(), device);
         let white_sum = dice[0] + dice[1];

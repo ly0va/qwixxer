@@ -97,19 +97,51 @@ pub struct SearchStats {
     pub gaps: Vec<f32>,
 }
 
+/// Search knobs. `Default` is the production configuration.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SearchConfig {
+    /// Sampled futures per candidate in the truncated (gated) search.
+    pub k_samples: usize,
+    /// Also search passive (white-sum) decisions.
+    pub search_passive: bool,
+    /// Adjudicate forced safe locks with this many full-game rollouts per
+    /// compared candidate; `None` = the meta-rule forces the lock.
+    pub lock_k: Option<usize>,
+    /// Stratify each player's first rollout roll over the 36 ordered white
+    /// pairs (exact balance when the sample count is a multiple of 36).
+    pub stratify: bool,
+}
+
+impl Default for SearchConfig {
+    fn default() -> Self {
+        Self {
+            k_samples: K_SAMPLES,
+            search_passive: false,
+            lock_k: None,
+            stratify: false,
+        }
+    }
+}
+
 pub struct SearchBot<B: WinProb> {
     pub bot: B,
     /// Search every eligible decision regardless of gates (diagnostics).
     pub force: bool,
     pub stats: Option<std::rc::Rc<std::cell::RefCell<SearchStats>>>,
+    pub cfg: SearchConfig,
 }
 
 impl<B: WinProb> SearchBot<B> {
     pub fn new(bot: B) -> Self {
+        Self::with_config(bot, SearchConfig::default())
+    }
+
+    pub fn with_config(bot: B, cfg: SearchConfig) -> Self {
         Self {
             bot,
             force: false,
             stats: None,
+            cfg,
         }
     }
 }
@@ -186,6 +218,85 @@ pub(crate) fn phase2_entry(post: State, opps: &[State]) -> (Vec<State>, bool) {
     (all, ended)
 }
 
+/// Complete the WHOLE current turn deterministically for a passive-phase-1
+/// candidate, in the entry's `[us, opps...]` frame.
+///
+/// Frame mapping (verified against `Game::play`): the game passes player i's
+/// opponents as `opp_states = [pre_phase1[(i+1)%n], ..]` (turn-ordered from i)
+/// and `active_player` = `(active + n − i) % n − 1` = the index of the active
+/// player *within that opp_states array* (relative-to-receiver, 0-based into
+/// opps), NOT an absolute seat. So in the entry `[us, opps...]`, the active
+/// player sits at entry index `active_player + 1`, and the player who acts
+/// first in the rollout (the seat after the active one) is at entry index
+/// `(active_player + 2) % n` in our-relative frame.
+///
+/// Approximation (identical across candidates, which is all that matters for
+/// the contrast): the real phase-1 was simultaneous; here our candidate mark
+/// is applied first, then every OTHER passive player's phase 1, then the
+/// active player's phase 1 + phase 2, with lock propagation between steps.
+pub(crate) fn passive_entry(
+    bot: &impl Bot,
+    state: &State,
+    opps: &[State],
+    dice: [u8; 6],
+    active_player: usize,
+    mark: Option<Mark>,
+) -> (Vec<State>, bool) {
+    let n = opps.len() + 1;
+    // entry index of the active player (us = 0, opps start at 1).
+    let active_idx = active_player + 1;
+
+    let mut all: Vec<State> = std::iter::once(*state).chain(opps.iter().copied()).collect();
+    if let Some(m) = mark {
+        all[0].apply_mark(m);
+    }
+    SimGame::propagate_locks(&mut all);
+    if SimGame::game_over(&all) {
+        return (all, true);
+    }
+
+    // Other passive players' (simultaneous) phase 1 — every entry seat that is
+    // neither us (0) nor the active player. We apply sequentially with lock
+    // propagation; this is the same approximation search makes for sim_opp.
+    for j in 1..n {
+        if j == active_idx {
+            continue;
+        }
+        let view = SimGame::opp_view(&all, j);
+        if let Some(m) = passive_phase1_impl(bot, &all[j], &view, dice) {
+            all[j].apply_mark(m);
+        }
+    }
+    SimGame::propagate_locks(&mut all);
+    if SimGame::game_over(&all) {
+        return (all, true);
+    }
+
+    // Active player's phase 1.
+    let view = SimGame::opp_view(&all, active_idx);
+    let (d, _) = active_phase1_choices(bot, &all[active_idx], &view, dice);
+    let p1 = eval_decision(bot, d, &view);
+    if let Some(m) = p1 {
+        all[active_idx].apply_mark(m);
+    }
+    SimGame::propagate_locks(&mut all);
+    if SimGame::game_over(&all) {
+        return (all, true);
+    }
+
+    // Active player's phase 2.
+    let view = SimGame::opp_view(&all, active_idx);
+    let d = active_phase2_choices(&all[active_idx], &view, dice, p1.is_some());
+    match eval_decision(bot, d, &view) {
+        Some(m) => all[active_idx].apply_mark(m),
+        None if p1.is_none() => all[active_idx].apply_strike(),
+        None => {}
+    }
+    SimGame::propagate_locks(&mut all);
+    let ended = SimGame::game_over(&all);
+    (all, ended)
+}
+
 /// Full-game CRN rollouts: every sample rolled to completion; returns the
 /// final all-player states per entry per sample (ended entries: one element,
 /// the entry itself). `first_active` = first player to act in the rollout.
@@ -246,21 +357,28 @@ impl<B: WinProb> SearchBot<B> {
     /// completion of the current turn, game-already-over flag). Returns the
     /// index of the winning candidate. Takes `&self` (stats use RefCell) so
     /// `self.bot` can be borrowed by the rollout driver without fuss.
-    fn search_pick(&self, cands: &[Candidate], entries: Vec<(Vec<State>, bool)>, seed: u64) -> usize {
+    /// `first_active` = entry-frame seat that takes the first rollout turn.
+    fn search_pick(
+        &self,
+        cands: &[Candidate],
+        entries: Vec<(Vec<State>, bool)>,
+        seed: u64,
+        first_active: usize,
+    ) -> usize {
         debug_assert_eq!(entries.len(), cands.len().min(K_CANDIDATES));
         let n = entries[0].0.len();
 
-        // Build rollouts: K_SAMPLES per non-ended entry, CRN dice across entries.
+        // Build rollouts: k_samples per non-ended entry, CRN dice across entries.
         let mut sims: Vec<SimGame> = Vec::new();
         let mut sim_owner: Vec<usize> = Vec::new(); // entry index per sim
         for (ei, (states, ended)) in entries.iter().enumerate() {
             if *ended {
                 continue;
             }
-            for k in 0..K_SAMPLES {
+            for k in 0..self.cfg.k_samples {
                 sims.push(SimGame {
                     states: states.clone(),
-                    active: 1 % n,
+                    active: first_active,
                     rngs: (0..n)
                         .map(|p| SmallRng::seed_from_u64(sample_player_seed(seed, k, p)))
                         .collect(),
@@ -416,7 +534,7 @@ impl<B: WinProb> Strategy for SearchBot<B> {
             .collect();
 
         let seed = context_seed(state, opp_states, dice);
-        let pick = self.search_pick(shortlist, entries, seed);
+        let pick = self.search_pick(shortlist, entries, seed, 1 % (opp_states.len() + 1));
         self.record_search_result(close || endgame, pick != 0);
         shortlist[pick].mark
     }
@@ -452,13 +570,10 @@ impl<B: WinProb> Strategy for SearchBot<B> {
 
         // Entry per candidate: post state + lock propagation; turn is then over.
         let shortlist = &cands[..cands.len().min(K_CANDIDATES)];
-        let entries: Vec<(Vec<State>, bool)> = shortlist
-            .iter()
-            .map(|c| phase2_entry(c.post, opp_states))
-            .collect();
+        let entries: Vec<(Vec<State>, bool)> = shortlist.iter().map(|c| phase2_entry(c.post, opp_states)).collect();
 
         let seed = context_seed(state, opp_states, dice);
-        let pick = self.search_pick(shortlist, entries, seed);
+        let pick = self.search_pick(shortlist, entries, seed, 1 % (opp_states.len() + 1));
         self.record_search_result(close || endgame, pick != 0);
         shortlist[pick].mark
     }
@@ -593,14 +708,11 @@ mod tests {
         let bot = test_bot();
         let a = State::default();
         let b = State::default();
-        let entries = vec![
-            phase2_entry(a, &[b]),
-            {
-                let mut marked = a;
-                marked.apply_mark(Mark { row: 0, number: 5 });
-                phase2_entry(marked, &[b])
-            },
-        ];
+        let entries = vec![phase2_entry(a, &[b]), {
+            let mut marked = a;
+            marked.apply_mark(Mark { row: 0, number: 5 });
+            phase2_entry(marked, &[b])
+        }];
         let r1 = rollout_final_states(&bot, &entries, 7, 8, 1 % 2);
         let r2 = rollout_final_states(&bot, &entries, 7, 8, 1 % 2);
         assert_eq!(r1.len(), 2);
