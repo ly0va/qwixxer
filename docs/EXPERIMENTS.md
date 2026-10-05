@@ -1543,7 +1543,7 @@ on fresh rollouts (flywheel), or accepting the ~60% structural ceiling.
 
 ## Phase 21: Search Improvements — Passive Search, Lock Adjudication, Stratified Dice
 
-**Status: implemented; screens running (pre-registered below).**
+**Status: screens done (passive and lock pass, stratification fails); confirmation running.**
 
 Three changes to pair-search, each behind a `SearchConfig` flag (default =
 production, bench output verified byte-identical after every commit):
@@ -1582,3 +1582,34 @@ from `QWIXXER_SEARCH` / `QWIXXER_SEARCH_B` (e.g. `passive,lock=256`).
   (seed 42) — no regression from 60.7%, aiming for ≥ +0.1pp.
 - Pre-run estimates (pp vs GA): lock +0.2–0.4, passive +0.1–0.3,
   stratification +0.1–0.2. Cost is reported per arm (games/s).
+
+### Screens (20k games, seed 42, head-to-head)
+
+Margin = (A wins − B wins)/N; z = margin / (2 × the bench's paired SE on A's
+win rate).
+
+| arm | A wins | B wins | ties | margin | z | verdict | games/s |
+|---|---|---|---|---|---|---|---|
+| `passive` vs production | 10,079 | 9,517 | 404 | **+2.81%** | **+6.2** | pass | 9 |
+| `lock=256` vs production | 9,916 | 9,685 | 399 | **+1.16%** | **+5.9** | pass | 11 |
+| `k=144,strat` vs `k=144` | 9,756 | 9,829 | 415 | −0.37% | −0.9 | **fail** | 10 |
+| `k=144,passive,lock=252,strat` vs production | 10,160 | 9,427 | 413 | **+3.67%** | **+7.2** | pass | 9 |
+
+- **Passive search is the biggest single gain since the search bot itself.**
+  Its +2.8% margin exceeds search's entire edge over the static bot (+2.5%,
+  Phase 13). Phase 15's diffuse tie-breaking applies to passive decisions just
+  as much — they were simply never searched.
+- **Lock adjudication recovers what Phase 17 could not.** Rollouts decide
+  better than the freed static net did (+0.06pp there). The adjudicated bot
+  scores *fewer* points (75.7 vs 76.5) but wins more — consistent with Phase
+  16's mechanism (declining game-shortening locks when behind). Only 1.9% of
+  dice pairings differ from production, hence the very small paired SE.
+- **Stratification does not help** (z −0.9). Balancing only the first rolled
+  turn's white dice removes too little of the rollout variance; CRN already
+  cancels the luck shared between candidates. Dropped.
+- The combined arm (+3.67%) is close to the sum of the parts
+  (2.81 + 1.16 − 0.37 ≈ 3.6), i.e. the two gains are roughly additive.
+
+Deviation from the pre-registration: to save compute, confirmation runs on
+the **combined passive + lock** bot (`passive,lock=256`, no stratification)
+rather than on each arm separately.
