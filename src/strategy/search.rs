@@ -164,6 +164,43 @@ impl Default for SearchConfig {
     }
 }
 
+impl SearchConfig {
+    /// Parse a comma-separated spec on top of the production defaults:
+    /// `passive`, `strat`, `k=N` (truncated-search samples), `lock=N`
+    /// (lock-adjudication rollouts). Empty = production.
+    pub fn parse(spec: &str) -> Result<Self, String> {
+        let mut cfg = Self::default();
+        let num = |key: &str, v: &str| v.parse::<usize>().map_err(|e| format!("{key}={v}: {e}"));
+        for tok in spec.split(',').map(str::trim).filter(|t| !t.is_empty()) {
+            match tok.split_once('=') {
+                None if tok == "passive" => cfg.search_passive = true,
+                None if tok == "strat" => cfg.stratify = true,
+                Some(("k", v)) => cfg.k_samples = num("k", v)?,
+                Some(("lock", v)) => cfg.lock_k = Some(num("lock", v)?),
+                _ => return Err(format!("unknown search option {tok:?} (passive, strat, k=N, lock=N)")),
+            }
+        }
+        Ok(cfg)
+    }
+}
+
+impl std::fmt::Display for SearchConfig {
+    /// Compact spec that [`SearchConfig::parse`] reads back.
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "k={}", self.k_samples)?;
+        if self.search_passive {
+            write!(f, ",passive")?;
+        }
+        if let Some(k) = self.lock_k {
+            write!(f, ",lock={k}")?;
+        }
+        if self.stratify {
+            write!(f, ",strat")?;
+        }
+        Ok(())
+    }
+}
+
 pub struct SearchBot<B: WinProb> {
     pub bot: B,
     /// Search every eligible decision regardless of gates (diagnostics).
@@ -1135,6 +1172,25 @@ mod tests {
             ..Default::default()
         };
         SearchBot::with_config(test_bot(), cfg);
+    }
+
+    #[test]
+    fn search_config_parses_and_round_trips() {
+        assert_eq!(SearchConfig::parse(""), Ok(SearchConfig::default()));
+        let cfg = SearchConfig::parse("passive, lock=256,strat,k=144").unwrap();
+        assert_eq!(
+            cfg,
+            SearchConfig {
+                k_samples: 144,
+                search_passive: true,
+                lock_k: Some(256),
+                stratify: true,
+            }
+        );
+        assert_eq!(SearchConfig::parse(&cfg.to_string()), Ok(cfg));
+        assert_eq!(SearchConfig::default().to_string(), "k=128");
+        assert!(SearchConfig::parse("bogus").is_err());
+        assert!(SearchConfig::parse("k=abc").is_err());
     }
 
     #[test]

@@ -18,6 +18,12 @@ enum BotType {
     Dqn,
     Pair,
     PairSearch,
+    /// Pair-search with an experimental `SearchConfig` read from the
+    /// `QWIXXER_SEARCH` env var (e.g. `passive,lock=256,strat,k=144`).
+    PairSearchExp,
+    /// Second experimental pair-search, configured by `QWIXXER_SEARCH_B`
+    /// (for A/B benches between two non-production configs).
+    PairSearchExpB,
     Mcts,
     Opportunist,
     Conservative,
@@ -31,6 +37,8 @@ impl std::fmt::Display for BotType {
             BotType::Dqn => write!(f, "DQN"),
             BotType::Pair => write!(f, "PAIR"),
             BotType::PairSearch => write!(f, "PAIR-SEARCH"),
+            BotType::PairSearchExp => write!(f, "PAIR-SEARCH[{}]", exp_search_config("QWIXXER_SEARCH")),
+            BotType::PairSearchExpB => write!(f, "PAIR-SEARCH-B[{}]", exp_search_config("QWIXXER_SEARCH_B")),
             BotType::Mcts => write!(f, "MCTS"),
             BotType::Opportunist => write!(f, "Opportunist"),
             BotType::Conservative => write!(f, "Conservative"),
@@ -52,6 +60,10 @@ fn make_strategy(bot: &BotType) -> Box<dyn strategy::Strategy> {
         BotType::PairSearch => Box::new(strategy::search::SearchBot::new(dqn::pair::PairStrategy::load(
             "pair_model",
         ))),
+        BotType::PairSearchExp | BotType::PairSearchExpB => Box::new(strategy::search::SearchBot::with_config(
+            dqn::pair::PairStrategy::load("pair_model"),
+            exp_search_config(exp_env(bot)),
+        )),
         BotType::Mcts => {
             let champion =
                 bot::DNA::load_weights("champion.txt", genes).expect("No champion.txt found. Run `train ga` first.");
@@ -63,6 +75,21 @@ fn make_strategy(bot: &BotType) -> Box<dyn strategy::Strategy> {
     }
 }
 
+/// Env var holding the `SearchConfig` spec of an experimental pair-search.
+fn exp_env(bot: &BotType) -> &'static str {
+    match bot {
+        BotType::PairSearchExpB => "QWIXXER_SEARCH_B",
+        _ => "QWIXXER_SEARCH",
+    }
+}
+
+/// `SearchConfig` for `pair-search-exp[-b]`, from env var `var`.
+fn exp_search_config(var: &str) -> strategy::search::SearchConfig {
+    let spec =
+        std::env::var(var).unwrap_or_else(|_| panic!("{var} must be set, e.g. {var}=passive,lock=256,strat,k=144"));
+    strategy::search::SearchConfig::parse(&spec).unwrap_or_else(|e| panic!("{var}: {e}"))
+}
+
 struct StrategyTemplates {
     dqn: Option<dqn::DqnStrategy>,
     pair: Option<dqn::pair::PairStrategy>,
@@ -72,7 +99,12 @@ struct StrategyTemplates {
 impl StrategyTemplates {
     fn new(bots: &[BotType]) -> Self {
         let needs_dqn = bots.iter().any(|b| matches!(b, BotType::Dqn));
-        let needs_pair = bots.iter().any(|b| matches!(b, BotType::Pair | BotType::PairSearch));
+        let needs_pair = bots.iter().any(|b| {
+            matches!(
+                b,
+                BotType::Pair | BotType::PairSearch | BotType::PairSearchExp | BotType::PairSearchExpB
+            )
+        });
         let needs_champion = bots.iter().any(|b| matches!(b, BotType::Ga | BotType::Mcts));
         let genes = Arc::new(bot::default_genes());
         StrategyTemplates {
@@ -111,6 +143,13 @@ impl StrategyTemplates {
                     t.model.clone(),
                     t.device.clone(),
                 )))
+            }
+            BotType::PairSearchExp | BotType::PairSearchExpB => {
+                let t = self.pair.as_ref().unwrap();
+                Box::new(strategy::search::SearchBot::with_config(
+                    dqn::pair::PairStrategy::from_shared(t.model.clone(), t.device.clone()),
+                    exp_search_config(exp_env(bot)),
+                ))
             }
             BotType::Mcts => Box::new(mcts::MonteCarlo::with_ga(200, self.champion.as_ref().unwrap().clone())),
             BotType::Opportunist => Box::<strategy::Opportunist>::default(),
