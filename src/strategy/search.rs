@@ -3,7 +3,9 @@
 //!
 //! Design: docs/superpowers/specs/2026-06-10-pair-search-design.md
 
-use super::bot_impl::{active_phase1_choices, active_phase2_choices, eval_decision, passive_phase1_impl, Decision};
+use super::bot_impl::{
+    active_phase1_choices, active_phase2_choices, eval_decision, passive_phase1_choices, passive_phase1_impl, Decision,
+};
 use super::sim::{BatchedRollouts, SimGame};
 use super::Bot;
 use super::Strategy;
@@ -95,6 +97,8 @@ pub struct SearchStats {
     pub disagreements_gated: u32,
     /// Top-2 static value gaps at eligible decisions.
     pub gaps: Vec<f32>,
+    /// Passive (white-sum) decisions searched (subset of `searched`).
+    pub passive_searched: u32,
 }
 
 /// Search knobs. `Default` is the production configuration.
@@ -295,6 +299,13 @@ pub(crate) fn passive_entry(
     SimGame::propagate_locks(&mut all);
     let ended = SimGame::game_over(&all);
     (all, ended)
+}
+
+/// Entry-frame seat that takes the first rollout turn after a passive
+/// decision: the seat after the active one (`active_player` indexes the
+/// receiver's turn-ordered `opp_states`; see [`passive_entry`]).
+pub(crate) fn passive_first_active(active_player: usize, n: usize) -> usize {
+    (active_player + 2) % n
 }
 
 /// Full-game CRN rollouts: every sample rolled to completion; returns the
@@ -583,9 +594,53 @@ impl<B: WinProb> Strategy for SearchBot<B> {
         state: &State,
         opp_states: &[State],
         dice: [u8; 6],
-        _active_player: usize,
+        active_player: usize,
     ) -> Option<Mark> {
-        passive_phase1_impl(&self.bot, state, opp_states, dice)
+        if !self.cfg.search_passive {
+            return passive_phase1_impl(&self.bot, state, opp_states, dice);
+        }
+        let choices = match passive_phase1_choices(state, opp_states, dice) {
+            Decision::Forced(m) => return m,
+            Decision::Choices(c) => c,
+        };
+        let states: Vec<State> = choices.iter().map(|(_, s)| *s).collect();
+        let values = self.bot.evaluate_batch(&states, opp_states);
+        let mut cands: Vec<Candidate> = choices
+            .iter()
+            .zip(&values)
+            .map(|((m, s), &v)| Candidate {
+                mark: *m,
+                value: v,
+                post: *s,
+            })
+            .collect();
+        cands.sort_by(|a, b| b.value.partial_cmp(&a.value).unwrap());
+
+        let Some((close, endgame)) = (if cands.len() < 2 {
+            None
+        } else {
+            self.gate_and_record(&cands, state, opp_states)
+        }) else {
+            return cands[0].mark;
+        };
+
+        // Entry per candidate: our mark, then the rest of the turn (other
+        // passive players, the active player's phase 1 + 2) completed by the
+        // bot; the rollout starts at the seat after the active player.
+        let shortlist = &cands[..cands.len().min(K_CANDIDATES)];
+        let entries: Vec<(Vec<State>, bool)> = shortlist
+            .iter()
+            .map(|c| passive_entry(&self.bot, state, opp_states, dice, active_player, c.mark))
+            .collect();
+
+        let seed = context_seed(state, opp_states, dice);
+        let first_active = passive_first_active(active_player, opp_states.len() + 1);
+        let pick = self.search_pick(shortlist, entries, seed, first_active);
+        self.record_search_result(close || endgame, pick != 0);
+        if let Some(stats) = &self.stats {
+            stats.borrow_mut().passive_searched += 1;
+        }
+        shortlist[pick].mark
     }
 }
 
@@ -701,6 +756,71 @@ mod tests {
         let m1 = bot.active_phase2(&state, &opps, [3, 4, 2, 3, 5, 1], true);
         let m2 = bot.active_phase2(&state, &opps, [3, 4, 2, 3, 5, 1], true);
         assert_eq!(m1, m2);
+    }
+
+    #[test]
+    fn passive_first_active_is_seat_after_active() {
+        assert_eq!(passive_first_active(0, 2), 0); // 1v1: we act next
+        assert_eq!(passive_first_active(0, 3), 2);
+        assert_eq!(passive_first_active(1, 3), 0);
+        assert_eq!(passive_first_active(2, 4), 0);
+    }
+
+    #[test]
+    fn passive_entry_completes_the_active_players_turn() {
+        let bot = test_bot();
+        let us = State::default();
+        let opps = [State::default(), State::default()];
+        let dice = [3, 4, 2, 3, 5, 1];
+        for active_player in 0..2 {
+            let (all, ended) = passive_entry(&bot, &us, &opps, dice, active_player, None);
+            assert!(!ended);
+            // The active player (entry index active_player + 1) marked or struck.
+            let a = all[active_player + 1];
+            assert!(
+                a.row_totals().iter().sum::<u8>() + a.strikes > 0,
+                "active {active_player}: {all:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn passive_search_off_matches_static_pipeline() {
+        let mut bot = SearchBot::new(test_bot());
+        bot.force = true;
+        let mut mid = State::default();
+        mid.apply_mark(Mark { row: 0, number: 4 });
+        mid.apply_mark(Mark { row: 3, number: 10 });
+        for state in [State::default(), mid] {
+            for dice in [[3, 4, 2, 3, 5, 1], [1, 1, 6, 6, 6, 6], [6, 5, 1, 2, 3, 4]] {
+                let opps = [mid];
+                let expected = passive_phase1_impl(&bot.bot, &state, &opps, dice);
+                assert_eq!(bot.passive_phase1(&state, &opps, dice, 0), expected);
+            }
+        }
+    }
+
+    #[test]
+    fn passive_search_runs_when_enabled() {
+        let stats = std::rc::Rc::new(std::cell::RefCell::new(SearchStats::default()));
+        let cfg = SearchConfig {
+            search_passive: true,
+            ..Default::default()
+        };
+        let mut bot = SearchBot::with_config(test_bot(), cfg);
+        bot.force = true;
+        bot.stats = Some(stats.clone());
+        let state = State::default();
+        let opps = [State::default()];
+        let dice = [3, 4, 2, 3, 5, 1]; // white sum 7: four marks + skip
+        let a = bot.passive_phase1(&state, &opps, dice, 0);
+        let b = bot.passive_phase1(&state, &opps, dice, 0);
+        assert_eq!(a, b);
+        assert_eq!(stats.borrow().passive_searched, 2);
+        // Also in a 3-player frame (active player = second opponent).
+        let opps3 = [State::default(), State::default()];
+        bot.passive_phase1(&state, &opps3, dice, 1);
+        assert_eq!(stats.borrow().passive_searched, 3);
     }
 
     #[test]
