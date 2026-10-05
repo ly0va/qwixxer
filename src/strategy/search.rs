@@ -4,7 +4,8 @@
 //! Design: docs/superpowers/specs/2026-06-10-pair-search-design.md
 
 use super::bot_impl::{
-    active_phase1_choices, active_phase2_choices, eval_decision, passive_phase1_choices, passive_phase1_impl, Decision,
+    active_phase1_choices, active_phase2_choices, eval_decision, is_safe_lock, mark_choices_with,
+    opp_best_phase1_score, passive_phase1_choices, passive_phase1_impl, phase1_plan_choices_with, Decision,
 };
 use super::sim::{BatchedRollouts, SimGame};
 use super::Bot;
@@ -99,6 +100,10 @@ pub struct SearchStats {
     pub gaps: Vec<f32>,
     /// Passive (white-sum) decisions searched (subset of `searched`).
     pub passive_searched: u32,
+    /// Forced safe locks compared against alternatives by rollouts.
+    pub lock_adjudications: u32,
+    /// ...of which an alternative beat the lock.
+    pub lock_overrides: u32,
 }
 
 /// Search knobs. `Default` is the production configuration.
@@ -301,6 +306,20 @@ pub(crate) fn passive_entry(
     (all, ended)
 }
 
+/// Phase 16 comparison set at a forced safe lock, as indices into
+/// `sorted` (rule-free candidates, best static value first): the lock, the
+/// best non-lock alternative, and the runner-up safe lock if any. `None` when
+/// there is nothing to compare (lock absent, or every candidate a safe lock).
+pub(crate) fn select_lock_trio(state: &State, sorted: &[Option<Mark>], lock: Mark) -> Option<Vec<usize>> {
+    let lock_i = sorted.iter().position(|&m| m == Some(lock))?;
+    let alt_i = (0..sorted.len()).find(|&i| !is_safe_lock(state, sorted[i]))?;
+    let mut trio = vec![lock_i, alt_i];
+    if let Some(i2) = (0..sorted.len()).find(|&i| i != lock_i && is_safe_lock(state, sorted[i])) {
+        trio.push(i2);
+    }
+    Some(trio)
+}
+
 /// Entry-frame seat that takes the first rollout turn after a passive
 /// decision: the seat after the active one (`active_player` indexes the
 /// receiver's turn-ordered `opp_states`; see [`passive_entry`]).
@@ -452,6 +471,80 @@ impl<B: WinProb> SearchBot<B> {
         best
     }
 
+    /// Forced safe lock `lock` vs the rule-free alternatives (Phase 16
+    /// semantics, see [`select_lock_trio`]) by `cfg.lock_k` full-game CRN
+    /// rollouts each; the highest mean outcome wins, ties keep the lock.
+    /// `collapse` merges plans sharing a phase-1 mark (active phase 1).
+    /// `entry` completes the current turn for a (mark, post-state) candidate.
+    #[allow(clippy::too_many_arguments)]
+    fn adjudicate_lock(
+        &self,
+        state: &State,
+        lock: Mark,
+        rule_free: Decision,
+        baseline: State,
+        eval_opps: &[State],
+        collapse: bool,
+        entry: impl Fn(Option<Mark>, State) -> (Vec<State>, bool),
+        seed: u64,
+        first_active: usize,
+    ) -> Option<Mark> {
+        let Some(k) = self.cfg.lock_k else {
+            return Some(lock);
+        };
+        let post_of = |m: Option<Mark>| match m {
+            Some(m) => {
+                let mut s = *state;
+                s.apply_mark(m);
+                s
+            }
+            None => baseline,
+        };
+        let compared: Vec<(Option<Mark>, State)> = match rule_free {
+            Decision::Forced(alt) if alt == Some(lock) => return Some(lock),
+            Decision::Forced(alt) => vec![(Some(lock), post_of(Some(lock))), (alt, post_of(alt))],
+            Decision::Choices(plans) => {
+                let states: Vec<State> = plans.iter().map(|(_, s)| *s).collect();
+                let values = self.bot.evaluate_batch(&states, eval_opps);
+                let mut cands: Vec<(Option<Mark>, State, f32)> = Vec::new();
+                for ((m, s), &v) in plans.iter().zip(&values) {
+                    match cands.iter_mut().find(|c| collapse && c.0 == *m) {
+                        Some(c) if v > c.2 => *c = (*m, *s, v),
+                        Some(_) => {}
+                        None => cands.push((*m, *s, v)),
+                    }
+                }
+                cands.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap());
+                let marks: Vec<Option<Mark>> = cands.iter().map(|c| c.0).collect();
+                match select_lock_trio(state, &marks, lock) {
+                    Some(trio) => trio.into_iter().map(|i| (cands[i].0, cands[i].1)).collect(),
+                    None => return Some(lock),
+                }
+            }
+        };
+
+        let entries: Vec<(Vec<State>, bool)> = compared.iter().map(|&(m, post)| entry(m, post)).collect();
+        let finals = rollout_final_states(&self.bot, &entries, seed, k, first_active);
+        let means: Vec<f32> = finals
+            .iter()
+            .map(|f| f.iter().map(|states| SimGame::outcome(states)).sum::<f32>() / f.len() as f32)
+            .collect();
+        let mut best = 0;
+        for i in 1..means.len() {
+            if means[i] > means[best] {
+                best = i;
+            }
+        }
+        if let Some(stats) = &self.stats {
+            let mut s = stats.borrow_mut();
+            s.lock_adjudications += 1;
+            if best != 0 {
+                s.lock_overrides += 1;
+            }
+        }
+        compared[best].0
+    }
+
     /// Gate bookkeeping. Returns true if search should run. Never searches
     /// with no opponents (solo is unsupported; the simulator's outcome and
     /// leader logic require at least one opponent).
@@ -502,6 +595,20 @@ impl<B: WinProb> Strategy for SearchBot<B> {
         }
         let (decision, sim_opp) = active_phase1_choices(&self.bot, state, opp_states, dice);
         let plans = match decision {
+            Decision::Forced(Some(lock)) if self.cfg.lock_k.is_some() && is_safe_lock(state, Some(lock)) => {
+                let rule_free = phase1_plan_choices_with(state, &sim_opp, dice, false);
+                return self.adjudicate_lock(
+                    state,
+                    lock,
+                    rule_free,
+                    *state,
+                    &sim_opp,
+                    true,
+                    |m, _| phase1_entry(&self.bot, state, &sim_opp, dice, m),
+                    context_seed(state, opp_states, dice),
+                    1 % (opp_states.len() + 1),
+                );
+            }
             Decision::Forced(m) => return m,
             Decision::Choices(c) => c,
         };
@@ -555,6 +662,26 @@ impl<B: WinProb> Strategy for SearchBot<B> {
             stats.borrow_mut().active_decisions += 1;
         }
         let choices = match active_phase2_choices(state, opp_states, dice, has_marked) {
+            Decision::Forced(Some(lock)) if self.cfg.lock_k.is_some() && is_safe_lock(state, Some(lock)) => {
+                let mut baseline = *state;
+                if !has_marked {
+                    baseline.apply_strike();
+                }
+                let opp_best = opp_states.iter().map(|s| s.count_points()).max().unwrap_or(0);
+                let marks = state.generate_color_moves(dice);
+                let rule_free = mark_choices_with(state, &marks, baseline, opp_best, false);
+                return self.adjudicate_lock(
+                    state,
+                    lock,
+                    rule_free,
+                    baseline,
+                    opp_states,
+                    false,
+                    |_, post| phase2_entry(post, opp_states),
+                    context_seed(state, opp_states, dice),
+                    1 % (opp_states.len() + 1),
+                );
+            }
             Decision::Forced(m) => return m,
             Decision::Choices(c) => c,
         };
@@ -596,13 +723,33 @@ impl<B: WinProb> Strategy for SearchBot<B> {
         dice: [u8; 6],
         active_player: usize,
     ) -> Option<Mark> {
-        if !self.cfg.search_passive {
+        if !self.cfg.search_passive && self.cfg.lock_k.is_none() {
             return passive_phase1_impl(&self.bot, state, opp_states, dice);
         }
         let choices = match passive_phase1_choices(state, opp_states, dice) {
+            Decision::Forced(Some(lock)) if self.cfg.lock_k.is_some() && is_safe_lock(state, Some(lock)) => {
+                let white_sum = dice[0] + dice[1];
+                let marks = state.generate_white_moves(white_sum);
+                let opp_best = opp_best_phase1_score(opp_states, white_sum);
+                let rule_free = mark_choices_with(state, &marks, *state, opp_best, false);
+                return self.adjudicate_lock(
+                    state,
+                    lock,
+                    rule_free,
+                    *state,
+                    opp_states,
+                    false,
+                    |m, _| passive_entry(&self.bot, state, opp_states, dice, active_player, m),
+                    context_seed(state, opp_states, dice),
+                    passive_first_active(active_player, opp_states.len() + 1),
+                );
+            }
             Decision::Forced(m) => return m,
             Decision::Choices(c) => c,
         };
+        if !self.cfg.search_passive {
+            return eval_decision(&self.bot, Decision::Choices(choices), opp_states);
+        }
         let states: Vec<State> = choices.iter().map(|(_, s)| *s).collect();
         let values = self.bot.evaluate_batch(&states, opp_states);
         let mut cands: Vec<Candidate> = choices
@@ -821,6 +968,83 @@ mod tests {
         let opps3 = [State::default(), State::default()];
         bot.passive_phase1(&state, &opps3, dice, 1);
         assert_eq!(stats.borrow().passive_searched, 3);
+    }
+
+    /// Red 2..6 marked: red 12 is a safe (first) lock.
+    fn lockable_state() -> State {
+        let mut s = State::default();
+        for n in 2..=6 {
+            s.apply_mark(Mark { row: 0, number: n });
+        }
+        s
+    }
+
+    #[test]
+    fn lock_trio_picks_lock_best_alternative_and_runner_up_lock() {
+        let mut s = lockable_state();
+        for n in [2, 3, 4, 5, 6] {
+            s.apply_mark(Mark { row: 1, number: n }); // yellow lockable too
+        }
+        let red12 = Mark { row: 0, number: 12 };
+        let ylw12 = Mark { row: 1, number: 12 };
+        let grn9 = Mark { row: 2, number: 9 };
+        // Sorted by static value: yellow lock, skip, red lock, green 9.
+        let sorted = [Some(ylw12), None, Some(red12), Some(grn9)];
+        assert_eq!(select_lock_trio(&s, &sorted, red12), Some(vec![2, 1, 0]));
+        // Lock not among the candidates, or only safe locks: nothing to compare.
+        assert_eq!(select_lock_trio(&s, &[None, Some(grn9)], red12), None);
+        assert_eq!(select_lock_trio(&s, &[Some(red12), Some(ylw12)], red12), None);
+        // No runner-up lock: pair only.
+        assert_eq!(
+            select_lock_trio(&s, &[Some(grn9), Some(red12)], red12),
+            Some(vec![1, 0])
+        );
+    }
+
+    fn lock_bot(stats: &std::rc::Rc<std::cell::RefCell<SearchStats>>) -> SearchBot<PairStrategy> {
+        let cfg = SearchConfig {
+            lock_k: Some(16),
+            ..Default::default()
+        };
+        let mut bot = SearchBot::with_config(test_bot(), cfg);
+        bot.stats = Some(stats.clone());
+        bot
+    }
+
+    #[test]
+    fn forced_locks_are_adjudicated_at_every_site() {
+        let stats = std::rc::Rc::new(std::cell::RefCell::new(SearchStats::default()));
+        let mut bot = lock_bot(&stats);
+        let state = lockable_state();
+        let opps = [State::default()];
+        let red12 = Some(Mark { row: 0, number: 12 });
+
+        // Active phase 1: white sum 12.
+        let p1 = [6, 6, 1, 1, 1, 1];
+        let a = bot.active_phase1(&state, &opps, p1);
+        assert_eq!(a, bot.active_phase1(&state, &opps, p1), "deterministic");
+        assert_eq!(stats.borrow().lock_adjudications, 2);
+        // Active phase 2: white 6 + red 6.
+        let p2 = [6, 1, 6, 1, 1, 1];
+        let b = bot.active_phase2(&state, &opps, p2, true);
+        assert_eq!(stats.borrow().lock_adjudications, 3);
+        // Passive: white sum 12.
+        bot.passive_phase1(&state, &opps, p1, 0);
+        assert_eq!(stats.borrow().lock_adjudications, 4);
+        let _ = (a, b, red12);
+        let s = stats.borrow();
+        assert!(s.lock_overrides <= s.lock_adjudications);
+    }
+
+    #[test]
+    fn locks_stay_forced_when_adjudication_is_off() {
+        let mut bot = SearchBot::new(test_bot());
+        let state = lockable_state();
+        let opps = [State::default()];
+        let red12 = Some(Mark { row: 0, number: 12 });
+        assert_eq!(bot.active_phase1(&state, &opps, [6, 6, 1, 1, 1, 1]), red12);
+        assert_eq!(bot.active_phase2(&state, &opps, [6, 1, 6, 1, 1, 1], true), red12);
+        assert_eq!(bot.passive_phase1(&state, &opps, [6, 6, 1, 1, 1, 1], 0), red12);
     }
 
     #[test]
