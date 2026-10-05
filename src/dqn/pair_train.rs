@@ -762,7 +762,7 @@ fn build_distill_samples(
         if entries.is_empty() {
             continue;
         }
-        let finals = rollout_final_states(boot, &entries, roll_seed, cfg.k, first_active);
+        let finals = rollout_final_states(boot, &entries, roll_seed, cfg.k, first_active, false);
 
         for (entry, fin) in entries.iter().zip(&finals) {
             let our = entry.0[0];
@@ -1532,7 +1532,7 @@ mod tests {
         // Within each candidate's m forward samples: identical value, and the
         // final_diffs reproduce the first m rollout future-diffs exactly.
         let entries = [phase2_entry(post_a, &[opp]), phase2_entry(post_b, &[opp])];
-        let finals = rollout_final_states(&boot, &entries, context_seed(&our, &[opp], dice), cfg.k, 1 % 2);
+        let finals = rollout_final_states(&boot, &entries, context_seed(&our, &[opp], dice), cfg.k, 1 % 2, false);
         for (ci, (entry, fin)) in entries.iter().zip(&finals).enumerate() {
             let e_our = entry.0[0];
             let e_opp = entry.0[1];

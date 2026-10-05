@@ -10,6 +10,7 @@ use super::bot_impl::{
 use super::sim::{BatchedRollouts, SimGame};
 use super::Bot;
 use super::Strategy;
+use crate::game::DiceSource;
 use crate::state::{Mark, State};
 use rand::rngs::SmallRng;
 use rand::SeedableRng;
@@ -83,6 +84,37 @@ pub fn sample_player_seed(decision_seed: u64, sample: usize, player: usize) -> u
     splitmix64(decision_seed ^ ((sample as u64) << 16) ^ player as u64)
 }
 
+/// Ordered white-pair stratum (0..36) of a roll: `(W1 - 1) * 6 + (W2 - 1)`.
+pub fn white_stratum(dice: [u8; 6]) -> usize {
+    (dice[0] as usize - 1) * 6 + (dice[1] as usize - 1)
+}
+
+/// Like [`sample_player_seed`], but the stream's first roll lands its white
+/// dice in a fixed stratum: `sample % 36`, permuted per player so the
+/// players' first rolls are not lock-stepped. With a sample count that is a
+/// multiple of 36, every player's first rollout roll has exactly uniform
+/// white dice; colors and all later rolls stay pseudo-random. Found by a
+/// deterministic search over seed variants (~36 tries expected).
+pub fn stratified_player_seed(decision_seed: u64, sample: usize, player: usize) -> u64 {
+    // Multipliers coprime to 36 make each per-player schedule a bijection.
+    const MULT: [usize; 4] = [1, 5, 7, 11];
+    let target = ((sample % 36) * MULT[player % 4] + 13 * player) % 36;
+    let base = sample_player_seed(decision_seed, sample, player);
+    (0u64..)
+        .map(|attempt| splitmix64(base ^ attempt.wrapping_mul(0x9E37_79B9_7F4A_7C15)))
+        .find(|&s| white_stratum(SmallRng::seed_from_u64(s).roll()) == target)
+        .expect("some seed hits every stratum")
+}
+
+/// Rollout dice-stream seed: stratified or plain.
+fn rollout_seed(stratify: bool, decision_seed: u64, sample: usize, player: usize) -> u64 {
+    if stratify {
+        stratified_player_seed(decision_seed, sample, player)
+    } else {
+        sample_player_seed(decision_seed, sample, player)
+    }
+}
+
 /// Why search fired (for diagnostics).
 #[derive(Default, Debug, Clone)]
 pub struct SearchStats {
@@ -146,6 +178,12 @@ impl<B: WinProb> SearchBot<B> {
     }
 
     pub fn with_config(bot: B, cfg: SearchConfig) -> Self {
+        if cfg.stratify {
+            assert!(
+                cfg.k_samples % 36 == 0 && cfg.lock_k.is_none_or(|k| k % 36 == 0),
+                "stratify needs sample counts that are a multiple of 36: {cfg:?}"
+            );
+        }
         Self {
             bot,
             force: false,
@@ -338,6 +376,7 @@ pub(crate) fn rollout_final_states(
     seed: u64,
     k: usize,
     first_active: usize,
+    stratify: bool,
 ) -> Vec<Vec<Vec<State>>> {
     let n = entries[0].0.len();
     let mut sims: Vec<SimGame> = Vec::new();
@@ -351,7 +390,7 @@ pub(crate) fn rollout_final_states(
                 states: states.clone(),
                 active: first_active,
                 rngs: (0..n)
-                    .map(|p| SmallRng::seed_from_u64(sample_player_seed(seed, s, p)))
+                    .map(|p| SmallRng::seed_from_u64(rollout_seed(stratify, seed, s, p)))
                     .collect(),
                 over: false,
             });
@@ -410,7 +449,7 @@ impl<B: WinProb> SearchBot<B> {
                     states: states.clone(),
                     active: first_active,
                     rngs: (0..n)
-                        .map(|p| SmallRng::seed_from_u64(sample_player_seed(seed, k, p)))
+                        .map(|p| SmallRng::seed_from_u64(rollout_seed(self.cfg.stratify, seed, k, p)))
                         .collect(),
                     over: false,
                 });
@@ -524,7 +563,7 @@ impl<B: WinProb> SearchBot<B> {
         };
 
         let entries: Vec<(Vec<State>, bool)> = compared.iter().map(|&(m, post)| entry(m, post)).collect();
-        let finals = rollout_final_states(&self.bot, &entries, seed, k, first_active);
+        let finals = rollout_final_states(&self.bot, &entries, seed, k, first_active, self.cfg.stratify);
         let means: Vec<f32> = finals
             .iter()
             .map(|f| f.iter().map(|states| SimGame::outcome(states)).sum::<f32>() / f.len() as f32)
@@ -1048,6 +1087,57 @@ mod tests {
     }
 
     #[test]
+    fn stratified_seeds_balance_each_players_first_whites() {
+        let decision = 0xC0FFEE;
+        for player in 0..4 {
+            let mut counts = [0u32; 36];
+            for sample in 0..144 {
+                let seed = stratified_player_seed(decision, sample, player);
+                assert_eq!(seed, stratified_player_seed(decision, sample, player), "deterministic");
+                let first = SmallRng::seed_from_u64(seed).roll();
+                counts[white_stratum(first)] += 1;
+            }
+            assert!(counts.iter().all(|&c| c == 4), "player {player}: {counts:?}");
+        }
+        // Players follow different stratum schedules.
+        let first_whites = |p: usize| -> Vec<usize> {
+            (0..36)
+                .map(|k| white_stratum(SmallRng::seed_from_u64(stratified_player_seed(decision, k, p)).roll()))
+                .collect()
+        };
+        assert_ne!(first_whites(0), first_whites(1));
+    }
+
+    #[test]
+    fn stratified_search_is_deterministic() {
+        let cfg = SearchConfig {
+            k_samples: 36,
+            stratify: true,
+            ..Default::default()
+        };
+        let mut bot = SearchBot::with_config(test_bot(), cfg);
+        bot.force = true;
+        let state = State::default();
+        let opps = [State::default()];
+        let dice = [3, 4, 2, 3, 5, 1];
+        assert_eq!(
+            bot.active_phase1(&state, &opps, dice),
+            bot.active_phase1(&state, &opps, dice)
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "multiple of 36")]
+    fn stratify_requires_whole_strata() {
+        let cfg = SearchConfig {
+            k_samples: 128,
+            stratify: true,
+            ..Default::default()
+        };
+        SearchBot::with_config(test_bot(), cfg);
+    }
+
+    #[test]
     fn rollout_final_states_full_games_deterministic() {
         let bot = test_bot();
         let a = State::default();
@@ -1057,8 +1147,8 @@ mod tests {
             marked.apply_mark(Mark { row: 0, number: 5 });
             phase2_entry(marked, &[b])
         }];
-        let r1 = rollout_final_states(&bot, &entries, 7, 8, 1 % 2);
-        let r2 = rollout_final_states(&bot, &entries, 7, 8, 1 % 2);
+        let r1 = rollout_final_states(&bot, &entries, 7, 8, 1 % 2, false);
+        let r2 = rollout_final_states(&bot, &entries, 7, 8, 1 % 2, false);
         assert_eq!(r1.len(), 2);
         assert_eq!(r1[0].len(), 8);
         // Every rollout reached a real game end and is reproducible.
