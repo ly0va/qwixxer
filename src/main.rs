@@ -264,6 +264,10 @@ enum Commands {
         /// (0 = current behavior; the run recipe uses 0.05)
         #[arg(long, default_value = "0.0")]
         epsilon_lock: f32,
+        /// Also emit distill targets at gated passive (white-sum) decisions,
+        /// which production search searches since Phase 21
+        #[arg(long)]
+        distill_passive: bool,
     },
 }
 
@@ -710,6 +714,7 @@ fn main() {
             distill_m,
             distill_m_lock,
             epsilon_lock,
+            distill_passive,
         }) => dqn::pair_train::self_play_train(
             "pair_model",
             iterations,
@@ -725,6 +730,7 @@ fn main() {
                 m_gated: distill_m,
                 m_lock: distill_m_lock,
                 epsilon_lock,
+                passive: distill_passive,
             },
         ),
         None => {

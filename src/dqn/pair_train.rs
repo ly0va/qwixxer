@@ -9,10 +9,11 @@ use crate::dqn::{MyBackend, LOG_VAR_MAX, LOG_VAR_MIN, TRAIN_SEED};
 use crate::state::{Mark, State};
 use crate::strategy::bot_impl::{
     active_phase1_choices, active_phase2_choices, eval_decision, find_safe_lock, is_safe_lock, mark_choices_with,
-    opp_best_phase1_score, passive_phase1_impl, phase1_plan_choices_with, Decision,
+    opp_best_phase1_score, passive_phase1_choices, passive_phase1_impl, phase1_plan_choices_with, Decision,
 };
 use crate::strategy::search::{
-    context_seed, gates, passive_entry, phase1_entry, phase2_entry, rollout_final_states, SearchBot, SearchConfig,
+    context_seed, gates, passive_entry, passive_first_active, phase1_entry, phase2_entry, rollout_final_states,
+    SearchBot, SearchConfig,
 };
 use crate::strategy::{Bot, Strategy};
 use burn::{
@@ -52,6 +53,9 @@ pub struct DistillCfg {
     /// Probability of declining a forced safe lock during generation
     /// (player 0 only, like uniform ε).
     pub epsilon_lock: f32,
+    /// Also capture gated PASSIVE decisions (Phase 21: production search
+    /// searches them). Off reproduces the Phase 18–19 recipe.
+    pub passive: bool,
 }
 
 impl DistillCfg {
@@ -63,6 +67,7 @@ impl DistillCfg {
             m_gated: 2,
             m_lock: 16,
             epsilon_lock: 0.0,
+            passive: false,
         }
     }
 }
@@ -287,11 +292,15 @@ impl PairPolicy {
 /// A decision worth distilling, captured during play; rollouts happen
 /// post-game.
 enum DistillCtx {
-    /// Gated (close/endgame) active decision: top-2 candidates by static value.
-    /// `sim_opp` is the evaluation context (ap1: simulated post-phase1 opps;
-    /// ap2: current opps). `cands` = (mark, post/end state) sorted desc by value.
+    /// Gated (close/endgame) decision: top-2 candidates by static value.
+    /// `phase`: 1/2 = active phase 1/2, 0 = passive phase 1. `sim_opp` is the
+    /// evaluation context (ap1: simulated post-phase1 opps; otherwise current
+    /// opps). `active_player` (passive only; 0 otherwise) is the active
+    /// player's index within `opps`. `cands` = (mark, post/end state) sorted
+    /// desc by value.
     Gated {
         phase: u8,
+        active_player: usize,
         state: State,
         opps: Vec<State>,
         sim_opp: Vec<State>,
@@ -328,6 +337,8 @@ struct RecordingPair {
     distill: Option<std::rc::Rc<std::cell::RefCell<Vec<DistillCtx>>>>,
     /// Probability of declining a forced safe lock (player 0 only).
     epsilon_lock: f32,
+    /// Capture gated passive decisions too (`DistillCfg::passive`).
+    distill_passive: bool,
 }
 
 impl std::fmt::Debug for RecordingPair {
@@ -407,6 +418,7 @@ impl Strategy for RecordingPair {
                         if (close || endgame) && !opp_states.is_empty() {
                             self.distill.as_ref().unwrap().borrow_mut().push(DistillCtx::Gated {
                                 phase: 1,
+                                active_player: 0,
                                 state: *state,
                                 opps: opp_states.to_vec(),
                                 sim_opp: sim_opp.clone(),
@@ -508,6 +520,7 @@ impl Strategy for RecordingPair {
                         if (close || endgame) && !opp_states.is_empty() {
                             self.distill.as_ref().unwrap().borrow_mut().push(DistillCtx::Gated {
                                 phase: 2,
+                                active_player: 0,
                                 state: *state,
                                 opps: opp_states.to_vec(),
                                 sim_opp: opp_states.to_vec(),
@@ -589,11 +602,33 @@ impl Strategy for RecordingPair {
 
         let mut mark = passive_phase1_impl(self.policy.bot(), state, opp_states, dice);
 
-        // Distill detection (player 0 only). No Gated capture on passive
-        // decisions (search never gated them); Lock firings only.
+        // Distill detection (player 0 only): lock firings always; gated
+        // passive decisions when `distill_passive` (Phase 21 search gates).
         let mut decline_rf: Option<Vec<(Option<Mark>, State)>> = None;
         if self.distill.is_some() {
             let bot = self.policy.bot();
+            if self.distill_passive && !opp_states.is_empty() {
+                if let Decision::Choices(choices) = passive_phase1_choices(state, opp_states, dice) {
+                    let states: Vec<State> = choices.iter().map(|(_, s)| *s).collect();
+                    let values = bot.evaluate_batch(&states, opp_states);
+                    let cands = value_sort(&choices, &values);
+                    if cands.len() >= 2 {
+                        let value_posts: Vec<(f32, State)> = cands.iter().map(|c| (c.2, c.1)).collect();
+                        let (close, endgame) = gates(&value_posts, state, opp_states);
+                        if close || endgame {
+                            self.distill.as_ref().unwrap().borrow_mut().push(DistillCtx::Gated {
+                                phase: 0,
+                                active_player,
+                                state: *state,
+                                opps: opp_states.to_vec(),
+                                sim_opp: opp_states.to_vec(),
+                                dice,
+                                cands: cands[..2].iter().map(|c| (c.0, c.1)).collect(),
+                            });
+                        }
+                    }
+                }
+            }
             let lock = find_safe_lock(state, &marks);
             if let Some(lock) = lock.filter(|_| !opp_states.is_empty()) {
                 debug_assert_eq!(mark, Some(lock), "production must force the detected safe lock");
@@ -671,6 +706,7 @@ fn build_distill_samples(
         ) = match ctx {
             DistillCtx::Gated {
                 phase,
+                active_player,
                 state,
                 opps,
                 sim_opp,
@@ -678,15 +714,26 @@ fn build_distill_samples(
                 cands,
             } => {
                 let n = opps.len() + 1;
-                let entries: Vec<(Vec<State>, bool)> = if *phase == 1 {
-                    cands
-                        .iter()
-                        .map(|(m, _)| phase1_entry(boot, state, sim_opp, *dice, *m))
-                        .collect()
-                } else {
-                    cands.iter().map(|(_, post)| phase2_entry(*post, opps)).collect()
+                // (entries, first_active): passive candidates complete the rest
+                // of the turn and roll out from the seat after the active player.
+                let (entries, first_active): (Vec<(Vec<State>, bool)>, usize) = match phase {
+                    0 => (
+                        cands
+                            .iter()
+                            .map(|(m, _)| passive_entry(boot, state, opps, *dice, *active_player, *m))
+                            .collect(),
+                        passive_first_active(*active_player, n),
+                    ),
+                    1 => (
+                        cands
+                            .iter()
+                            .map(|(m, _)| phase1_entry(boot, state, sim_opp, *dice, *m))
+                            .collect(),
+                        1 % n,
+                    ),
+                    _ => (cands.iter().map(|(_, post)| phase2_entry(*post, opps)).collect(), 1 % n),
                 };
-                (cands.clone(), entries, 1 % n, context_seed(state, opps, *dice))
+                (cands.clone(), entries, first_active, context_seed(state, opps, *dice))
             }
             DistillCtx::Lock {
                 ctx: lctx,
@@ -936,6 +983,7 @@ fn play_training_game(
                 recorded: buf,
                 distill: if i == 0 { distill_buf.clone() } else { None },
                 epsilon_lock: if i == 0 { distill.epsilon_lock } else { 0.0 },
+                distill_passive: distill.passive,
             }),
             Box::new(SmallRng::seed_from_u64(seed.wrapping_add(i as u64))),
         ));
@@ -1433,6 +1481,7 @@ mod tests {
                     recorded: std::rc::Rc::new(std::cell::RefCell::new(Vec::new())),
                     distill: None,
                     epsilon_lock: 0.0,
+                    distill_passive: false,
                 }),
                 Box::new(SmallRng::seed_from_u64(910 + i)),
             ));
@@ -1490,6 +1539,7 @@ mod tests {
             m_gated: 4,
             m_lock: 16,
             epsilon_lock: 0.0,
+            passive: false,
         };
 
         // A phase-2 gated ctx, 1 opponent, two distinct (non-ended) candidates.
@@ -1502,6 +1552,7 @@ mod tests {
         let dice = [3, 2, 4, 5, 1, 6];
         let ctx = DistillCtx::Gated {
             phase: 2,
+            active_player: 0,
             state: our,
             opps: vec![opp],
             sim_opp: vec![opp],
@@ -1575,6 +1626,7 @@ mod tests {
             m_gated: 2,
             m_lock: 5,
             epsilon_lock: 0.0,
+            passive: false,
         };
 
         // ap2 firing on the lockable state: red die pair gives red 12.
@@ -1612,6 +1664,106 @@ mod tests {
     }
 
     #[test]
+    fn passive_gated_ctx_emits_via_passive_entry() {
+        let boot = distill_boot();
+        let cfg = DistillCfg {
+            enabled: true,
+            k: 8,
+            m_gated: 3,
+            m_lock: 16,
+            epsilon_lock: 0.0,
+            passive: true,
+        };
+        // 1v1 passive decision: white sum 7, the opponent (index 0) is active.
+        let our = State::default();
+        let opp = State::default();
+        let dice = [3, 4, 2, 5, 1, 6];
+        let (ma, mb) = (Mark { row: 0, number: 7 }, Mark { row: 2, number: 7 });
+        let post = |m: Mark| {
+            let mut s = our;
+            s.apply_mark(m);
+            s
+        };
+        let ctx = DistillCtx::Gated {
+            phase: 0,
+            active_player: 0,
+            state: our,
+            opps: vec![opp],
+            sim_opp: vec![opp],
+            dice,
+            cands: vec![(Some(ma), post(ma)), (Some(mb), post(mb))],
+        };
+        let (samples, lock_samples) = build_distill_samples(&boot, std::slice::from_ref(&ctx), cfg, 0);
+        assert_eq!(lock_samples, 0);
+        // #candidates(2) × #opponents(1) × m(3) × swap(2).
+        assert_eq!(samples.len(), 12);
+
+        // Values = mean future-diff over full-game rollouts from passive_entry,
+        // starting at the seat after the active player (us, in 1v1).
+        let entries = [
+            passive_entry(&boot, &our, &[opp], dice, 0, Some(ma)),
+            passive_entry(&boot, &our, &[opp], dice, 0, Some(mb)),
+        ];
+        let finals = rollout_final_states(&boot, &entries, context_seed(&our, &[opp], dice), cfg.k, 0, false);
+        for (ci, (entry, fin)) in entries.iter().zip(&finals).enumerate() {
+            let cdiff = (entry.0[0].count_points() - entry.0[1].count_points()) as f32;
+            let mean = fin
+                .iter()
+                .map(|f| ((f[0].count_points() - f[1].count_points()) as f32) - cdiff)
+                .sum::<f32>()
+                / fin.len() as f32;
+            let fwd = &samples[ci * cfg.m_gated * 2];
+            assert!(
+                (fwd.value - mean).abs() < 1e-5,
+                "candidate {ci}: {} vs {mean}",
+                fwd.value
+            );
+        }
+    }
+
+    #[test]
+    fn passive_gated_capture_only_when_enabled() {
+        let device = burn::backend::ndarray::NdArrayDevice::Cpu;
+        let model = PairModelConfig::new().init::<MyBackend>(&device);
+        let make = |passive: bool| RecordingPair {
+            policy: PairPolicy::Static(PairStrategy::from_model(model.clone(), device)),
+            epsilon: 0.0,
+            rng: SmallRng::seed_from_u64(7),
+            recorded: std::rc::Rc::new(std::cell::RefCell::new(Vec::new())),
+            distill: Some(std::rc::Rc::new(std::cell::RefCell::new(Vec::new()))),
+            epsilon_lock: 0.0,
+            distill_passive: passive,
+        };
+        // Opponent has a locked row ⇒ the endgame gate fires on any decision
+        // with >= 2 candidates.
+        let mut opp = lockable();
+        opp.apply_mark(Mark { row: 0, number: 12 });
+        let opps = [opp];
+        let us = State::default();
+        let dice = [3, 4, 2, 5, 1, 6]; // white sum 7: several marks + skip
+
+        let mut off = make(false);
+        let mut on = make(true);
+        let played_off = off.passive_phase1(&us, &opps, dice, 0);
+        let played_on = on.passive_phase1(&us, &opps, dice, 0);
+        assert_eq!(played_off, played_on, "capture must not change play");
+        assert!(off.distill.as_ref().unwrap().borrow().is_empty());
+        let ctxs = on.distill.as_ref().unwrap().borrow();
+        assert_eq!(ctxs.len(), 1);
+        match &ctxs[0] {
+            DistillCtx::Gated {
+                phase,
+                active_player,
+                cands,
+                ..
+            } => {
+                assert_eq!((*phase, *active_player, cands.len()), (0, 0, 2));
+            }
+            DistillCtx::Lock { .. } => panic!("expected a passive gated ctx"),
+        }
+    }
+
+    #[test]
     fn epsilon_lock_declines_only_at_firings() {
         let device = burn::backend::ndarray::NdArrayDevice::Cpu;
         let model = PairModelConfig::new().init::<MyBackend>(&device);
@@ -1624,6 +1776,7 @@ mod tests {
             recorded: std::rc::Rc::new(std::cell::RefCell::new(Vec::new())),
             distill: Some(std::rc::Rc::new(std::cell::RefCell::new(Vec::new()))),
             epsilon_lock: eps_lock,
+            distill_passive: false,
         };
 
         let s = lockable();
