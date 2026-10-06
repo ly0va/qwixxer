@@ -138,7 +138,9 @@ pub struct SearchStats {
     pub lock_overrides: u32,
 }
 
-/// Search knobs. `Default` is the production configuration.
+/// Search knobs. `Default` is the production configuration (Phase 21:
+/// passive search + lock adjudication); [`SearchConfig::legacy`] is the
+/// Phase 13–20 production search.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SearchConfig {
     /// Sampled futures per candidate in the truncated (gated) search.
@@ -153,31 +155,51 @@ pub struct SearchConfig {
     pub stratify: bool,
 }
 
+/// Full-game rollouts per compared candidate at a forced safe lock.
+pub const LOCK_K: usize = 256;
+
 impl Default for SearchConfig {
     fn default() -> Self {
         Self {
             k_samples: K_SAMPLES,
-            search_passive: false,
-            lock_k: None,
+            search_passive: true,
+            lock_k: Some(LOCK_K),
             stratify: false,
         }
     }
 }
 
 impl SearchConfig {
+    /// Phase 13–20 production search: active decisions only, safe locks
+    /// forced by the meta-rule. Kept for reproducing recorded analyses and
+    /// training recipes.
+    pub fn legacy() -> Self {
+        Self {
+            search_passive: false,
+            lock_k: None,
+            ..Self::default()
+        }
+    }
+
     /// Parse a comma-separated spec on top of the production defaults:
-    /// `passive`, `strat`, `k=N` (truncated-search samples), `lock=N`
-    /// (lock-adjudication rollouts). Empty = production.
+    /// `passive` / `nopassive`, `lock=N` / `nolock` (lock-adjudication
+    /// rollouts), `strat`, `k=N` (truncated-search samples). Empty = production.
     pub fn parse(spec: &str) -> Result<Self, String> {
         let mut cfg = Self::default();
         let num = |key: &str, v: &str| v.parse::<usize>().map_err(|e| format!("{key}={v}: {e}"));
         for tok in spec.split(',').map(str::trim).filter(|t| !t.is_empty()) {
             match tok.split_once('=') {
                 None if tok == "passive" => cfg.search_passive = true,
+                None if tok == "nopassive" => cfg.search_passive = false,
+                None if tok == "nolock" => cfg.lock_k = None,
                 None if tok == "strat" => cfg.stratify = true,
                 Some(("k", v)) => cfg.k_samples = num("k", v)?,
                 Some(("lock", v)) => cfg.lock_k = Some(num("lock", v)?),
-                _ => return Err(format!("unknown search option {tok:?} (passive, strat, k=N, lock=N)")),
+                _ => {
+                    return Err(format!(
+                        "unknown search option {tok:?} (passive, nopassive, lock=N, nolock, strat, k=N)"
+                    ))
+                }
             }
         }
         Ok(cfg)
@@ -188,11 +210,10 @@ impl std::fmt::Display for SearchConfig {
     /// Compact spec that [`SearchConfig::parse`] reads back.
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         write!(f, "k={}", self.k_samples)?;
-        if self.search_passive {
-            write!(f, ",passive")?;
-        }
-        if let Some(k) = self.lock_k {
-            write!(f, ",lock={k}")?;
+        write!(f, "{}", if self.search_passive { ",passive" } else { ",nopassive" })?;
+        match self.lock_k {
+            Some(k) => write!(f, ",lock={k}")?,
+            None => write!(f, ",nolock")?,
         }
         if self.stratify {
             write!(f, ",strat")?;
@@ -958,7 +979,7 @@ mod tests {
         // A state with a safe lock available must return the lock without
         // search: 5 marks in red, white sum 12 completes it (first lock,
         // doesn't end the game).
-        let mut bot = SearchBot::new(test_bot());
+        let mut bot = SearchBot::with_config(test_bot(), SearchConfig::legacy());
         bot.force = true;
         let mut state = State::default();
         for n in 2..=6 {
@@ -1009,7 +1030,7 @@ mod tests {
 
     #[test]
     fn passive_search_off_matches_static_pipeline() {
-        let mut bot = SearchBot::new(test_bot());
+        let mut bot = SearchBot::with_config(test_bot(), SearchConfig::legacy());
         bot.force = true;
         let mut mid = State::default();
         mid.apply_mark(Mark { row: 0, number: 4 });
@@ -1114,7 +1135,7 @@ mod tests {
 
     #[test]
     fn locks_stay_forced_when_adjudication_is_off() {
-        let mut bot = SearchBot::new(test_bot());
+        let mut bot = SearchBot::with_config(test_bot(), SearchConfig::legacy());
         let state = lockable_state();
         let opps = [State::default()];
         let red12 = Some(Mark { row: 0, number: 12 });
@@ -1150,6 +1171,7 @@ mod tests {
         let cfg = SearchConfig {
             k_samples: 36,
             stratify: true,
+            lock_k: None,
             ..Default::default()
         };
         let mut bot = SearchBot::with_config(test_bot(), cfg);
@@ -1188,7 +1210,14 @@ mod tests {
             }
         );
         assert_eq!(SearchConfig::parse(&cfg.to_string()), Ok(cfg));
-        assert_eq!(SearchConfig::default().to_string(), "k=128");
+        // Production default (Phase 21) and the pre-Phase-21 legacy config.
+        assert_eq!(SearchConfig::default().to_string(), "k=128,passive,lock=256");
+        assert_eq!(SearchConfig::legacy().to_string(), "k=128,nopassive,nolock");
+        assert_eq!(SearchConfig::parse("nopassive,nolock"), Ok(SearchConfig::legacy()));
+        assert_eq!(
+            SearchConfig::parse(&SearchConfig::legacy().to_string()),
+            Ok(SearchConfig::legacy())
+        );
         assert!(SearchConfig::parse("bogus").is_err());
         assert!(SearchConfig::parse("k=abc").is_err());
     }

@@ -12,7 +12,7 @@ use crate::strategy::bot_impl::{
     opp_best_phase1_score, passive_phase1_impl, phase1_plan_choices_with, Decision,
 };
 use crate::strategy::search::{
-    context_seed, gates, passive_entry, phase1_entry, phase2_entry, rollout_final_states, SearchBot,
+    context_seed, gates, passive_entry, phase1_entry, phase2_entry, rollout_final_states, SearchBot, SearchConfig,
 };
 use crate::strategy::{Bot, Strategy};
 use burn::{
@@ -920,7 +920,9 @@ fn play_training_game(
     let mut players: Vec<Player> = Vec::with_capacity(n);
     for (i, strategy) in strategies.into_iter().enumerate() {
         let policy = if search {
-            PairPolicy::Search(SearchBot::new(strategy))
+            // Pinned to the Phase 14 expert (active-only search, forced locks)
+            // so the recorded expert-iteration recipe stays reproducible.
+            PairPolicy::Search(SearchBot::with_config(strategy, SearchConfig::legacy()))
         } else {
             PairPolicy::Static(strategy)
         };
@@ -1411,14 +1413,15 @@ mod tests {
     #[test]
     fn exploring_decisions_never_invoke_search() {
         use crate::game::{Game, Player};
-        use crate::strategy::search::{SearchBot, SearchStats};
+        use crate::strategy::search::{SearchBot, SearchConfig, SearchStats};
         let device = burn::backend::ndarray::NdArrayDevice::Cpu;
         let model = PairModelConfig::new().init::<MyBackend>(&device);
 
         let mut players = Vec::new();
         let mut stats = Vec::new();
         for i in 0..2u64 {
-            let mut sb = SearchBot::new(PairStrategy::from_model(model.clone(), device));
+            let mut sb =
+                SearchBot::with_config(PairStrategy::from_model(model.clone(), device), SearchConfig::legacy());
             let st = std::rc::Rc::new(std::cell::RefCell::new(SearchStats::default()));
             sb.stats = Some(st.clone());
             stats.push(st);

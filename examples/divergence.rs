@@ -14,7 +14,7 @@ use qwixxer::game::{Game, Player};
 use qwixxer::state::{Mark, State};
 use qwixxer::strategy::bot_impl::{active_phase1_choices, active_phase2_choices, argmax, eval_decision, Decision};
 use qwixxer::strategy::search::{
-    context_seed, sample_player_seed, SearchBot, WinProb, GATE_MARGIN, HORIZON_ROUNDS, K_CANDIDATES, K_SAMPLES,
+    context_seed, sample_player_seed, SearchBot, SearchConfig, WinProb, GATE_MARGIN, HORIZON_ROUNDS, K_CANDIDATES, K_SAMPLES,
 };
 use qwixxer::strategy::sim::{BatchedRollouts, SimGame};
 use qwixxer::strategy::{Bot, Strategy};
@@ -605,7 +605,11 @@ impl std::fmt::Debug for ShadowPair {
 
 impl ShadowPair {
     fn new(template: &PairStrategy, events: Rc<RefCell<Vec<DecisionEvent>>>) -> Self {
-        let mut search = SearchBot::new(PairStrategy::from_shared(template.model.clone(), template.device));
+        // Phase 15 semantics: the pre-Phase-21 search (active-only, forced locks).
+        let mut search = SearchBot::with_config(
+            PairStrategy::from_shared(template.model.clone(), template.device),
+            SearchConfig::legacy(),
+        );
         search.force = true;
         ShadowPair {
             static_bot: PairStrategy::from_shared(template.model.clone(), template.device),

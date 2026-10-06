@@ -1543,7 +1543,7 @@ on fresh rollouts (flywheel), or accepting the ~60% structural ceiling.
 
 ## Phase 21: Search Improvements — Passive Search, Lock Adjudication, Stratified Dice
 
-**Status: complete — passive search + lock adjudication confirmed: 62.4% vs GA (+1.65pp); stratification dropped. Production default not yet switched.**
+**Status: complete — ADOPTED. Passive search + lock adjudication (62.4% vs GA, +1.65pp) is now the production `pair-search` default; stratification dropped.**
 
 Three changes to pair-search, each behind a `SearchConfig` flag (default =
 production, bench output verified byte-identical after every commit):
@@ -1636,6 +1636,18 @@ estimated at +0.1–0.3 and +0.2–0.4pp; the realized combined gain is about 3�
 the upper end, so the earlier "ceiling" reflected unsearched decisions, not
 dice luck.
 
-Open: switching the production `pair-search` default (affects the web build,
-where the extra ~1.65× cost runs in WASM), and whether the lock rule's
-adjudication should also replace the rule inside rollouts/distillation.
+### Adoption
+
+`SearchConfig::default()` is now `k=128,passive,lock=256` (`LOCK_K = 256`).
+Verified after the switch: `SearchConfig::legacy()` (`nopassive,nolock`)
+reproduces the old production bench byte-for-byte, and production vs
+`pair-search-exp` with `passive,lock=256` mirrors move-for-move.
+
+Pinned to `legacy()` so recorded results stay reproducible: the `pair-train
+--search` expert (Phase 14 recipe) and `examples/divergence.rs`'s shadow
+search (Phase 15). The web build does not use search, so it is unaffected.
+
+Follow-ups, not started: a distillation leg with the new search as the source
+of targets (searched passive decisions and adjudicated locks); tuning `lock_k`
+and the passive gate margin (reused from the active gate); 3–4 player benches,
+where passive decisions are an even larger share.

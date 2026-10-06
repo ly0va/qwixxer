@@ -268,10 +268,13 @@ docs/superpowers/specs/2026-06-11-expert-iteration-design.md.
 samples), `search_passive` (also search gated passive decisions via
 `passive_entry`), `lock_k` (adjudicate forced safe locks against the best
 non-lock alternative and runner-up lock by full-game rollouts), `stratify`
-(stratified first-roll white dice; did not help). `Default` = production.
+(stratified first-roll white dice; did not help). `Default` = production
+= `k=128,passive,lock=256` since Phase 21; `SearchConfig::legacy()` = the
+Phase 13–20 search (active-only, forced locks), still used by the
+`pair-train --search` expert and the divergence harness.
 Bench bots `pair-search-exp` / `pair-search-exp-b` read a spec such as
-`passive,lock=256` from `QWIXXER_SEARCH` / `QWIXXER_SEARCH_B`. Measured:
-`passive,lock=256` reaches 62.4% vs GA (EXPERIMENTS.md Phase 21).
+`nopassive,nolock` from `QWIXXER_SEARCH` / `QWIXXER_SEARCH_B`. Measured:
+production reaches 62.4% vs GA (legacy 60.7%; EXPERIMENTS.md Phase 21).
 
 ### Monte Carlo Tree Search (`mcts.rs`)
 
