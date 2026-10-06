@@ -1651,3 +1651,62 @@ Follow-ups, not started: a distillation leg with the new search as the source
 of targets (searched passive decisions and adjudicated locks); tuning `lock_k`
 and the passive gate margin (reused from the active gate); 3–4 player benches,
 where passive decisions are an even larger share.
+
+## Phase 22: Distillation leg 3 — passive targets
+
+**Status: run pending user execution (pre-registered below).**
+
+Phase 21's gain came from searching passive decisions, but distillation legs
+1–2 only emitted gated targets at *active* decisions (plus lock firings at
+all sites). Leg 3 adds the passive pool: `pair-train --distill-passive`
+captures gated passive decisions with the same gates as passive search and
+emits full-game rollout targets for the top-2 candidates through the shared
+`passive_entry` (commit `d2ee056`; tests
+`passive_gated_ctx_emits_via_passive_entry`,
+`passive_gated_capture_only_when_enabled`). Everything else is the leg-2
+pipeline, warm-started from the adopted iteration-57 checkpoint.
+
+**Concentration.** Smoke, 400 games: passive adds ~146 targets/game (active
+gated ~126). At the leg-2 `m_gated = 2` the distill share would be 51%; at
+`--distill-m 1` it is **37%** (lock 10%, active gated 13%, passive 15%),
+in line with leg 2's ~32–36%. The recipe uses m = 1; escalation to m = 2
+only if the curve is healthy and plateaus early.
+
+### Run recipe
+
+```bash
+# 0. Baseline on the current (iter-57) model BEFORE training overwrites it.
+cargo build --release
+./target/release/qwixxer bench pair-search ga -n 200000 -s 42 | tee leg3_baseline_search.txt
+
+# 1. Train (40 iterations, global 61–100).
+rm -f pair_model/iter-*.mpk
+./target/release/qwixxer pair-train --distill --distill-passive --distill-m 1 --epsilon-lock 0.10 \
+  -g 5000 -e 5 -b 500000 -c --start-iteration 60 | tee leg3_train.log
+```
+
+Generation is ~2× the leg-2 cost per game (35 s vs 19 s per 400 games on 12
+threads here).
+
+### Pre-registration
+
+- **Checkpoint selection:** best iteration on the per-iteration static
+  curve (as legs 1–2); confirm the top 2–3 candidates at 1M static vs GA
+  before choosing.
+- **Primary metric: production pair-search vs GA**, 200k games, seed 42,
+  selected checkpoint vs the step-0 baseline (paired SE ≈ 0.1pp).
+  **Adopt if ≥ +0.3pp** with non-overlapping 99% CIs.
+- **Guard:** static pair 1M vs GA (seed 42) must not regress below 59.85%
+  beyond CI overlap.
+- Expectation: legs 1–2 gave +0.5pp then +0.25pp static. The passive pool is
+  new and as large as the active pool was in leg 1, so the static gain could
+  look like leg 1's; how much of that survives under search, which already
+  searches those decisions, is the open question.
+
+### Post-run acceptance
+
+```bash
+cp pair_model/iter-N.mpk pair_model/model.mpk   # N = selected iteration
+./target/release/qwixxer bench ga pair -n 1000000 -s 42
+./target/release/qwixxer bench pair-search ga -n 200000 -s 42
+```
