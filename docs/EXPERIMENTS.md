@@ -1543,7 +1543,7 @@ on fresh rollouts (flywheel), or accepting the ~60% structural ceiling.
 
 ## Phase 21: Search Improvements — Passive Search, Lock Adjudication, Stratified Dice
 
-**Status: screens done (passive and lock pass, stratification fails); confirmation running.**
+**Status: complete — passive search + lock adjudication confirmed: 62.4% vs GA (+1.65pp); stratification dropped. Production default not yet switched.**
 
 Three changes to pair-search, each behind a `SearchConfig` flag (default =
 production, bench output verified byte-identical after every commit):
@@ -1613,3 +1613,29 @@ win rate).
 Deviation from the pre-registration: to save compute, confirmation runs on
 the **combined passive + lock** bot (`passive,lock=256`, no stratification)
 rather than on each arm separately.
+
+### Confirmation (50k games each)
+
+| test | result |
+|---|---|
+| production pair-search vs GA, seed 42 | 60.72% (CI 60.21–61.23) — reproduces the Phase 19 headline |
+| **`passive,lock=256` vs GA, seed 42 (same game set)** | **62.37% (CI 61.87–62.87), +1.65pp**; avg 75.9 vs GA 66.7 |
+| `passive,lock=256` vs production, seed 7 | 25,466 vs 23,591 (943 ties): **margin +3.75%, z ≈ 12.9** — replicates the +3.67% screen on an independent seed |
+| cost | 17 games/s vs GA (production 28): ~1.65× production |
+
+The two vs-GA runs share the dice set but are separate runs, so the
+difference is not paired; with per-run SE ≈ 0.2pp it is still ≈ 6σ and the
+99% CIs do not overlap.
+
+**Verdict: both pre-registered bars met** (head-to-head replicates at z ≫ 2;
+vs GA improves by +1.65pp, far above the +0.1pp aim). New strongest bot:
+**pair-search with passive search + lock adjudication, 62.4% vs GA** — the
+largest single step since Phase 12, and 1.65pp beyond the 60.7% that had been
+read as the edge of a structural ceiling. Note the two components were
+estimated at +0.1–0.3 and +0.2–0.4pp; the realized combined gain is about 3×
+the upper end, so the earlier "ceiling" reflected unsearched decisions, not
+dice luck.
+
+Open: switching the production `pair-search` default (affects the web build,
+where the extra ~1.65× cost runs in WASM), and whether the lock rule's
+adjudication should also replace the rule inside rollouts/distillation.

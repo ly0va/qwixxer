@@ -264,6 +264,15 @@ dedicated machine): 5k games/iter, 5 epochs, 500k-game per-iteration static
 benchmark (the primary metric; paired SE ~0.05%). Design doc:
 docs/superpowers/specs/2026-06-11-expert-iteration-design.md.
 
+**SearchConfig** (`strategy/search.rs`): `k_samples` (truncated-search
+samples), `search_passive` (also search gated passive decisions via
+`passive_entry`), `lock_k` (adjudicate forced safe locks against the best
+non-lock alternative and runner-up lock by full-game rollouts), `stratify`
+(stratified first-roll white dice; did not help). `Default` = production.
+Bench bots `pair-search-exp` / `pair-search-exp-b` read a spec such as
+`passive,lock=256` from `QWIXXER_SEARCH` / `QWIXXER_SEARCH_B`. Measured:
+`passive,lock=256` reaches 62.4% vs GA (EXPERIMENTS.md Phase 21).
+
 ### Monte Carlo Tree Search (`mcts.rs`)
 
 **`MonteCarlo`** runs `N` rollout simulations per candidate move (default 500). For each move:
