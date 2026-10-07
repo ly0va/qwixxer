@@ -24,6 +24,11 @@ enum BotType {
     /// Second experimental pair-search, configured by `QWIXXER_SEARCH_B`
     /// (for A/B benches between two non-production configs).
     PairSearchExpB,
+    /// Static pair bot with the model from the `QWIXXER_ALT_MODEL` directory
+    /// (for head-to-head checkpoint comparisons).
+    PairAlt,
+    /// Production pair-search on the `QWIXXER_ALT_MODEL` checkpoint.
+    PairSearchAlt,
     Mcts,
     Opportunist,
     Conservative,
@@ -39,6 +44,8 @@ impl std::fmt::Display for BotType {
             BotType::PairSearch => write!(f, "PAIR-SEARCH"),
             BotType::PairSearchExp => write!(f, "PAIR-SEARCH[{}]", exp_search_config("QWIXXER_SEARCH")),
             BotType::PairSearchExpB => write!(f, "PAIR-SEARCH-B[{}]", exp_search_config("QWIXXER_SEARCH_B")),
+            BotType::PairAlt => write!(f, "PAIR({})", alt_model_dir()),
+            BotType::PairSearchAlt => write!(f, "PAIR-SEARCH({})", alt_model_dir()),
             BotType::Mcts => write!(f, "MCTS"),
             BotType::Opportunist => write!(f, "Opportunist"),
             BotType::Conservative => write!(f, "Conservative"),
@@ -60,6 +67,10 @@ fn make_strategy(bot: &BotType) -> Box<dyn strategy::Strategy> {
         BotType::PairSearch => Box::new(strategy::search::SearchBot::new(dqn::pair::PairStrategy::load(
             "pair_model",
         ))),
+        BotType::PairAlt => Box::new(dqn::pair::PairStrategy::load(&alt_model_dir())),
+        BotType::PairSearchAlt => Box::new(strategy::search::SearchBot::new(dqn::pair::PairStrategy::load(
+            &alt_model_dir(),
+        ))),
         BotType::PairSearchExp | BotType::PairSearchExpB => Box::new(strategy::search::SearchBot::with_config(
             dqn::pair::PairStrategy::load("pair_model"),
             exp_search_config(exp_env(bot)),
@@ -73,6 +84,12 @@ fn make_strategy(bot: &BotType) -> Box<dyn strategy::Strategy> {
         BotType::Conservative => Box::<strategy::Conservative>::default(),
         BotType::Random => Box::new(strategy::Random),
     }
+}
+
+/// Model directory for `pair-alt` / `pair-search-alt`, from `QWIXXER_ALT_MODEL`.
+fn alt_model_dir() -> String {
+    std::env::var("QWIXXER_ALT_MODEL")
+        .expect("pair-alt / pair-search-alt need QWIXXER_ALT_MODEL=<dir containing model.mpk>")
 }
 
 /// Env var holding the `SearchConfig` spec of an experimental pair-search.
@@ -93,6 +110,7 @@ fn exp_search_config(var: &str) -> strategy::search::SearchConfig {
 struct StrategyTemplates {
     dqn: Option<dqn::DqnStrategy>,
     pair: Option<dqn::pair::PairStrategy>,
+    pair_alt: Option<dqn::pair::PairStrategy>,
     champion: Option<bot::DNA>,
 }
 
@@ -105,6 +123,9 @@ impl StrategyTemplates {
                 BotType::Pair | BotType::PairSearch | BotType::PairSearchExp | BotType::PairSearchExpB
             )
         });
+        let needs_pair_alt = bots
+            .iter()
+            .any(|b| matches!(b, BotType::PairAlt | BotType::PairSearchAlt));
         let needs_champion = bots.iter().any(|b| matches!(b, BotType::Ga | BotType::Mcts));
         let genes = Arc::new(bot::default_genes());
         StrategyTemplates {
@@ -115,6 +136,11 @@ impl StrategyTemplates {
             },
             pair: if needs_pair {
                 Some(dqn::pair::PairStrategy::load("pair_model"))
+            } else {
+                None
+            },
+            pair_alt: if needs_pair_alt {
+                Some(dqn::pair::PairStrategy::load(&alt_model_dir()))
             } else {
                 None
             },
@@ -150,6 +176,17 @@ impl StrategyTemplates {
                     dqn::pair::PairStrategy::from_shared(t.model.clone(), t.device.clone()),
                     exp_search_config(exp_env(bot)),
                 ))
+            }
+            BotType::PairAlt => {
+                let t = self.pair_alt.as_ref().unwrap();
+                Box::new(dqn::pair::PairStrategy::from_shared(t.model.clone(), t.device.clone()))
+            }
+            BotType::PairSearchAlt => {
+                let t = self.pair_alt.as_ref().unwrap();
+                Box::new(strategy::search::SearchBot::new(dqn::pair::PairStrategy::from_shared(
+                    t.model.clone(),
+                    t.device.clone(),
+                )))
             }
             BotType::Mcts => Box::new(mcts::MonteCarlo::with_ga(200, self.champion.as_ref().unwrap().clone())),
             BotType::Opportunist => Box::<strategy::Opportunist>::default(),
