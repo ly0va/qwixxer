@@ -28,8 +28,45 @@ pub const HORIZON_ROUNDS: usize = 1;
 /// Capability for search leaf scoring: a calibrated win probability, batched
 /// over independent (our_state, opp_states) groups in one inference call.
 pub trait WinProb: Bot {
+    /// z-score of the group's player finishing ahead of its leading
+    /// opponent (the win probability is Φ(z)), one per group.
+    fn win_z_multi(&self, groups: &[(&State, &[State])]) -> Vec<f32>;
+
     /// P(group's player finishes ahead of its leading opponent), one per group.
-    fn win_prob_multi(&self, groups: &[(&State, &[State])]) -> Vec<f32>;
+    fn win_prob_multi(&self, groups: &[(&State, &[State])]) -> Vec<f32> {
+        self.win_z_multi(groups).into_iter().map(phi).collect()
+    }
+}
+
+/// Leaf recalibration (Phase 23): the pair net's leaf probability Φ(z) is
+/// overconfident once a row is locked and ignores whose roll is next, so the
+/// leaf is scored as Φ(a·z + b) with `a` by lock state and `b` by side to move.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LeafCal {
+    /// z scale with no locked row.
+    pub a_free: f32,
+    /// z scale with a locked row.
+    pub a_lock: f32,
+    /// z shift when the leaf's player rolls next.
+    pub b_roll: f32,
+    /// z shift when an opponent rolls next.
+    pub b_wait: f32,
+}
+
+impl LeafCal {
+    /// Fitted by `examples/leaf_calibration` (40k static self-play games).
+    pub const FITTED: LeafCal = LeafCal {
+        a_free: 1.0,
+        a_lock: 0.75,
+        b_roll: 0.064,
+        b_wait: -0.056,
+    };
+
+    pub fn apply(&self, z: f32, locked: bool, to_roll: bool) -> f32 {
+        let a = if locked { self.a_lock } else { self.a_free };
+        let b = if to_roll { self.b_roll } else { self.b_wait };
+        phi(a * z + b)
+    }
 }
 
 /// Standard normal CDF via the Abramowitz–Stegun erf approximation
@@ -153,6 +190,8 @@ pub struct SearchConfig {
     /// Stratify each player's first rollout roll over the 36 ordered white
     /// pairs (exact balance when the sample count is a multiple of 36).
     pub stratify: bool,
+    /// Recalibrate leaf win probabilities (see [`LeafCal`]); `None` = raw.
+    pub leaf_cal: Option<LeafCal>,
 }
 
 /// Full-game rollouts per compared candidate at a forced safe lock.
@@ -165,6 +204,7 @@ impl Default for SearchConfig {
             search_passive: true,
             lock_k: Some(LOCK_K),
             stratify: false,
+            leaf_cal: None,
         }
     }
 }
@@ -195,11 +235,25 @@ impl SearchConfig {
                 None if tok == "strat" => cfg.stratify = true,
                 Some(("k", v)) => cfg.k_samples = num("k", v)?,
                 Some(("lock", v)) => cfg.lock_k = Some(num("lock", v)?),
-                _ => {
-                    return Err(format!(
-                        "unknown search option {tok:?} (passive, nopassive, lock=N, nolock, strat, k=N)"
-                    ))
+                None if tok == "leafcal" => cfg.leaf_cal = Some(LeafCal::FITTED),
+                Some(("leafcal", v)) => {
+                    let p: Vec<f32> = v
+                        .split('/')
+                        .map(|x| x.parse::<f32>().map_err(|e| format!("leafcal={v}: {e}")))
+                        .collect::<Result<_, _>>()?;
+                    let [a_free, a_lock, b_roll, b_wait] = p[..] else {
+                        return Err(format!("leafcal={v}: expected a_free/a_lock/b_roll/b_wait"));
+                    };
+                    cfg.leaf_cal = Some(LeafCal {
+                        a_free,
+                        a_lock,
+                        b_roll,
+                        b_wait,
+                    });
                 }
+                _ => return Err(format!(
+                    "unknown search option {tok:?} (passive, nopassive, lock=N, nolock, strat, k=N, leafcal[=a/a/b/b])"
+                )),
             }
         }
         Ok(cfg)
@@ -217,6 +271,9 @@ impl std::fmt::Display for SearchConfig {
         }
         if self.stratify {
             write!(f, ",strat")?;
+        }
+        if let Some(c) = self.leaf_cal {
+            write!(f, ",leafcal={}/{}/{}/{}", c.a_free, c.a_lock, c.b_roll, c.b_wait)?;
         }
         Ok(())
     }
@@ -537,7 +594,19 @@ impl<B: WinProb> SearchBot<B> {
             .zip(&survivor_views)
             .map(|(&i, view)| (&driver.sims[i].states[0], view.as_slice()))
             .collect();
-        let probs = self.bot.win_prob_multi(&groups);
+        let probs: Vec<f32> = match self.cfg.leaf_cal {
+            None => self.bot.win_prob_multi(&groups),
+            Some(cal) => self
+                .bot
+                .win_z_multi(&groups)
+                .into_iter()
+                .zip(&survivor_idx)
+                .map(|(z, &i)| {
+                    let sim = &driver.sims[i];
+                    cal.apply(z, sim.states[0].count_locked() >= 1, sim.active == 0)
+                })
+                .collect(),
+        };
         let mut prob_iter = probs.into_iter();
         for (i, sim) in driver.sims.iter().enumerate() {
             let p = if sim.over {
@@ -1207,6 +1276,7 @@ mod tests {
                 search_passive: true,
                 lock_k: Some(256),
                 stratify: true,
+                leaf_cal: None,
             }
         );
         assert_eq!(SearchConfig::parse(&cfg.to_string()), Ok(cfg));
@@ -1220,6 +1290,64 @@ mod tests {
         );
         assert!(SearchConfig::parse("bogus").is_err());
         assert!(SearchConfig::parse("k=abc").is_err());
+    }
+
+    #[test]
+    fn leaf_cal_rescales_and_shifts_z() {
+        let id = LeafCal {
+            a_free: 1.0,
+            a_lock: 1.0,
+            b_roll: 0.0,
+            b_wait: 0.0,
+        };
+        for z in [-2.0, 0.0, 0.7] {
+            assert_eq!(id.apply(z, true, false), phi(z));
+        }
+        let f = LeafCal::FITTED;
+        assert_eq!(f.apply(1.0, true, true), phi(0.75 + 0.064));
+        assert_eq!(f.apply(1.0, false, false), phi(1.0 - 0.056));
+        assert_eq!(f.apply(-2.0, true, false), phi(-1.5 - 0.056));
+    }
+
+    #[test]
+    fn leaf_cal_spec_round_trips() {
+        let cfg = SearchConfig::parse("leafcal").unwrap();
+        assert_eq!(cfg.leaf_cal, Some(LeafCal::FITTED));
+        assert_eq!(SearchConfig::parse(&cfg.to_string()), Ok(cfg));
+        let custom = SearchConfig::parse("leafcal=0.9/0.7/0.05/-0.04").unwrap();
+        assert_eq!(
+            custom.leaf_cal,
+            Some(LeafCal {
+                a_free: 0.9,
+                a_lock: 0.7,
+                b_roll: 0.05,
+                b_wait: -0.04,
+            })
+        );
+        assert_eq!(SearchConfig::parse(&custom.to_string()), Ok(custom));
+        assert_eq!(SearchConfig::default().leaf_cal, None);
+        assert!(SearchConfig::parse("leafcal=1/2").is_err());
+    }
+
+    #[test]
+    fn leaf_calibrated_search_is_deterministic() {
+        let cfg = SearchConfig {
+            leaf_cal: Some(LeafCal::FITTED),
+            ..Default::default()
+        };
+        let mut bot = SearchBot::with_config(test_bot(), cfg);
+        bot.force = true;
+        let state = State::default();
+        let opps = [State::default()];
+        let dice = [3, 4, 2, 3, 5, 1];
+        assert_eq!(
+            bot.active_phase1(&state, &opps, dice),
+            bot.active_phase1(&state, &opps, dice)
+        );
+        assert_eq!(
+            bot.passive_phase1(&state, &opps, dice, 0),
+            bot.passive_phase1(&state, &opps, dice, 0)
+        );
     }
 
     #[test]

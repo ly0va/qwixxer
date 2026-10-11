@@ -192,12 +192,7 @@ fn extract_linear(layer: &Linear<MyBackend>) -> (Vec<f32>, Vec<f32>, usize, usiz
 /// rows, locked flags) skip their contribution. `w` is input-major:
 /// `w[i * D_OUT..][..D_OUT]` are the weights input i contributes to every
 /// output.
-fn layer_forward<const D_IN: usize, const D_OUT: usize>(
-    x: &[f32; D_IN],
-    w: &[f32],
-    b: &[f32],
-    out: &mut [f32; D_OUT],
-) {
+fn layer_forward<const D_IN: usize, const D_OUT: usize>(x: &[f32; D_IN], w: &[f32], b: &[f32], out: &mut [f32; D_OUT]) {
     for t in 0..D_OUT / TILE {
         let mut acc: [f32; TILE] = b[t * TILE..(t + 1) * TILE].try_into().unwrap();
         for (i, &xi) in x.iter().enumerate() {
@@ -341,7 +336,7 @@ impl Bot for PairStrategy {
 }
 
 impl crate::strategy::search::WinProb for PairStrategy {
-    fn win_prob_multi(&self, groups: &[(&State, &[State])]) -> Vec<f32> {
+    fn win_z_multi(&self, groups: &[(&State, &[State])]) -> Vec<f32> {
         let default_opps = [State::default()];
         let mut feats = Vec::with_capacity(groups.len());
         let mut cdiffs = Vec::with_capacity(groups.len());
@@ -357,7 +352,7 @@ impl crate::strategy::search::WinProb for PairStrategy {
             .zip(cdiffs)
             .map(|((mu, log_var), cdiff)| {
                 let sigma = (0.5 * log_var.clamp(LOG_VAR_MIN, LOG_VAR_MAX)).exp();
-                crate::strategy::search::phi((cdiff + mu) / sigma)
+                (cdiff + mu) / sigma
             })
             .collect()
     }
@@ -545,6 +540,22 @@ mod tests {
         let bot = PairStrategy::from_model(PairModelConfig::new().init::<MyBackend>(&device), device);
         let v = bot.evaluate(&State::default(), &[]);
         assert!(v.is_finite());
+    }
+
+    #[test]
+    fn win_prob_is_phi_of_win_z() {
+        use crate::strategy::search::{phi, WinProb};
+        let device = burn::backend::ndarray::NdArrayDevice::Cpu;
+        let bot = PairStrategy::from_model(PairModelConfig::new().init::<MyBackend>(&device), device);
+        let mut a = State::default();
+        a.apply_mark(Mark { row: 0, number: 4 });
+        let b = State::default();
+        let groups: [(&State, &[State]); 2] = [(&a, &[b]), (&b, &[a])];
+        let zs = bot.win_z_multi(&groups);
+        let ps = bot.win_prob_multi(&groups);
+        for (z, p) in zs.iter().zip(&ps) {
+            assert_eq!(phi(*z), *p);
+        }
     }
 
     #[test]
