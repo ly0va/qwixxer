@@ -305,6 +305,10 @@ enum Commands {
         /// which production search searches since Phase 21
         #[arg(long)]
         distill_passive: bool,
+        /// Per-iteration bench: static head-to-head against the pair model in
+        /// this directory instead of vs GA
+        #[arg(long)]
+        bench_ref: Option<String>,
     },
     /// Convert a 45-input pair model to the 59-input layout (lossless)
     PairMigrate {
@@ -759,6 +763,7 @@ fn main() {
             distill_m_lock,
             epsilon_lock,
             distill_passive,
+            bench_ref,
         }) => dqn::pair_train::self_play_train(
             "pair_model",
             iterations,
@@ -776,6 +781,7 @@ fn main() {
                 epsilon_lock,
                 passive: distill_passive,
             },
+            bench_ref,
         ),
         Some(Commands::PairMigrate { from, to }) => dqn::pair::migrate_dir(&from, &to),
         None => {

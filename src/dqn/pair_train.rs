@@ -1102,6 +1102,48 @@ fn benchmark_vs_ga(artifact_dir: &str, champion: &DNA, num_games: usize) -> f64 
     wins as f64 / num_games as f64
 }
 
+/// Static head-to-head of the model in `artifact_dir` against the reference
+/// model in `ref_dir`: paired dice, seat rotation, tie-inclusive score
+/// (win 1, tie 0.5) of the current model.
+fn benchmark_vs_ref(artifact_dir: &str, ref_dir: &str, num_games: usize) -> f64 {
+    use crate::game::{Game, Player};
+
+    let points: f64 = (0..num_games)
+        .into_par_iter()
+        .map_init(
+            || (PairStrategy::load(artifact_dir), PairStrategy::load(ref_dir)),
+            |templates, i| {
+                let (cur, reference) = &*templates;
+                let me = PairStrategy::from_shared(cur.model.clone(), cur.device.clone());
+                let them = PairStrategy::from_shared(reference.model.clone(), reference.device.clone());
+                let pair = (i / 2) as u64;
+                let rotation = i % 2;
+                let seat_dice = |seat: u64| Box::new(SmallRng::seed_from_u64(BENCH_SEED.wrapping_add(pair * 2 + seat)));
+                let players: Vec<Player> = if rotation == 0 {
+                    vec![
+                        Player::new(Box::new(me), seat_dice(0)),
+                        Player::new(Box::new(them), seat_dice(1)),
+                    ]
+                } else {
+                    vec![
+                        Player::new(Box::new(them), seat_dice(0)),
+                        Player::new(Box::new(me), seat_dice(1)),
+                    ]
+                };
+                let mut game = Game::new(players);
+                game.play();
+                let s: Vec<isize> = game.players.iter().map(|p| p.state.count_points()).collect();
+                match s[rotation].cmp(&s[1 - rotation]) {
+                    std::cmp::Ordering::Greater => 1.0,
+                    std::cmp::Ordering::Equal => 0.5,
+                    std::cmp::Ordering::Less => 0.0,
+                }
+            },
+        )
+        .sum();
+    points / num_games as f64
+}
+
 pub fn self_play_train(
     artifact_dir: &str,
     num_iterations: usize,
@@ -1112,6 +1154,7 @@ pub fn self_play_train(
     start_iteration: usize,
     search: bool,
     distill: DistillCfg,
+    bench_ref: Option<String>,
 ) {
     let device = burn::backend::ndarray::NdArrayDevice::Cpu;
     MyBackend::seed(&device, TRAIN_SEED);
@@ -1219,9 +1262,18 @@ pub fn self_play_train(
 
         use std::io::Write;
         let winrate_opt = if bench_games > 0 {
-            let winrate = benchmark_vs_ga(artifact_dir, &champion, bench_games);
+            let (winrate, label) = match &bench_ref {
+                Some(r) => (
+                    benchmark_vs_ref(artifact_dir, r, bench_games),
+                    format!("h2h score vs {r}"),
+                ),
+                None => (
+                    benchmark_vs_ga(artifact_dir, &champion, bench_games),
+                    "winrate vs GA".to_string(),
+                ),
+            };
             println!(
-                "  Iteration {:>3}: avg score {:.1}, winrate {:.1}%, elapsed {}m{}s",
+                "  Iteration {:>3}: avg score {:.1}, {label} {:.1}%, elapsed {}m{}s",
                 global_iter + 1,
                 avg_score,
                 winrate * 100.0,
@@ -1960,5 +2012,20 @@ mod tests {
         // offset 2; o2 itself is the active, pending player.
         let own = pair_features(&o2, 0, &[us, o1], EvalClock::mid_turn(3, 0));
         assert_eq!(swapped, own);
+    }
+
+    #[test]
+    fn bench_vs_ref_is_exactly_even_against_itself() {
+        let dir = std::env::temp_dir().join(format!("qwixxer-bench-ref-{}", std::process::id()));
+        let dir = dir.to_str().unwrap().to_string();
+        let device = burn::backend::ndarray::NdArrayDevice::Cpu;
+        std::fs::create_dir_all(&dir).unwrap();
+        PairModelConfig::new()
+            .init::<MyBackend>(&device)
+            .save_file(format!("{dir}/model"), &CompactRecorder::new())
+            .unwrap();
+        // Paired dice + seat rotation: a model against itself mirrors exactly.
+        assert_eq!(benchmark_vs_ref(&dir, &dir, 40), 0.5);
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
