@@ -1779,3 +1779,48 @@ checkpoint selection should move off the vs-GA curve for the same reason.
 
 **Headline after Phase 22:** static pair 60.1% vs GA; production pair-search
 62.4% vs GA (unchanged), stronger head-to-head than the iter-57 pair-search.
+
+## Phase 23: Leaf Calibration — measured miscalibration, no playing gain
+
+**Status: complete — NO-GO; `leaf_cal` stays off (code kept behind the flag).**
+
+### Diagnostic (`examples/leaf_calibration.rs`)
+
+Static-pair Lite self-play (search's own rollout policy). At every turn start
+both players' leaf values Φ((cdiff + μ)/σ) are recorded with the final
+outcome (ties ½); reliability tables plus a Φ(a·z + b) recalibration fit,
+where a = 1, b = 0 means calibrated. 40k games, ~1.9M observations:
+
+| cell | a | b |
+|---|---|---|
+| no locked row, about to roll | 0.994 | +0.066 |
+| no locked row, opponent to roll | 0.996 | −0.058 |
+| locked row, about to roll | **0.750** | +0.062 |
+| locked row, opponent to roll | **0.747** | −0.053 |
+
+Two real effects: **overconfidence once a row is locked** (z about 25% too
+large; e.g. predicted 0.85 → observed 0.80 overall) and a **±2pp side-to-move
+bias** (the pair features carry no turn indicator, so the net averages over
+whose roll is next). Early-game leaves are calibrated.
+
+### Screen
+
+`SearchConfig::leaf_cal` (spec `leafcal`; `WinProb::win_z_multi` added,
+`win_prob_multi` now its Φ — bit-identical) scores surviving rollouts with
+Φ(a·z + b) using the fitted cells (a = 1.0 / 0.75, b = +0.064 / −0.056).
+
+| arm (20k, seed 42, head-to-head) | A wins | B wins | ties | margin | z |
+|---|---|---|---|---|---|
+| `leafcal` vs production | 9,790 | 9,810 | 400 | −0.10% | −0.4 |
+
+93% of dice pairings played identically: the correction rarely changes a
+decision and gains nothing when it does. Within a decision all candidates'
+leaves sit at the same side to move, so the shift largely cancels, and
+rescaling z only reorders candidate averages to second order.
+
+### Takeaways
+
+- Calibration error in the leaf is real but not decision-relevant for search.
+- This weakens the search-side case for a "who rolls next" input feature. The
+  training-side case (TD targets bootstrap across decision points with
+  different sides to move) is untested.
