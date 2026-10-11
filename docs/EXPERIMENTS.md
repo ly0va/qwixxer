@@ -1824,3 +1824,19 @@ rescaling z only reorders candidate averages to second order.
 - This weakens the search-side case for a "who rolls next" input feature. The
   training-side case (TD targets bootstrap across decision points with
   different sides to move) is untested.
+
+### Addendum: search budget k = 256 (user bench)
+
+`k=256,passive,lock=256` vs GA (seed 42): **62.4%**, unchanged from
+production k = 128 (user bench; output not retained). Consistent with Phase
+13's +0.3% head-to-head margin for 128 → 256, which corresponds to ~+0.1pp vs
+GA — below that bench's resolution (SE ≈ 0.2pp at 50k). A head-to-head test
+would need ~100k games (k = 256 changes many decisions, so the paired SE is
+large), and at best buys ~+0.1pp for 2× search cost. **Dropped**, along with
+adaptive sampling (whose purpose was to buy the same gain cheaper).
+
+**Search-side status after Phases 21–23:** the large pools (passive search,
+lock adjudication) are harvested; variance reduction (stratification), leaf
+calibration and more samples are all flat. Remaining headroom for pair-search
+lies in the value net itself (inputs, capacity), with the Phase 22 caveat
+that static gains need not transfer to search.
