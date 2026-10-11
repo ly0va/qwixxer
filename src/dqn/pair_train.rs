@@ -1100,13 +1100,54 @@ fn benchmark_vs_ga(artifact_dir: &str, champion: &DNA, num_games: usize) -> f64 
     wins as f64 / num_games as f64
 }
 
+/// Head-to-head summary over seat-swapped dice pairs, the independent
+/// sampling unit: tie-inclusive score of the current model, and the SE of
+/// that score across pairs.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct H2h {
+    score: f64,
+    se: f64,
+}
+
+impl H2h {
+    /// `points[i]` = the current model's points (win 1, tie 0.5) over pair i's two games.
+    fn from_pair_points(points: &[f64]) -> Self {
+        let n = points.len() as f64;
+        let means: Vec<f64> = points.iter().map(|p| p / 2.0).collect();
+        let score = means.iter().sum::<f64>() / n;
+        let var = if points.len() > 1 {
+            means.iter().map(|m| (m - score).powi(2)).sum::<f64>() / (n - 1.0)
+        } else {
+            0.0
+        };
+        H2h {
+            score,
+            se: (var / n).sqrt(),
+        }
+    }
+
+    /// (wins − losses) / games.
+    fn margin(&self) -> f64 {
+        2.0 * self.score - 1.0
+    }
+
+    /// z of the score against an even 0.5 (0 when there is no spread).
+    fn z(&self) -> f64 {
+        if self.se > 0.0 {
+            (self.score - 0.5) / self.se
+        } else {
+            0.0
+        }
+    }
+}
+
 /// Static head-to-head of the model in `artifact_dir` against the reference
 /// model in `ref_dir`: paired dice, seat rotation, tie-inclusive score
 /// (win 1, tie 0.5) of the current model.
-fn benchmark_vs_ref(artifact_dir: &str, ref_dir: &str, num_games: usize) -> f64 {
+fn benchmark_vs_ref(artifact_dir: &str, ref_dir: &str, num_games: usize) -> H2h {
     use crate::game::{Game, Player};
 
-    let points: f64 = (0..num_games)
+    let points: Vec<f64> = (0..num_games)
         .into_par_iter()
         .map_init(
             || (PairStrategy::load(artifact_dir), PairStrategy::load(ref_dir)),
@@ -1138,8 +1179,10 @@ fn benchmark_vs_ref(artifact_dir: &str, ref_dir: &str, num_games: usize) -> f64 
                 }
             },
         )
-        .sum();
-    points / num_games as f64
+        .collect();
+    // Seat-swapped dice pairs are the independent unit (a trailing odd game is dropped).
+    let pair_points: Vec<f64> = points.chunks_exact(2).map(|p| p[0] + p[1]).collect();
+    H2h::from_pair_points(&pair_points)
 }
 
 pub fn self_play_train(
@@ -1261,10 +1304,17 @@ pub fn self_play_train(
         use std::io::Write;
         let winrate_opt = if bench_games > 0 {
             let (winrate, label) = match &bench_ref {
-                Some(r) => (
-                    benchmark_vs_ref(artifact_dir, r, bench_games),
-                    format!("h2h score vs {r}"),
-                ),
+                Some(r) => {
+                    let h = benchmark_vs_ref(artifact_dir, r, bench_games);
+                    (
+                        h.score,
+                        format!(
+                            "h2h vs {r}: margin {:+.2}% (z {:+.1}), score",
+                            100.0 * h.margin(),
+                            h.z()
+                        ),
+                    )
+                }
                 None => (
                     benchmark_vs_ga(artifact_dir, &champion, bench_games),
                     "winrate vs GA".to_string(),
@@ -2024,7 +2074,21 @@ mod tests {
             .save_file(format!("{dir}/model"), &CompactRecorder::new())
             .unwrap();
         // Paired dice + seat rotation: a model against itself mirrors exactly.
-        assert_eq!(benchmark_vs_ref(&dir, &dir, 40), 0.5);
+        assert_eq!(benchmark_vs_ref(&dir, &dir, 40).score, 0.5);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn h2h_summary_reports_score_margin_and_z_over_pairs() {
+        // Points per seat-swapped pair (0..=2): [2, 2, 1, 1] → score 0.75.
+        let h = H2h::from_pair_points(&[2.0, 2.0, 1.0, 1.0]);
+        assert!((h.score - 0.75).abs() < 1e-12);
+        assert!((h.margin() - 0.5).abs() < 1e-12);
+        // Pair means [1, 1, 0.5, 0.5]: sample sd 0.2887, SE 0.1443, z 1.732.
+        assert!((h.se - 0.288_675_134_6 / 2.0).abs() < 1e-9);
+        assert!((h.z() - 1.732_050_808).abs() < 1e-6);
+        // Perfect mirrors: no spread, z reported as 0, not NaN.
+        let even = H2h::from_pair_points(&[1.0; 8]);
+        assert_eq!((even.score, even.se, even.z()), (0.5, 0.0, 0.0));
     }
 }
