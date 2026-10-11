@@ -11,7 +11,7 @@ use super::{
     aggregate_weighted_probability, lockable_rows, row_progress, total_progress, MyBackend, LOG_VAR_MAX, LOG_VAR_MIN,
 };
 use crate::state::State;
-use crate::strategy::{Bot, EvalClock};
+use crate::strategy::{BoardClock, Bot, EvalClock};
 use burn::{
     nn::{Linear, LinearConfig, Relu},
     prelude::*,
@@ -19,16 +19,20 @@ use burn::{
 };
 use std::sync::Arc;
 
-/// Per-board feature block size.
-pub const BOARD_FEATURES: usize = 20;
+/// Per-board feature block size: the original 20, then turns-until-roll,
+/// colour-phase-pending, P(forced strike) and 4 per-row lock threats.
+pub const BOARD_FEATURES: usize = 27;
 /// Full pair input: two board blocks + 5 pair-level features.
-pub const PAIR_FEATURES: usize = 45;
+pub const PAIR_FEATURES: usize = 59;
+/// Index of the first pair-level feature.
+pub const PAIR_LEVEL: usize = 2 * BOARD_FEATURES;
+const _: () = assert!(PAIR_FEATURES == 59, "PairModelConfig's `input` default must match");
 
 /// Per-board feature block. Same layout as the old net's per-board features,
 /// plus per-board aggregates, and with the lock-rule fix: a free pointer
 /// sitting on the row's terminal number (12/2) cannot be marked while the row
 /// has <5 marks, so it contributes 0 to the weighted probability.
-pub fn board_features(state: &State) -> [f32; BOARD_FEATURES] {
+pub fn board_features(state: &State, clock: BoardClock, others: &[&State]) -> [f32; BOARD_FEATURES] {
     let totals = state.row_totals();
     let frees = state.row_free_values();
     let locked = state.locked();
@@ -51,30 +55,62 @@ pub fn board_features(state: &State) -> [f32; BOARD_FEATURES] {
     f[17] = state.blanks() as f32 / 40.0;
     f[18] = aggregate_weighted_probability(state);
     f[19] = lockable_rows(state) as f32 / 4.0;
+    // Turn position (spec 2026-10-12 §1) and dice-only threats.
+    f[20] = (clock.rolls_in as f32 / 3.0).min(1.0);
+    f[21] = if clock.pending { 1.0 } else { 0.0 };
+    f[22] = crate::threat::forced_strike_prob(state);
+    f[23..27].copy_from_slice(&crate::threat::lock_threats(state, others));
     f
 }
 
-/// Full pair input. `paired` must be one of `all_opps` (the opponent we are
-/// being compared against); `all_opps` are ALL opponents of the `our` player —
-/// the pair-level features 42–44 are computed over all of them (uniform
-/// semantics in 1v1 and multiplayer; redundant with the opp block in 1v1).
+/// Full pair input for `our` against `paired = opps[paired_idx]`. `opps` are
+/// ALL opponents of `our` (the pair-level features 54–58 are computed over all
+/// of them; redundant with the opponent block in 1v1). `clock.opps` is aligned
+/// with `opps`. Every board's threat inputs use all *other* players, so the
+/// result does not depend on the order of `opps`.
 ///
-/// Layout: `[our 20 | paired 20 | cdiff/100, num_opps/4, max opp progress,
+/// Layout: `[our 27 | paired 27 | cdiff/100, num_opps/4, max opp progress,
 /// max opp strikes/3, opp lockable-rows sum/8]`.
-pub fn pair_features(our: &State, paired: &State, all_opps: &[State]) -> [f32; PAIR_FEATURES] {
-    // Invariant: `paired` must be one of `all_opps`.
-    debug_assert!(all_opps.contains(paired));
+pub fn pair_features(our: &State, paired_idx: usize, opps: &[State], clock: EvalClock) -> [f32; PAIR_FEATURES] {
+    assert!(
+        opps.len() < crate::strategy::clock::MAX_PLAYERS,
+        "pair features support up to 4 players"
+    );
+    let paired = &opps[paired_idx];
+    let mut ours_others: [&State; 3] = [our; 3];
+    for (i, o) in opps.iter().enumerate() {
+        ours_others[i] = o;
+    }
+    let mut theirs_others: [&State; 3] = [our; 3];
+    let mut m = 1;
+    for (j, o) in opps.iter().enumerate() {
+        if j != paired_idx {
+            theirs_others[m] = o;
+            m += 1;
+        }
+    }
     let mut f = [0.0f32; PAIR_FEATURES];
-    f[..BOARD_FEATURES].copy_from_slice(&board_features(our));
-    f[BOARD_FEATURES..2 * BOARD_FEATURES].copy_from_slice(&board_features(paired));
+    f[..BOARD_FEATURES].copy_from_slice(&board_features(our, clock.us, &ours_others[..opps.len()]));
+    f[BOARD_FEATURES..PAIR_LEVEL].copy_from_slice(&board_features(paired, clock.opp(paired_idx), &theirs_others[..m]));
 
     let cdiff = (our.count_points() - paired.count_points()) as f32;
-    f[40] = (cdiff / 100.0).clamp(-1.0, 1.0);
-    f[41] = all_opps.len() as f32 / 4.0;
-    f[42] = all_opps.iter().map(total_progress).fold(0.0, f32::max);
-    f[43] = all_opps.iter().map(|s| s.strikes).max().unwrap_or(0) as f32 / 3.0;
-    f[44] = all_opps.iter().map(lockable_rows).sum::<u8>() as f32 / 8.0;
+    f[PAIR_LEVEL] = (cdiff / 100.0).clamp(-1.0, 1.0);
+    f[PAIR_LEVEL + 1] = opps.len() as f32 / 4.0;
+    f[PAIR_LEVEL + 2] = opps.iter().map(total_progress).fold(0.0, f32::max);
+    f[PAIR_LEVEL + 3] = opps.iter().map(|s| s.strikes).max().unwrap_or(0) as f32 / 3.0;
+    f[PAIR_LEVEL + 4] = opps.iter().map(lockable_rows).sum::<u8>() as f32 / 8.0;
     f
+}
+
+/// Panic with the migration command if `model` was built for another input size.
+pub fn check_input_dims<B: Backend>(model: &PairModel<B>, dir: &str) {
+    let d_in = model.layer1.weight.dims()[0];
+    if d_in != PAIR_FEATURES {
+        panic!(
+            "pair model in {dir} has {d_in} inputs but this build expects {PAIR_FEATURES}; \
+             convert it with `qwixxer pair-migrate --from {dir} --to <new dir>`"
+        );
+    }
 }
 
 // ---- Model ----
@@ -94,14 +130,15 @@ pub struct PairModelConfig {
     pub hidden1: usize,
     #[config(default = 64)]
     pub hidden2: usize,
+    /// Input size; older checkpoints (45) are loaded only by `pair-migrate`.
+    #[config(default = 59)]
+    pub input: usize,
 }
 
 impl PairModelConfig {
     pub fn init<B: Backend>(&self, device: &B::Device) -> PairModel<B> {
         PairModel {
-            layer1: LinearConfig::new(PAIR_FEATURES, self.hidden1)
-                .with_bias(true)
-                .init(device),
+            layer1: LinearConfig::new(self.input, self.hidden1).with_bias(true).init(device),
             layer2: LinearConfig::new(self.hidden1, self.hidden2)
                 .with_bias(true)
                 .init(device),
@@ -273,7 +310,13 @@ impl PairStrategy {
         let model = PairModelConfig::new()
             .init::<MyBackend>(&device)
             .load_file(format!("{artifact_dir}/model"), &CompactRecorder::new(), &device)
-            .expect("Failed to load pair model");
+            .unwrap_or_else(|e| {
+                panic!(
+                    "failed to load pair model from {artifact_dir}: {e} \
+                     (a model from before the 59-input layout needs `qwixxer pair-migrate`)"
+                )
+            });
+        check_input_dims(&model, artifact_dir);
         Self::from_model(model, device)
     }
 
@@ -302,7 +345,7 @@ impl Bot for PairStrategy {
         let default_opps = [State::default()];
         let mut leaders: Vec<isize> = Vec::with_capacity(groups.len());
         let mut feats: Vec<[f32; PAIR_FEATURES]> = Vec::new();
-        for (candidates, opp_states, _clock) in groups {
+        for (candidates, opp_states, clock) in groups {
             // Solo fallback: rank against an empty default board. Solo play is
             // officially unsupported for the pair bot (the old DQN covers it).
             let opps: &[State] = if opp_states.is_empty() {
@@ -310,11 +353,12 @@ impl Bot for PairStrategy {
             } else {
                 opp_states
             };
-            let leader = opps.iter().max_by_key(|s| s.count_points()).unwrap();
+            // Same tie-breaking as before (`max_by_key` keeps the last maximum).
+            let leader = (0..opps.len()).max_by_key(|&i| opps[i].count_points()).unwrap();
             for c in *candidates {
-                feats.push(pair_features(c, leader, opps));
+                feats.push(pair_features(c, leader, opps, *clock));
             }
-            leaders.push(leader.count_points());
+            leaders.push(opps[leader].count_points());
         }
         let values = self.net.forward(&feats);
 
@@ -342,11 +386,11 @@ impl crate::strategy::search::WinProb for PairStrategy {
         let default_opps = [State::default()];
         let mut feats = Vec::with_capacity(groups.len());
         let mut cdiffs = Vec::with_capacity(groups.len());
-        for (our, opps, _clock) in groups {
+        for (our, opps, clock) in groups {
             let opps: &[State] = if opps.is_empty() { &default_opps } else { opps };
-            let leader = opps.iter().max_by_key(|s| s.count_points()).unwrap();
-            feats.push(pair_features(our, leader, opps));
-            cdiffs.push((our.count_points() - leader.count_points()) as f32);
+            let leader = (0..opps.len()).max_by_key(|&i| opps[i].count_points()).unwrap();
+            feats.push(pair_features(our, leader, opps, *clock));
+            cdiffs.push((our.count_points() - opps[leader].count_points()) as f32);
         }
         self.net
             .forward(&feats)
@@ -374,7 +418,7 @@ mod tests {
         }
         assert_eq!(s.row_free_values()[0], Some(12));
         assert_eq!(s.row_totals()[0], 3);
-        let f = board_features(&s);
+        let f = board_features(&s, BoardClock::default(), &[]);
         assert_eq!(f[12], 0.0, "terminal with <5 marks must contribute 0 ways");
 
         // A reachable state with 5 marks whose free pointer rests on the
@@ -387,7 +431,7 @@ mod tests {
         }
         assert_eq!(s.row_free_values()[0], Some(12));
         assert_eq!(s.row_totals()[0], 5);
-        let f = board_features(&s);
+        let f = board_features(&s, BoardClock::default(), &[]);
         assert!(f[12] > 0.0);
 
         // Row 2 (descending): descending rows mark high->low, so mark
@@ -398,7 +442,7 @@ mod tests {
         }
         assert_eq!(s.row_free_values()[2], Some(2));
         assert_eq!(s.row_totals()[2], 3);
-        let f = board_features(&s);
+        let f = board_features(&s, BoardClock::default(), &[]);
         assert_eq!(f[14], 0.0, "descending terminal with <5 marks must contribute 0 ways");
     }
 
@@ -406,10 +450,18 @@ mod tests {
     fn pair_features_fresh_1v1_golden() {
         let a = State::default();
         let b = State::default();
-        let f = pair_features(&a, &b, &[b]);
+        let f = pair_features(&a, 0, &[b], EvalClock::after_own_turn(2));
 
-        // Both board blocks identical for fresh boards.
-        assert_eq!(f[..BOARD_FEATURES], f[BOARD_FEATURES..2 * BOARD_FEATURES]);
+        // Both board blocks identical for fresh boards, except turn position:
+        // after our turn the opponent rolls next (0) and we roll in 1.
+        assert_eq!(f[..20], f[BOARD_FEATURES..BOARD_FEATURES + 20]);
+        assert_eq!(f[21..BOARD_FEATURES], f[BOARD_FEATURES + 21..PAIR_LEVEL]);
+        assert!((f[20] - 1.0 / 3.0).abs() < 1e-6);
+        assert_eq!(f[BOARD_FEATURES + 20], 0.0);
+        // Nothing pending; forced-strike risk of a fresh board; nobody can lock.
+        assert_eq!(f[21], 0.0);
+        assert_eq!(f[22], crate::threat::forced_strike_prob(&a));
+        assert_eq!(f[23..27], [0.0; 4]);
         // Fresh rows: progress 0, marks 0, not locked.
         for i in 0..4 {
             assert_eq!(f[i], 0.0);
@@ -426,11 +478,11 @@ mod tests {
         assert!(f[18] > 0.0); // aggregate wprob
         assert_eq!(f[19], 0.0); // lockable rows
                                 // Pair-level: equal scores, 1 opponent, fresh opponent stats.
-        assert_eq!(f[40], 0.0);
-        assert_eq!(f[41], 0.25);
-        assert_eq!(f[42], 0.0);
-        assert_eq!(f[43], 0.0);
-        assert_eq!(f[44], 0.0);
+        assert_eq!(f[PAIR_LEVEL], 0.0);
+        assert_eq!(f[PAIR_LEVEL + 1], 0.25);
+        assert_eq!(f[PAIR_LEVEL + 2], 0.0);
+        assert_eq!(f[PAIR_LEVEL + 3], 0.0);
+        assert_eq!(f[PAIR_LEVEL + 4], 0.0);
     }
 
     #[test]
@@ -443,19 +495,20 @@ mod tests {
         a.apply_strike();
         let b = State::default();
 
-        let ab = pair_features(&a, &b, &[b]);
-        let ba = pair_features(&b, &a, &[a]);
+        let clock = EvalClock::after_own_turn(2);
+        let ab = pair_features(&a, 0, &[b], clock);
+        let ba = pair_features(&b, 0, &[a], clock.reframe_to_opp(0, 1));
 
-        // Board blocks exchange.
-        assert_eq!(ab[..BOARD_FEATURES], ba[BOARD_FEATURES..2 * BOARD_FEATURES]);
-        assert_eq!(ab[BOARD_FEATURES..2 * BOARD_FEATURES], ba[..BOARD_FEATURES]);
+        // Board blocks exchange (each board keeps its own clock).
+        assert_eq!(ab[..BOARD_FEATURES], ba[BOARD_FEATURES..PAIR_LEVEL]);
+        assert_eq!(ab[BOARD_FEATURES..PAIR_LEVEL], ba[..BOARD_FEATURES]);
         // current_diff negates.
-        assert!((ab[40] + ba[40]).abs() < 1e-6);
-        assert!(ab[40] != 0.0);
+        assert!((ab[PAIR_LEVEL] + ba[PAIR_LEVEL]).abs() < 1e-6);
+        assert!(ab[PAIR_LEVEL] != 0.0);
         // Opponent summaries describe the respective opponent.
-        assert_eq!(ab[42], 0.0); // A's opponent (B) is fresh
-        assert!((ba[42] - total_progress(&a)).abs() < 1e-6);
-        assert!((ba[43] - 1.0 / 3.0).abs() < 1e-6); // A has 1 strike
+        assert_eq!(ab[PAIR_LEVEL + 2], 0.0); // A's opponent (B) is fresh
+        assert!((ba[PAIR_LEVEL + 2] - total_progress(&a)).abs() < 1e-6);
+        assert!((ba[PAIR_LEVEL + 3] - 1.0 / 3.0).abs() < 1e-6); // A has 1 strike
     }
 
     #[test]
@@ -490,9 +543,9 @@ mod tests {
         let mut b = State::default();
         b.apply_mark(Mark { row: 3, number: 8 });
         let mut rows = vec![
-            pair_features(&a, &b, &[b]),
-            pair_features(&b, &a, &[a]),
-            pair_features(&State::default(), &a, &[a, b]),
+            pair_features(&a, 0, &[b], EvalClock::after_own_turn(2)),
+            pair_features(&b, 0, &[a], EvalClock::mid_turn(2, 1)),
+            pair_features(&State::default(), 0, &[a, b], EvalClock::mid_turn(3, 2)),
         ];
         for k in 0..8 {
             let mut f = [0.0f32; PAIR_FEATURES];
@@ -582,5 +635,43 @@ mod tests {
         assert!(p.iter().all(|x| (0.0..=1.0).contains(x)));
         // A 28-point lead with the same opponent must not be rated worse.
         assert!(p[1] >= p[0]);
+    }
+
+    use crate::strategy::BoardClock;
+
+    #[test]
+    fn new_board_inputs_are_appended() {
+        let s = State::from_parts(1, [(5, Some(11)), (0, Some(2)), (0, Some(12)), (0, Some(12))]);
+        let other = State::from_parts(0, [(6, Some(12)), (0, Some(2)), (0, Some(12)), (0, Some(12))]);
+        let clock = BoardClock {
+            rolls_in: 2,
+            pending: true,
+        };
+        let f = board_features(&s, clock, &[&other]);
+        assert_eq!(f[20], 2.0 / 3.0);
+        assert_eq!(f[21], 1.0);
+        assert_eq!(f[22], crate::threat::forced_strike_prob(&s));
+        assert_eq!(f[23..27], crate::threat::lock_threats(&s, &[&other]));
+        assert!(f[23] > 0.0, "other player can lock red");
+    }
+
+    #[test]
+    fn pair_features_are_invariant_to_opponent_order() {
+        let a = State::from_parts(0, [(3, Some(7)), (0, Some(2)), (5, Some(4)), (0, Some(12))]);
+        let b = State::from_parts(1, [(5, Some(12)), (2, Some(5)), (0, Some(12)), (1, Some(10))]);
+        let c = State::from_parts(0, [(1, Some(4)), (6, Some(11)), (2, Some(9)), (0, Some(12))]);
+        let clock = EvalClock::mid_turn(3, 2);
+        let f1 = pair_features(&a, 0, &[b, c], clock);
+        let swapped = EvalClock::from_boards(clock.us, &[clock.opp(1), clock.opp(0)]);
+        let f2 = pair_features(&a, 1, &[c, b], swapped);
+        assert_eq!(f1, f2);
+    }
+
+    #[test]
+    #[should_panic(expected = "pair-migrate")]
+    fn loading_an_old_45_input_model_names_the_migration() {
+        let device = burn::backend::ndarray::NdArrayDevice::Cpu;
+        let old = PairModelConfig::new().with_input(45).init::<MyBackend>(&device);
+        check_input_dims(&old, "some_dir");
     }
 }

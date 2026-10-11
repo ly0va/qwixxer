@@ -115,13 +115,19 @@ pub fn lock_threats(board: &State, others: &[&State]) -> [f32; 4] {
         }
         let term = State::row_terminal(r);
         let any_white = others.iter().any(|s| s.can_mark(r, term));
-        // Board's own roll: only others' white-sum locks (P(sum = terminal) = 1/36).
-        let mut none = if any_white { 1.0 - 1.0 / 36.0 } else { 1.0 };
-        for s in others {
+        // P(no lock opportunity) per roll: the board's own roll (only others'
+        // white-sum locks, P(sum = terminal) = 1/36) and each other player's.
+        // Factors are multiplied in sorted order so the result is bit-identical
+        // for any order of `others`.
+        let mut factors = [1.0f32; 4];
+        factors[0] = if any_white { 1.0 - 1.0 / 36.0 } else { 1.0 };
+        for (i, s) in others.iter().enumerate() {
             let (act, uni) = t[row_key(s, r)];
-            none *= 1.0 - if any_white { uni } else { act };
+            factors[i + 1] = 1.0 - if any_white { uni } else { act };
         }
-        1.0 - none
+        let used = &mut factors[..others.len() + 1];
+        used.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        1.0 - used.iter().product::<f32>()
     })
 }
 

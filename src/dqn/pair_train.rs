@@ -4,7 +4,9 @@
 //! Only compiled with the `dqn` feature, mirroring `dqn::train`.
 
 use crate::bot::{self, DNA};
-use crate::dqn::pair::{pair_features, PairModel, PairModelConfig, PairStrategy, BOARD_FEATURES, PAIR_FEATURES};
+use crate::dqn::pair::{
+    pair_features, PairModel, PairModelConfig, PairStrategy, BOARD_FEATURES, PAIR_FEATURES, PAIR_LEVEL,
+};
 use crate::dqn::{MyBackend, LOG_VAR_MAX, LOG_VAR_MIN, TRAIN_SEED};
 use crate::state::{Mark, State};
 use crate::strategy::bot_impl::{
@@ -189,22 +191,23 @@ pub struct PairBatch<B: Backend> {
 
 /// Color-permutation augmentation applied identically to BOTH board blocks.
 /// Per-row groups within each block: progress [0–3], marks [4–7],
-/// locked [8–11], wprob [12–15]; pair-level features 40–44 are untouched
-/// (they are row-permutation invariant).
+/// locked [8–11], wprob [12–15], lock threat [23–26]; turn position,
+/// pending and forced strike (20–22) and the pair-level features 54–58 are
+/// untouched (they are row-permutation invariant).
 fn permute_colors(f: &mut [f32; PAIR_FEATURES], swap_ry: bool, swap_gb: bool, swap_pairs: bool) {
     for block in [0, BOARD_FEATURES] {
         if swap_ry {
-            for base in [0, 4, 8, 12] {
+            for base in [0, 4, 8, 12, 23] {
                 f.swap(block + base, block + base + 1);
             }
         }
         if swap_gb {
-            for base in [2, 6, 10, 14] {
+            for base in [2, 6, 10, 14, 25] {
                 f.swap(block + base, block + base + 1);
             }
         }
         if swap_pairs {
-            for base in [0, 4, 8, 12] {
+            for base in [0, 4, 8, 12, 23] {
                 f.swap(block + base, block + base + 2);
                 f.swap(block + base + 1, block + base + 3);
             }
@@ -247,7 +250,8 @@ impl<B: Backend> Batcher<B, PairSample, PairBatch<B>> for PairBatcher<B> {
 
 /// One recorded decision: our post-decision state + all opponents' states at
 /// that moment (turn-ordered relative to us, constant order per game).
-type Snapshot = (State, Vec<State>);
+/// (our post-decision state, opponents, the turn clock at that decision).
+type Snapshot = (State, Vec<State>, EvalClock);
 
 /// Move-selection policy for training-game players: today's static net, or
 /// the shipped search bot (expert iteration). The ε-coin in `RecordingPair`
@@ -491,7 +495,11 @@ impl Strategy for RecordingPair {
         };
 
         if marks.is_empty() {
-            self.recorded.borrow_mut().push((no_mark_state, opp_states.to_vec()));
+            self.recorded.borrow_mut().push((
+                no_mark_state,
+                opp_states.to_vec(),
+                EvalClock::after_own_turn(opp_states.len() + 1),
+            ));
             return None;
         }
 
@@ -507,7 +515,11 @@ impl Strategy for RecordingPair {
                 }
                 None => no_mark_state,
             };
-            self.recorded.borrow_mut().push((chosen_state, opp_states.to_vec()));
+            self.recorded.borrow_mut().push((
+                chosen_state,
+                opp_states.to_vec(),
+                EvalClock::after_own_turn(opp_states.len() + 1),
+            ));
             return mark;
         }
 
@@ -599,7 +611,11 @@ impl Strategy for RecordingPair {
             }
             None => no_mark_state,
         };
-        self.recorded.borrow_mut().push((chosen_state, opp_states.to_vec()));
+        self.recorded.borrow_mut().push((
+            chosen_state,
+            opp_states.to_vec(),
+            EvalClock::after_own_turn(opp_states.len() + 1),
+        ));
         mark
     }
 
@@ -688,7 +704,7 @@ impl Strategy for RecordingPair {
             }
             None => *state, // record skips too
         };
-        self.recorded.borrow_mut().push((post, opp_states.to_vec()));
+        self.recorded.borrow_mut().push((post, opp_states.to_vec(), clock));
         mark
     }
 }
@@ -850,11 +866,13 @@ fn build_distill_samples(
                 }
                 let value = diffs.iter().sum::<f32>() / diffs.len() as f32;
 
-                let feats = pair_features(&our, &e_opps[k], &e_opps);
+                // Entries are turn-complete; the rollout's first seat rolls next.
+                let clock = EvalClock::turn_start(num_opps + 1, first_active);
+                let feats = pair_features(&our, k, &e_opps, clock);
                 let mut swapped_opps: Vec<State> = Vec::with_capacity(num_opps);
                 swapped_opps.push(our);
                 swapped_opps.extend(e_opps.iter().enumerate().filter(|(j, _)| *j != k).map(|(_, s)| *s));
-                let swap_feats = pair_features(&e_opps[k], &our, &swapped_opps);
+                let swap_feats = pair_features(&e_opps[k], 0, &swapped_opps, clock.reframe_to_opp(k, num_opps));
 
                 if ended {
                     // Deterministic single outcome: value == final_diff.
@@ -922,16 +940,16 @@ fn build_pair_samples(
         let final_diff = our_final - opp_finals[k];
         let feats: Vec<[f32; PAIR_FEATURES]> = snapshots
             .iter()
-            .map(|(our, opps)| pair_features(our, &opps[k], opps))
+            .map(|(our, opps, clock)| pair_features(our, k, opps, *clock))
             .collect();
         let cdiffs: Vec<f32> = snapshots
             .iter()
-            .map(|(our, opps)| (our.count_points() - opps[k].count_points()) as f32)
+            .map(|(our, opps, _)| (our.count_points() - opps[k].count_points()) as f32)
             .collect();
         let mus: Vec<f32> = net.forward(&feats).into_iter().map(|(m, _)| m).collect();
         let g = td_diff_targets(&mus, &cdiffs, final_diff, LAMBDA);
 
-        for (t, (our, opps)) in snapshots.iter().enumerate() {
+        for (t, (our, opps, clock)) in snapshots.iter().enumerate() {
             let value = g[t] - cdiffs[t];
             let fdiff = final_diff - cdiffs[t];
             samples.push(PairSample {
@@ -946,7 +964,7 @@ fn build_pair_samples(
             swapped_opps.push(*our);
             swapped_opps.extend(opps.iter().enumerate().filter(|(j, _)| *j != k).map(|(_, s)| *s));
             samples.push(PairSample {
-                features: pair_features(&opps[k], our, &swapped_opps),
+                features: pair_features(&opps[k], 0, &swapped_opps, clock.reframe_to_opp(k, num_opps)),
                 value: -value,
                 final_diff: -fdiff,
             });
@@ -1115,13 +1133,7 @@ pub fn self_play_train(
 
     let mut iteration_stats: Vec<(usize, f32, Option<f64>)> = Vec::new();
 
-    let mut model: PairModel<MyBackend> = PairModelConfig::new()
-        .init::<MyBackend>(&device)
-        .load_file(format!("{artifact_dir}/model"), &CompactRecorder::new(), &device)
-        .unwrap_or_else(|_| {
-            println!("  No pretrained pair model, starting fresh");
-            PairModelConfig::new().init::<MyBackend>(&device)
-        });
+    let mut model: PairModel<MyBackend> = load_or_fresh(artifact_dir, &device);
 
     if search {
         println!(
@@ -1270,10 +1282,7 @@ fn train_with_epochs(samples: Vec<PairSample>, artifact_dir: &str, num_epochs: u
     let train_data = InMemDataset::new(samples[..split].to_vec());
     let valid_data = InMemDataset::new(samples[split..].to_vec());
 
-    let model: PairModel<MyAutodiffBackend> = PairModelConfig::new()
-        .init::<MyAutodiffBackend>(&device)
-        .load_file(format!("{artifact_dir}/model"), &CompactRecorder::new(), &device)
-        .unwrap_or_else(|_| PairModelConfig::new().init::<MyAutodiffBackend>(&device));
+    let model: PairModel<MyAutodiffBackend> = load_or_fresh(artifact_dir, &device);
 
     let batcher_train = PairBatcher::<MyAutodiffBackend> {
         _phantom: std::marker::PhantomData,
@@ -1311,10 +1320,30 @@ fn train_with_epochs(samples: Vec<PairSample>, artifact_dir: &str, num_epochs: u
 
     std::fs::remove_dir_all(&ckpt_dir).ok();
 
-    PairModelConfig::new()
+    let model = PairModelConfig::new()
         .init::<MyBackend>(&device)
         .load_file(format!("{artifact_dir}/model"), &CompactRecorder::new(), &device)
-        .expect("Failed to reload pair model for inference")
+        .expect("Failed to reload pair model for inference");
+    crate::dqn::pair::check_input_dims(&model, artifact_dir);
+    model
+}
+
+/// The model in `dir`, or a fresh one if there is none. A model that exists
+/// but cannot be loaded, or has another input size, panics (naming
+/// `pair-migrate`) instead of silently restarting training from scratch.
+fn load_or_fresh<B: Backend>(dir: &str, device: &B::Device) -> PairModel<B> {
+    if !std::path::Path::new(&format!("{dir}/model.mpk")).exists() {
+        println!("  No pretrained pair model, starting fresh");
+        return PairModelConfig::new().init::<B>(device);
+    }
+    let model = PairModelConfig::new()
+        .init::<B>(device)
+        .load_file(format!("{dir}/model"), &CompactRecorder::new(), device)
+        .unwrap_or_else(|e| {
+            panic!("failed to load pair model from {dir}: {e} (an old 45-input model needs `qwixxer pair-migrate`)")
+        });
+    crate::dqn::pair::check_input_dims(&model, dir);
+    model
 }
 
 #[cfg(test)]
@@ -1346,19 +1375,19 @@ mod tests {
 
         permute_colors(&mut f, true, false, false); // red <-> yellow
         for block in [0, BOARD_FEATURES] {
-            for base in [0usize, 4, 8, 12] {
+            for base in [0usize, 4, 8, 12, 23] {
                 assert_eq!(f[block + base], orig[block + base + 1]);
                 assert_eq!(f[block + base + 1], orig[block + base]);
             }
             // green/blue untouched
-            for base in [2usize, 6, 10, 14] {
+            for base in [2usize, 6, 10, 14, 25] {
                 assert_eq!(f[block + base], orig[block + base]);
             }
             // per-board aggregates untouched
-            assert_eq!(f[block + 16..block + 20], orig[block + 16..block + 20]);
+            assert_eq!(f[block + 16..block + 23], orig[block + 16..block + 23]);
         }
         // Pair-level untouched.
-        assert_eq!(f[40..45], orig[40..45]);
+        assert_eq!(f[PAIR_LEVEL..], orig[PAIR_LEVEL..]);
 
         // Applying the same swap again restores the original (involution).
         permute_colors(&mut f, true, false, false);
@@ -1377,19 +1406,19 @@ mod tests {
         // green <-> blue
         permute_colors(&mut f, false, true, false);
         for block in [0, BOARD_FEATURES] {
-            for base in [2usize, 6, 10, 14] {
+            for base in [2usize, 6, 10, 14, 25] {
                 assert_eq!(f[block + base], orig[block + base + 1]);
                 assert_eq!(f[block + base + 1], orig[block + base]);
             }
             // red/yellow untouched
-            for base in [0usize, 4, 8, 12] {
+            for base in [0usize, 4, 8, 12, 23] {
                 assert_eq!(f[block + base], orig[block + base]);
             }
             // per-board aggregates untouched
-            assert_eq!(f[block + 16..block + 20], orig[block + 16..block + 20]);
+            assert_eq!(f[block + 16..block + 23], orig[block + 16..block + 23]);
         }
         // Pair-level untouched.
-        assert_eq!(f[40..45], orig[40..45]);
+        assert_eq!(f[PAIR_LEVEL..], orig[PAIR_LEVEL..]);
         // Involution.
         permute_colors(&mut f, false, true, false);
         assert_eq!(f, orig);
@@ -1398,17 +1427,17 @@ mod tests {
         f = orig;
         permute_colors(&mut f, false, false, true);
         for block in [0, BOARD_FEATURES] {
-            for base in [0usize, 4, 8, 12] {
+            for base in [0usize, 4, 8, 12, 23] {
                 assert_eq!(f[block + base], orig[block + base + 2]);
                 assert_eq!(f[block + base + 1], orig[block + base + 3]);
                 assert_eq!(f[block + base + 2], orig[block + base]);
                 assert_eq!(f[block + base + 3], orig[block + base + 1]);
             }
             // per-board aggregates untouched
-            assert_eq!(f[block + 16..block + 20], orig[block + 16..block + 20]);
+            assert_eq!(f[block + 16..block + 23], orig[block + 16..block + 23]);
         }
         // Pair-level untouched.
-        assert_eq!(f[40..45], orig[40..45]);
+        assert_eq!(f[PAIR_LEVEL..], orig[PAIR_LEVEL..]);
         // Involution.
         permute_colors(&mut f, false, false, true);
         assert_eq!(f, orig);
@@ -1451,7 +1480,8 @@ mod tests {
         let mut opp2 = State::default();
         opp2.apply_mark(crate::state::Mark { row: 2, number: 10 });
 
-        let snapshots = vec![(our1, vec![opp1]), (our2, vec![opp2])];
+        let c = EvalClock::after_own_turn(2);
+        let snapshots = vec![(our1, vec![opp1], c), (our2, vec![opp2], c)];
         let samples = build_pair_samples(&net, &snapshots, 30.0, &[20.0]);
 
         // 2 steps × 1 opponent × 2 orders.
@@ -1470,7 +1500,7 @@ mod tests {
                 swp.features[..BOARD_FEATURES]
             );
             // cdiff input negated (within clamp range here).
-            assert!((fwd.features[40] + swp.features[40]).abs() < 1e-6);
+            assert!((fwd.features[PAIR_LEVEL] + swp.features[PAIR_LEVEL]).abs() < 1e-6);
         }
         // Last forward sample's targets: G_{n−1} = final_diff = 10;
         // cdiff at t=1: our 3 pts (2 marks) − opp 1 pt (1 mark) = 2.
@@ -1870,5 +1900,65 @@ mod tests {
         let (s3, _, _, _) = play_training_game(&model, &device, 2, false, 0.1, 7777, DistillCfg::off());
         let (s4, _, _, _) = play_training_game(&model, &device, 2, false, 0.1, 7777, DistillCfg::off());
         assert_eq!(s3.len(), s4.len());
+    }
+
+    /// Colour symmetry: swap rows of every board (ry: 0↔1, gb: 2↔3, pairs:
+    /// 0↔2 and 1↔3 with free mirrored n → 14 − n); features must equal the
+    /// permuted features of the original.
+    fn permute_state(s: &State, ry: bool, gb: bool, pairs: bool) -> State {
+        let mut parts: [(u8, Option<u8>); 4] = std::array::from_fn(|r| (s.row_totals()[r], s.row_free_values()[r]));
+        if ry {
+            parts.swap(0, 1);
+        }
+        if gb {
+            parts.swap(2, 3);
+        }
+        if pairs {
+            let mirror = |(t, f): (u8, Option<u8>)| (t, f.map(|x| 14 - x));
+            parts = [mirror(parts[2]), mirror(parts[3]), mirror(parts[0]), mirror(parts[1])];
+        }
+        State::from_parts(s.strikes, parts)
+    }
+
+    #[test]
+    fn colour_permutation_matches_the_game_symmetry() {
+        let a = State::from_parts(1, [(5, Some(11)), (2, Some(6)), (4, Some(5)), (0, Some(12))]);
+        let b = State::from_parts(0, [(6, Some(12)), (0, Some(2)), (5, Some(3)), (3, Some(8))]);
+        let c = State::from_parts(2, [(1, Some(4)), (5, Some(12)), (0, Some(12)), (6, Some(2))]);
+        let clock = EvalClock::mid_turn(3, 1);
+        for (ry, gb, pairs) in [
+            (true, false, false),
+            (false, true, false),
+            (false, false, true),
+            (true, true, true),
+        ] {
+            let mut expected = pair_features(&a, 0, &[b, c], clock);
+            permute_colors(&mut expected, ry, gb, pairs);
+            let p = |s: &State| permute_state(s, ry, gb, pairs);
+            let got = pair_features(&p(&a), 0, &[p(&b), p(&c)], clock);
+            for i in 0..PAIR_FEATURES {
+                assert!(
+                    (got[i] - expected[i]).abs() < 1e-6,
+                    "swap {ry} {gb} {pairs}, input {i}: {} vs {}",
+                    got[i],
+                    expected[i]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn swapped_samples_match_the_opponents_own_view() {
+        // 3 players, we (seat 0) at a passive decision with seat 2 active.
+        let us = State::from_parts(0, [(3, Some(7)), (0, Some(2)), (5, Some(4)), (0, Some(12))]);
+        let o1 = State::from_parts(1, [(5, Some(12)), (2, Some(5)), (0, Some(12)), (1, Some(10))]);
+        let o2 = State::from_parts(0, [(1, Some(4)), (6, Some(11)), (2, Some(9)), (0, Some(12))]);
+        let clock = EvalClock::mid_turn(3, 2);
+        // Swapped sample for k = 1 (o2): [us, o1] with the reframed clock.
+        let swapped = pair_features(&o2, 0, &[us, o1], clock.reframe_to_opp(1, 2));
+        // o2's own turn-ordered view: seat 0 (us) at offset 1, seat 1 (o1) at
+        // offset 2; o2 itself is the active, pending player.
+        let own = pair_features(&o2, 0, &[us, o1], EvalClock::mid_turn(3, 0));
+        assert_eq!(swapped, own);
     }
 }
