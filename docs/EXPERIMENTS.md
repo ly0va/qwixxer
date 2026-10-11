@@ -1840,3 +1840,36 @@ lock adjudication) are harvested; variance reduction (stratification), leaf
 calibration and more samples are all flat. Remaining headroom for pair-search
 lies in the value net itself (inputs, capacity), with the Phase 22 caveat
 that static gains need not transfer to search.
+
+## Phase 24: Pair net inputs — turn position and threats
+
+**Status: implemented; training run pending (pre-registered below).**
+
+Spec: `docs/superpowers/specs/2026-10-12-pair-net-turn-and-threat-inputs-design.md`.
+The pair net gains 7 inputs per board (45 → 59): turns until this player
+rolls, colour phase pending, P(forced strike), and per-row P(locked by someone
+else within a round). Turn position is passed to every evaluation as an
+`EvalClock`; the production model was migrated losslessly (`pair-migrate`,
+zero-weight new inputs) and plays byte-identically before training.
+
+### Run recipe
+
+    B=./target/release/qwixxer
+    rm -f pair_model/iter-*.mpk
+    cp -r pair_model pair_model_ref            # frozen reference: current model (already migrated)
+    $B pair-train --distill --distill-passive --distill-m 2 --epsilon-lock 0.10 \
+      -g 5000 -e 5 -c --start-iteration 90 -i 30 -b 500000 --bench-ref pair_model_ref
+
+### Pre-registration
+
+- **Primary (adoption):** static head-to-head, new vs `pair_model_ref`
+  (`QWIXXER_ALT_MODEL=pair_model_ref bench pair pair-alt -n 200000 -s 42`):
+  margin > 0 at z ≥ 2; and no regression in the Phase 22 suite (vs GA, DQN,
+  Opportunist, Conservative; 3p and 4p mixes).
+- **Headline, reported not required:** pair-search head-to-head
+  (`bench pair-search pair-search-alt -n 50000 -s 42`).
+- **Mechanism probes:** `leaf_calibration` side-to-move |b| < 0.03 (from
+  ≈ 0.06); Phase 17 lock-ab suppression edge > +0.04pp. If static improves but
+  neither moves, the gain is not attributed to these inputs.
+- **Checkpoint selection:** best on the `--bench-ref` curve; confirm the top
+  2–3 with the 200k primary bench.

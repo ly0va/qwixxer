@@ -220,17 +220,22 @@ Features 20-24 are game-end-proximity signals: they let the network predict how 
 
 ### Pair Network (`dqn/pair.rs`, `dqn/pair_train.rs`)
 
-Experimental successor to the DQN: a joint two-board MLP (45 -> 128 -> 64 -> 2)
+Experimental successor to the DQN: a joint two-board MLP (59 -> 128 -> 64 -> 2)
 that predicts the distribution of the *future score differential*
-`final_diff - current_diff` as `(mu, log sigma^2)`. Inputs are two 20-feature
-board blocks (per-row progress/marks/locked/weighted-prob with the lock-rule
+`final_diff - current_diff` as `(mu, log sigma^2)`. Inputs are two 27-feature
+board blocks (the original 20 below plus turns-until-roll, colour-phase-pending,
+P(forced strike) and 4 per-row lock threats; `src/threat.rs`, Phase 24) (per-row progress/marks/locked/weighted-prob with the lock-rule
 fix, strikes, blanks, aggregate wprob, lockable rows) plus 5 pair-level
 features (current diff, opponent count, all-opponent summaries). Candidates
 are ranked by `(current_diff + mu) / sigma` against the leading opponent.
 Training is pure self-play with per-opponent TD(lambda=0.8) chains; every
 sample is also emitted board-swapped with negated targets (pairwise
 consistency); color permutations are applied in the batcher to both blocks.
-Passive skips are recorded (the old recorder dropped them). Model dir:
+Passive skips are recorded (the old recorder dropped them). Every `Bot` evaluation takes an
+`EvalClock` (`src/strategy/clock.rs`) giving each board's turn position;
+callers supply it from the decision context. `qwixxer pair-migrate` converts
+45-input models; `pair-train --bench-ref <dir>` benches each iteration
+head-to-head against a reference model. Model dir:
 `pair_model/`. Design doc: `docs/superpowers/specs/2026-06-10-pair-network-design.md`.
 
 ### Pair-Search (`strategy/search.rs`, `strategy/sim.rs`)
