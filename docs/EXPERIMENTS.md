@@ -1744,7 +1744,7 @@ game-paired), so its SE is ≈ √2 × the per-run paired SE.
 | 3p vs two GAs, 60k | 42.1% | 43.0% | **+0.9pp** (z ≈ 3) |
 | 4p vs GA, DQN, Opportunist, 40k | 34.4% | 35.0% | +0.6pp (z ≈ 1.8) |
 | **production pair-search vs GA** | 62.37% (50k, Phase 21) | **62.4%** (user) | **±0 — primary bar (+0.3pp) NOT met** |
-| pair-search head-to-head, new vs old | — | improved (user; figures not retained) | — |
+| pair-search head-to-head, new vs old | — | ≈49.5% vs 48.5%, advantage to the new checkpoint (user, from memory; output not retained — the same split as the static head-to-head above, so unverified) | ≈ +1% margin |
 
 No regression anywhere. Gains are clear against strong opponents and in
 multiplayer, and flat against the hand-crafted bots the net already beats
