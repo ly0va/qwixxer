@@ -113,6 +113,55 @@ pub fn check_input_dims<B: Backend>(model: &PairModel<B>, dir: &str) {
     }
 }
 
+/// Position of old (45-input layout) input `old` in the 59-input layout.
+pub fn migrate_input_index(old: usize) -> usize {
+    match old {
+        0..=19 => old,
+        20..=39 => old + 7,
+        40..=44 => old + 14,
+        _ => panic!("old pair layout has 45 inputs, got index {old}"),
+    }
+}
+
+/// Widen a 45-input model to the 59-input layout: old first-layer rows move to
+/// their new positions, the 14 new rows are zero, everything else is copied.
+/// The new inputs therefore contribute exactly 0.0 — outputs are unchanged.
+pub fn migrate_model(
+    old: &PairModel<MyBackend>,
+    device: &burn::backend::ndarray::NdArrayDevice,
+) -> PairModel<MyBackend> {
+    let (w_old, _, d_in, d_out) = extract_linear(&old.layer1);
+    assert_eq!(d_in, 45, "migrate_model expects a 45-input model");
+    let mut w_new = vec![0.0f32; PAIR_FEATURES * d_out];
+    for i in 0..45 {
+        let j = migrate_input_index(i);
+        w_new[j * d_out..(j + 1) * d_out].copy_from_slice(&w_old[i * d_out..(i + 1) * d_out]);
+    }
+    let mut new = PairModelConfig::new().init::<MyBackend>(device);
+    new.layer1.weight = burn::module::Param::from_tensor(
+        Tensor::<MyBackend, 1>::from_floats(w_new.as_slice(), device).reshape([PAIR_FEATURES, d_out]),
+    );
+    new.layer1.bias = old.layer1.bias.clone();
+    new.layer2 = old.layer2.clone();
+    new.output_mean = old.output_mean.clone();
+    new.output_log_var = old.output_log_var.clone();
+    new
+}
+
+/// Load the 45-input model in `from`, migrate it, save it to `to`.
+pub fn migrate_dir(from: &str, to: &str) {
+    let device = burn::backend::ndarray::NdArrayDevice::Cpu;
+    let old = PairModelConfig::new()
+        .with_input(45)
+        .init::<MyBackend>(&device)
+        .load_file(format!("{from}/model"), &CompactRecorder::new(), &device)
+        .expect("failed to load the 45-input pair model");
+    let new = migrate_model(&old, &device);
+    std::fs::create_dir_all(to).expect("cannot create the target directory");
+    new.save_file(format!("{to}/model"), &CompactRecorder::new())
+        .expect("failed to save the migrated model");
+}
+
 // ---- Model ----
 
 #[derive(Module, Debug)]
@@ -673,5 +722,46 @@ mod tests {
         let device = burn::backend::ndarray::NdArrayDevice::Cpu;
         let old = PairModelConfig::new().with_input(45).init::<MyBackend>(&device);
         check_input_dims(&old, "some_dir");
+    }
+
+    #[test]
+    fn migration_index_map_follows_the_new_layout() {
+        assert_eq!(migrate_input_index(0), 0);
+        assert_eq!(migrate_input_index(19), 19);
+        assert_eq!(migrate_input_index(20), 27);
+        assert_eq!(migrate_input_index(39), 46);
+        assert_eq!(migrate_input_index(40), 54);
+        assert_eq!(migrate_input_index(44), 58);
+    }
+
+    #[test]
+    fn migrated_model_ignores_new_inputs_and_keeps_old_outputs() {
+        use rand::{Rng, SeedableRng};
+        let device = burn::backend::ndarray::NdArrayDevice::Cpu;
+        let old = PairModelConfig::new().with_input(45).init::<MyBackend>(&device);
+        let new = migrate_model(&old, &device);
+        check_input_dims(&new, "test");
+        let mut rng = rand::rngs::SmallRng::seed_from_u64(5);
+        for _ in 0..20 {
+            let x45: Vec<f32> = (0..45).map(|_| rng.gen_range(-1.0..1.0)).collect();
+            let mut x59 = [0.0f32; PAIR_FEATURES];
+            for (i, &v) in x45.iter().enumerate() {
+                x59[migrate_input_index(i)] = v;
+            }
+            // Arbitrary values in the new slots must not matter.
+            for i in (20..27).chain(47..54) {
+                x59[i] = rng.gen_range(0.0..1.0);
+            }
+            let a = old.forward(Tensor::<MyBackend, 1>::from_floats(x45.as_slice(), &device).reshape([1, 45]));
+            let b =
+                new.forward(Tensor::<MyBackend, 1>::from_floats(x59.as_slice(), &device).reshape([1, PAIR_FEATURES]));
+            let (a, b) = (
+                a.into_data().to_vec::<f32>().unwrap(),
+                b.into_data().to_vec::<f32>().unwrap(),
+            );
+            for (u, v) in a.iter().zip(&b) {
+                assert!((u - v).abs() < 1e-5, "{a:?} vs {b:?}");
+            }
+        }
     }
 }

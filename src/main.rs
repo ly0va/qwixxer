@@ -306,6 +306,13 @@ enum Commands {
         #[arg(long)]
         distill_passive: bool,
     },
+    /// Convert a 45-input pair model to the 59-input layout (lossless)
+    PairMigrate {
+        #[arg(long)]
+        from: String,
+        #[arg(long)]
+        to: String,
+    },
 }
 
 fn run_play(bots: Vec<BotType>, verbose: bool) {
@@ -770,6 +777,7 @@ fn main() {
                 passive: distill_passive,
             },
         ),
+        Some(Commands::PairMigrate { from, to }) => dqn::pair::migrate_dir(&from, &to),
         None => {
             // Default: play against MCTS
             run_play(vec![BotType::Mcts], false);
