@@ -240,6 +240,22 @@ fn main() {
         let sel: Vec<&Obs> = obs.iter().filter(|o| o.phase == phase).collect();
         summarize(phase, &sel);
     }
+    // Cells for a search-side correction: (any locked row?) × (side to move).
+    println!();
+    for locked in [false, true] {
+        for to_move in [true, false] {
+            let sel: Vec<&Obs> = obs
+                .iter()
+                .filter(|o| o.phase.starts_with("lock") == locked && o.to_move == to_move)
+                .collect();
+            let label = format!(
+                "{}/{}",
+                if locked { "locked" } else { "unlocked" },
+                if to_move { "to roll" } else { "waiting" }
+            );
+            summarize(&label, &sel);
+        }
+    }
 }
 
 #[cfg(test)]
