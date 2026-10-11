@@ -275,6 +275,8 @@ Phase 13–20 search (active-only, forced locks), still used by the
 Bench bots `pair-search-exp` / `pair-search-exp-b` read a spec such as
 `nopassive,nolock` from `QWIXXER_SEARCH` / `QWIXXER_SEARCH_B`. Measured:
 production reaches 62.4% vs GA (legacy 60.7%; EXPERIMENTS.md Phase 21).
+Static pair: 60.1% vs GA on the Phase 22 checkpoint. Checkpoint comparisons
+use `pair-alt` / `pair-search-alt`, which load `QWIXXER_ALT_MODEL`.
 
 ### Monte Carlo Tree Search (`mcts.rs`)
 

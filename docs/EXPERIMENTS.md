@@ -1654,7 +1654,7 @@ where passive decisions are an even larger share.
 
 ## Phase 22: Distillation leg 3 — passive targets
 
-**Status: run pending user execution (pre-registered below).**
+**Status: complete — checkpoint ADOPTED (m = 2 rerun, global iteration 90), overriding the pre-registered primary criterion; see Results.**
 
 Phase 21's gain came from searching passive decisions, but distillation legs
 1–2 only emitted gated targets at *active* decisions (plus lock firings at
@@ -1710,3 +1710,72 @@ cp pair_model/iter-N.mpk pair_model/model.mpk   # N = selected iteration
 ./target/release/qwixxer bench ga pair -n 1000000 -s 42
 ./target/release/qwixxer bench pair-search ga -n 200000 -s 42
 ```
+
+### Results
+
+**Run 1 — the pre-registered recipe (`--distill-m 1`).** Flat: by global
+iteration 82 (22 iterations in) the per-iteration static curve had not
+climbed past 59.8%, i.e. within noise of the 59.85% start with no drift.
+Stopped; no checkpoint taken.
+
+**Run 2 — rerun at `--distill-m 2`** (deviation from the recipe: m = 2 was
+pre-registered as an escalation for a healthy-but-plateauing curve; it was
+run after m = 1 came out flat). Same warm start (iter-57) and
+`--start-iteration 60`; 30 iterations (global 61–90); distill share ~51% of
+the buffer per the smoke. The per-iteration static curve was mostly flat,
+moving ±0.2–0.3pp between iterations. **The final iteration (90) was
+adopted** — not a curve pick; the acceptance benches below carry the
+decision. Raw training logs were not retained.
+
+**Acceptance (seed 42 unless noted).** Pair-search rows are the user's
+benches (outputs not retained); static rows were re-run when the logs were
+written, new vs the iter-57 checkpoint via `pair-alt` with
+`QWIXXER_ALT_MODEL`. "Δ" compares two runs on the same dice set (not
+game-paired), so its SE is ≈ √2 × the per-run paired SE.
+
+| test | iter-57 | leg-3 (iter 90) | Δ |
+|---|---|---|---|
+| static vs GA | 59.85% (1M) | **60.1%** (1M, user); 60.13%, CI 59.87–60.38 (200k re-check) | +0.25pp |
+| static head-to-head, new vs old, 100k | — | 49,537 vs 48,485, 1,978 ties: **margin +1.05%, z ≈ 4.7** | — |
+| static vs DQN, 200k | 50.07% | 50.38% | **+0.31pp** (z ≈ 2.4) |
+| static vs Opportunist, 200k | 83.03% | 83.17% | +0.14pp (z ≈ 1.2) |
+| static vs Conservative, 200k | 79.59% | 79.61% | +0.02pp |
+| 3p: new + old + GA in the same games, 60k | 35.2% (old seat) | **37.2%** (new seat) | +2.0pp |
+| 3p vs two GAs, 60k | 42.1% | 43.0% | **+0.9pp** (z ≈ 3) |
+| 4p vs GA, DQN, Opportunist, 40k | 34.4% | 35.0% | +0.6pp (z ≈ 1.8) |
+| **production pair-search vs GA** | 62.37% (50k, Phase 21) | **62.4%** (user) | **±0 — primary bar (+0.3pp) NOT met** |
+| pair-search head-to-head, new vs old | — | improved (user; figures not retained) | — |
+
+No regression anywhere. Gains are clear against strong opponents and in
+multiplayer, and flat against the hand-crafted bots the net already beats
+~80% of the time.
+
+**Verdict: ADOPTED, explicitly overriding the pre-registered primary
+criterion** (as Phase 17 recorded its override). The primary metric
+— pair-search vs GA — was flat; every other comparison improved or held,
+including both head-to-heads against the previous checkpoint.
+
+**Interpretation.**
+
+1. The passive targets taught the static net what passive search already
+   computes at decision time, so the static bot moved toward search (+0.25pp
+   vs GA, +1.05% head-to-head, +2pp in a shared 3p game).
+2. The weight mattered. m = 1 (passive pool ~15% of the buffer) did nothing;
+   m = 2 moved the net. Leg 1's lock pool failed the same way (outvoted at ~1%
+   of the buffer).
+3. Pair-search vs GA did not move while pair-search head-to-head against the
+   previous checkpoint improved. At ~62% vs GA, GA is too weak an opponent to
+   resolve gains at the top: improvements that matter between strong bots
+   barely change results against it.
+4. The per-iteration curve (static vs GA, 500k) stayed within ±0.3pp, yet the
+   final checkpoint is measurably better head-to-head — further evidence that
+   the vs-GA curve under-resolves these gains.
+
+**Change of primary metric going forward:** adoption decisions use
+**head-to-head against the current production checkpoint** (same bot type,
+paired dice, `pair-alt` / `pair-search-alt` with `QWIXXER_ALT_MODEL`) as the
+primary metric, with vs-GA benches as a regression guard only. Training-time
+checkpoint selection should move off the vs-GA curve for the same reason.
+
+**Headline after Phase 22:** static pair 60.1% vs GA; production pair-search
+62.4% vs GA (unchanged), stronger head-to-head than the iter-57 pair-search.
