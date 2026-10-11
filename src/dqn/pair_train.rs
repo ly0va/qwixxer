@@ -4,9 +4,7 @@
 //! Only compiled with the `dqn` feature, mirroring `dqn::train`.
 
 use crate::bot::{self, DNA};
-use crate::dqn::pair::{
-    pair_features, PairModel, PairModelConfig, PairStrategy, BOARD_FEATURES, PAIR_FEATURES, PAIR_LEVEL,
-};
+use crate::dqn::pair::{pair_features, PairModel, PairModelConfig, PairStrategy, BOARD_FEATURES, PAIR_FEATURES};
 use crate::dqn::{MyBackend, LOG_VAR_MAX, LOG_VAR_MIN, TRAIN_SEED};
 use crate::state::{Mark, State};
 use crate::strategy::bot_impl::{
@@ -1401,6 +1399,7 @@ fn load_or_fresh<B: Backend>(dir: &str, device: &B::Device) -> PairModel<B> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dqn::pair::PAIR_LEVEL;
 
     #[test]
     fn td_diff_targets_hand_computed() {
