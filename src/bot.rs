@@ -44,7 +44,7 @@ pub struct DNA {
 }
 
 impl Bot for DNA {
-    fn evaluate(&self, our_state: &State, _opp_states: &[State]) -> f32 {
+    fn evaluate(&self, our_state: &State, _opp_states: &[State], _clock: crate::strategy::EvalClock) -> f32 {
         self.instinct(our_state) as f32
     }
 }

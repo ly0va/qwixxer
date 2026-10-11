@@ -1,3 +1,4 @@
+use super::clock::EvalClock;
 use super::Bot;
 use crate::state::{Mark, State};
 use std::cmp::Ordering;
@@ -102,12 +103,12 @@ pub fn argmax(values: &[f32]) -> usize {
         .0
 }
 
-pub fn eval_decision(bot: &impl Bot, decision: Decision, eval_opps: &[State]) -> Option<Mark> {
+pub fn eval_decision(bot: &impl Bot, decision: Decision, eval_opps: &[State], clock: EvalClock) -> Option<Mark> {
     match decision {
         Decision::Forced(m) => m,
         Decision::Choices(cands) => {
             let states: Vec<State> = cands.iter().map(|(_, s)| *s).collect();
-            let values = bot.evaluate_batch(&states, eval_opps);
+            let values = bot.evaluate_batch(&states, eval_opps, clock);
             cands[argmax(&values)].0
         }
     }
@@ -204,8 +205,14 @@ pub(crate) fn passive_phase1_choices(state: &State, opp_states: &[State], dice: 
     mark_choices(state, &marks, *state, opp_best)
 }
 
-pub(crate) fn passive_phase1_impl(bot: &impl Bot, state: &State, opp_states: &[State], dice: [u8; 6]) -> Option<Mark> {
-    eval_decision(bot, passive_phase1_choices(state, opp_states, dice), opp_states)
+pub(crate) fn passive_phase1_impl(
+    bot: &impl Bot,
+    state: &State,
+    opp_states: &[State],
+    dice: [u8; 6],
+    clock: EvalClock,
+) -> Option<Mark> {
+    eval_decision(bot, passive_phase1_choices(state, opp_states, dice), opp_states, clock)
 }
 
 pub fn active_phase2_choices(state: &State, opp_states: &[State], dice: [u8; 6], has_marked: bool) -> Decision {
@@ -232,6 +239,7 @@ pub(crate) fn active_phase2_impl(
         bot,
         active_phase2_choices(state, opp_states, dice, has_marked),
         opp_states,
+        EvalClock::after_own_turn(opp_states.len() + 1),
     )
 }
 
@@ -241,6 +249,8 @@ pub(crate) fn active_phase2_impl(
 /// passive_phase1 pipeline (safe lock, endgame rules, evaluate) from
 /// their perspective.
 fn simulate_opp_phase1(bot: &impl Bot, state: &State, opp_states: &[State], dice: [u8; 6]) -> Vec<State> {
+    // We are the active player, mid-turn; each opponent sees [us, others...].
+    let ours = EvalClock::mid_turn(opp_states.len() + 1, 0);
     opp_states
         .iter()
         .enumerate()
@@ -248,7 +258,8 @@ fn simulate_opp_phase1(bot: &impl Bot, state: &State, opp_states: &[State], dice
             let their_opps: Vec<State> = std::iter::once(*state)
                 .chain(opp_states.iter().enumerate().filter(|(j, _)| *j != i).map(|(_, s)| *s))
                 .collect();
-            match passive_phase1_impl(bot, opp, &their_opps, dice) {
+            let clock = ours.reframe_to_opp(i, opp_states.len());
+            match passive_phase1_impl(bot, opp, &their_opps, dice, clock) {
                 Some(m) => {
                     let mut s = *opp;
                     s.apply_mark(m);
@@ -377,7 +388,7 @@ pub fn active_phase1_choices(
 
 pub(crate) fn active_phase1_impl(bot: &impl Bot, state: &State, opp_states: &[State], dice: [u8; 6]) -> Option<Mark> {
     let (decision, sim_opp) = active_phase1_choices(bot, state, opp_states, dice);
-    eval_decision(bot, decision, &sim_opp)
+    eval_decision(bot, decision, &sim_opp, EvalClock::after_own_turn(opp_states.len() + 1))
 }
 
 // ---------------------------------------------------------------------------
@@ -396,9 +407,10 @@ impl<T: Bot + std::fmt::Debug> super::Strategy for T {
         state: &State,
         opp_states: &[State],
         dice: [u8; 6],
-        _active_player: usize,
+        active_player: usize,
     ) -> Option<Mark> {
-        passive_phase1_impl(self, state, opp_states, dice)
+        let clock = EvalClock::mid_turn(opp_states.len() + 1, active_player + 1);
+        passive_phase1_impl(self, state, opp_states, dice, clock)
     }
 }
 
@@ -452,6 +464,123 @@ mod tests {
                 assert!(c.iter().any(|(m, _)| *m == Some(Mark { row: 0, number: 12 })))
             }
             Decision::Forced(_) => panic!("rule-free phase-1 pipeline must not force here"),
+        }
+    }
+
+    use crate::strategy::clock::{BoardClock, EvalClock};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    /// Bot that records every evaluation (candidates, opps, clock) and scores
+    /// candidates by points (deterministic, no model needed).
+    #[derive(Debug, Clone, Default)]
+    struct RecordingBot {
+        log: Rc<RefCell<Vec<(Vec<State>, Vec<State>, EvalClock)>>>,
+    }
+
+    impl Bot for RecordingBot {
+        fn evaluate(&self, our: &State, opps: &[State], clock: EvalClock) -> f32 {
+            self.evaluate_batch(&[*our], opps, clock)[0]
+        }
+        fn evaluate_batch(&self, cands: &[State], opps: &[State], clock: EvalClock) -> Vec<f32> {
+            self.log.borrow_mut().push((cands.to_vec(), opps.to_vec(), clock));
+            cands.iter().map(|s| s.count_points() as f32).collect()
+        }
+    }
+
+    /// Distinct seat states (so a board's seat is identifiable by its state).
+    fn seats(n: usize) -> Vec<State> {
+        (0..n)
+            .map(|i| {
+                State::from_parts(
+                    0,
+                    [(i as u8, Some(2 + i as u8)), (0, Some(2)), (0, Some(12)), (0, Some(12))],
+                )
+            })
+            .collect()
+    }
+
+    /// Truth: board at absolute seat `seat` when `next` rolls next and `pending` is outstanding.
+    fn truth(n: usize, seat: usize, next: usize, pending: Option<usize>) -> BoardClock {
+        BoardClock::at(n, seat, next, pending)
+    }
+
+    /// Seat of a (pre-move) board state among `seat_states`; the evaluating
+    /// player's seat is the one missing from the evaluated opp list.
+    /// (`State`'s `==` treats same-direction row swaps as equal; the `seats`
+    /// boards differ only in red, so no two of them compare equal.)
+    fn seat_of(seat_states: &[State], s: &State) -> usize {
+        seat_states.iter().position(|x| x == s).expect("unknown board")
+    }
+
+    #[test]
+    fn passive_decisions_get_mid_turn_clocks() {
+        for n in 2..=4 {
+            for active_abs in 1..n {
+                // We sit at absolute seat 0; Game passes turn-ordered opps.
+                let all = seats(n);
+                let bot = RecordingBot::default();
+                let mut b = bot.clone();
+                let dice = [3, 4, 1, 1, 1, 1];
+                crate::strategy::Strategy::passive_phase1(&mut b, &all[0], &all[1..], dice, active_abs - 1);
+                assert!(
+                    !bot.log.borrow().is_empty(),
+                    "white sum 7 must leave a choice to evaluate"
+                );
+                for (_, opps, clock) in bot.log.borrow().iter() {
+                    let next = (active_abs + 1) % n;
+                    assert_eq!(
+                        clock.us,
+                        truth(n, 0, next, Some(active_abs)),
+                        "n {n} active {active_abs}"
+                    );
+                    for (k, o) in opps.iter().enumerate() {
+                        assert_eq!(clock.opp(k), truth(n, seat_of(&all, o), next, Some(active_abs)));
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn simulated_opponent_passive_decisions_are_reframed() {
+        for n in 3..=4 {
+            let all = seats(n);
+            let bot = RecordingBot::default();
+            let dice = [3, 4, 2, 2, 2, 2];
+            let _ = active_phase1_choices(&bot, &all[0], &all[1..], dice);
+            let log = bot.log.borrow();
+            assert!(!log.is_empty());
+            // We (seat 0) are mid-turn: pending, seat 1 rolls next.
+            for (cands, opps, clock) in log.iter() {
+                // Evaluating seat = the one not in `opps`.
+                let present: Vec<usize> = opps.iter().map(|o| seat_of(&all, o)).collect();
+                let me = (0..n).find(|s| !present.contains(s)).unwrap();
+                assert_ne!(me, 0, "only opponents' passive decisions are evaluated here");
+                assert_eq!(clock.us, truth(n, me, 1, Some(0)), "cands {cands:?}");
+                for (k, &s) in present.iter().enumerate() {
+                    assert_eq!(clock.opp(k), truth(n, s, 1, Some(0)));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn own_turn_candidates_get_after_own_turn_clocks() {
+        for n in 2..=4 {
+            let all = seats(n);
+            let bot = RecordingBot::default();
+            let _ = active_phase2_impl(&bot, &all[0], &all[1..], [3, 4, 2, 2, 2, 2], true);
+            assert!(
+                !bot.log.borrow().is_empty(),
+                "colour sums must leave a choice to evaluate"
+            );
+            for (_, opps, clock) in bot.log.borrow().iter() {
+                assert_eq!(clock.us, truth(n, 0, 1 % n, None));
+                for (k, o) in opps.iter().enumerate() {
+                    assert_eq!(clock.opp(k), truth(n, seat_of(&all, o), 1 % n, None));
+                }
+            }
         }
     }
 }

@@ -7,6 +7,7 @@ use super::bot_impl::{
     active_phase1_choices, active_phase2_choices, eval_decision, is_safe_lock, mark_choices_with,
     opp_best_phase1_score, passive_phase1_choices, passive_phase1_impl, phase1_plan_choices_with, Decision,
 };
+use super::clock::EvalClock;
 use super::sim::{BatchedRollouts, SimGame};
 use super::Bot;
 use super::Strategy;
@@ -30,10 +31,10 @@ pub const HORIZON_ROUNDS: usize = 1;
 pub trait WinProb: Bot {
     /// z-score of the group's player finishing ahead of its leading
     /// opponent (the win probability is Φ(z)), one per group.
-    fn win_z_multi(&self, groups: &[(&State, &[State])]) -> Vec<f32>;
+    fn win_z_multi(&self, groups: &[(&State, &[State], EvalClock)]) -> Vec<f32>;
 
     /// P(group's player finishes ahead of its leading opponent), one per group.
-    fn win_prob_multi(&self, groups: &[(&State, &[State])]) -> Vec<f32> {
+    fn win_prob_multi(&self, groups: &[(&State, &[State], EvalClock)]) -> Vec<f32> {
         self.win_z_multi(groups).into_iter().map(phi).collect()
     }
 }
@@ -251,9 +252,11 @@ impl SearchConfig {
                         b_wait,
                     });
                 }
-                _ => return Err(format!(
+                _ => {
+                    return Err(format!(
                     "unknown search option {tok:?} (passive, nopassive, lock=N, nolock, strat, k=N, leafcal[=a/a/b/b])"
-                )),
+                ))
+                }
             }
         }
         Ok(cfg)
@@ -361,7 +364,7 @@ pub(crate) fn phase1_entry(
     }
     let view = SimGame::opp_view(&all, 0);
     let d = active_phase2_choices(&all[0], &view, dice, mark.is_some());
-    match eval_decision(bot, d, &view) {
+    match eval_decision(bot, d, &view, EvalClock::after_own_turn(all.len())) {
         Some(m) => all[0].apply_mark(m),
         None if mark.is_none() => all[0].apply_strike(),
         None => {}
@@ -425,7 +428,8 @@ pub(crate) fn passive_entry(
             continue;
         }
         let view = SimGame::opp_view(&all, j);
-        if let Some(m) = passive_phase1_impl(bot, &all[j], &view, dice) {
+        let clock = EvalClock::mid_turn(n, (active_idx + n - j) % n);
+        if let Some(m) = passive_phase1_impl(bot, &all[j], &view, dice, clock) {
             all[j].apply_mark(m);
         }
     }
@@ -437,7 +441,7 @@ pub(crate) fn passive_entry(
     // Active player's phase 1.
     let view = SimGame::opp_view(&all, active_idx);
     let (d, _) = active_phase1_choices(bot, &all[active_idx], &view, dice);
-    let p1 = eval_decision(bot, d, &view);
+    let p1 = eval_decision(bot, d, &view, EvalClock::after_own_turn(n));
     if let Some(m) = p1 {
         all[active_idx].apply_mark(m);
     }
@@ -449,7 +453,7 @@ pub(crate) fn passive_entry(
     // Active player's phase 2.
     let view = SimGame::opp_view(&all, active_idx);
     let d = active_phase2_choices(&all[active_idx], &view, dice, p1.is_some());
-    match eval_decision(bot, d, &view) {
+    match eval_decision(bot, d, &view, EvalClock::after_own_turn(n)) {
         Some(m) => all[active_idx].apply_mark(m),
         None if p1.is_none() => all[active_idx].apply_strike(),
         None => {}
@@ -589,10 +593,14 @@ impl<B: WinProb> SearchBot<B> {
             .iter()
             .map(|&i| SimGame::opp_view(&driver.sims[i].states, 0))
             .collect();
-        let groups: Vec<(&State, &[State])> = survivor_idx
+        // Leaves sit at a turn start: the sim's active seat rolls next.
+        let groups: Vec<(&State, &[State], EvalClock)> = survivor_idx
             .iter()
             .zip(&survivor_views)
-            .map(|(&i, view)| (&driver.sims[i].states[0], view.as_slice()))
+            .map(|(&i, view)| {
+                let sim = &driver.sims[i];
+                (&sim.states[0], view.as_slice(), EvalClock::turn_start(n, sim.active))
+            })
             .collect();
         let probs: Vec<f32> = match self.cfg.leaf_cal {
             None => self.bot.win_prob_multi(&groups),
@@ -650,6 +658,7 @@ impl<B: WinProb> SearchBot<B> {
         rule_free: Decision,
         baseline: State,
         eval_opps: &[State],
+        clock: EvalClock,
         collapse: bool,
         entry: impl Fn(Option<Mark>, State) -> (Vec<State>, bool),
         seed: u64,
@@ -671,7 +680,7 @@ impl<B: WinProb> SearchBot<B> {
             Decision::Forced(alt) => vec![(Some(lock), post_of(Some(lock))), (alt, post_of(alt))],
             Decision::Choices(plans) => {
                 let states: Vec<State> = plans.iter().map(|(_, s)| *s).collect();
-                let values = self.bot.evaluate_batch(&states, eval_opps);
+                let values = self.bot.evaluate_batch(&states, eval_opps, clock);
                 let mut cands: Vec<(Option<Mark>, State, f32)> = Vec::new();
                 for ((m, s), &v) in plans.iter().zip(&values) {
                     match cands.iter_mut().find(|c| collapse && c.0 == *m) {
@@ -769,6 +778,7 @@ impl<B: WinProb> Strategy for SearchBot<B> {
                     rule_free,
                     *state,
                     &sim_opp,
+                    EvalClock::after_own_turn(opp_states.len() + 1),
                     true,
                     |m, _| phase1_entry(&self.bot, state, &sim_opp, dice, m),
                     context_seed(state, opp_states, dice),
@@ -779,7 +789,9 @@ impl<B: WinProb> Strategy for SearchBot<B> {
             Decision::Choices(c) => c,
         };
         let states: Vec<State> = plans.iter().map(|(_, s)| *s).collect();
-        let values = self.bot.evaluate_batch(&states, &sim_opp);
+        let values = self
+            .bot
+            .evaluate_batch(&states, &sim_opp, EvalClock::after_own_turn(opp_states.len() + 1));
 
         // Collapse plans to distinct phase-1 marks: each keeps its best plan's
         // static value (for shortlisting) and that plan's end-state (for the
@@ -842,6 +854,7 @@ impl<B: WinProb> Strategy for SearchBot<B> {
                     rule_free,
                     baseline,
                     opp_states,
+                    EvalClock::after_own_turn(opp_states.len() + 1),
                     false,
                     |_, post| phase2_entry(post, opp_states),
                     context_seed(state, opp_states, dice),
@@ -852,7 +865,9 @@ impl<B: WinProb> Strategy for SearchBot<B> {
             Decision::Choices(c) => c,
         };
         let states: Vec<State> = choices.iter().map(|(_, s)| *s).collect();
-        let values = self.bot.evaluate_batch(&states, opp_states);
+        let values = self
+            .bot
+            .evaluate_batch(&states, opp_states, EvalClock::after_own_turn(opp_states.len() + 1));
         let mut cands: Vec<Candidate> = choices
             .iter()
             .zip(&values)
@@ -889,8 +904,9 @@ impl<B: WinProb> Strategy for SearchBot<B> {
         dice: [u8; 6],
         active_player: usize,
     ) -> Option<Mark> {
+        let passive_clock = EvalClock::mid_turn(opp_states.len() + 1, active_player + 1);
         if !self.cfg.search_passive && self.cfg.lock_k.is_none() {
-            return passive_phase1_impl(&self.bot, state, opp_states, dice);
+            return passive_phase1_impl(&self.bot, state, opp_states, dice, passive_clock);
         }
         let choices = match passive_phase1_choices(state, opp_states, dice) {
             Decision::Forced(Some(lock)) if self.cfg.lock_k.is_some() && is_safe_lock(state, Some(lock)) => {
@@ -904,6 +920,7 @@ impl<B: WinProb> Strategy for SearchBot<B> {
                     rule_free,
                     *state,
                     opp_states,
+                    EvalClock::mid_turn(opp_states.len() + 1, active_player + 1),
                     false,
                     |m, _| passive_entry(&self.bot, state, opp_states, dice, active_player, m),
                     context_seed(state, opp_states, dice),
@@ -914,10 +931,10 @@ impl<B: WinProb> Strategy for SearchBot<B> {
             Decision::Choices(c) => c,
         };
         if !self.cfg.search_passive {
-            return eval_decision(&self.bot, Decision::Choices(choices), opp_states);
+            return eval_decision(&self.bot, Decision::Choices(choices), opp_states, passive_clock);
         }
         let states: Vec<State> = choices.iter().map(|(_, s)| *s).collect();
-        let values = self.bot.evaluate_batch(&states, opp_states);
+        let values = self.bot.evaluate_batch(&states, opp_states, passive_clock);
         let mut cands: Vec<Candidate> = choices
             .iter()
             .zip(&values)
@@ -1107,7 +1124,7 @@ mod tests {
         for state in [State::default(), mid] {
             for dice in [[3, 4, 2, 3, 5, 1], [1, 1, 6, 6, 6, 6], [6, 5, 1, 2, 3, 4]] {
                 let opps = [mid];
-                let expected = passive_phase1_impl(&bot.bot, &state, &opps, dice);
+                let expected = passive_phase1_impl(&bot.bot, &state, &opps, dice, EvalClock::mid_turn(2, 1));
                 assert_eq!(bot.passive_phase1(&state, &opps, dice, 0), expected);
             }
         }

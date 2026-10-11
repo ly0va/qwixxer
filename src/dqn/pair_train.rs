@@ -15,7 +15,7 @@ use crate::strategy::search::{
     context_seed, gates, passive_entry, passive_first_active, phase1_entry, phase2_entry, rollout_final_states,
     SearchBot, SearchConfig,
 };
-use crate::strategy::{Bot, Strategy};
+use crate::strategy::{Bot, EvalClock, Strategy};
 use burn::{
     backend::Autodiff,
     data::{
@@ -410,7 +410,7 @@ impl Strategy for RecordingPair {
                 Decision::Choices(plans) => {
                     // Gated capture: collapse to distinct phase-1 marks, top-2.
                     let states: Vec<State> = plans.iter().map(|(_, s)| *s).collect();
-                    let values = bot.evaluate_batch(&states, &sim_opp);
+                    let values = bot.evaluate_batch(&states, &sim_opp, EvalClock::after_own_turn(opp_states.len() + 1));
                     let cands = collapse_plans(&plans, &values);
                     if cands.len() >= 2 {
                         let value_posts: Vec<(f32, State)> = cands.iter().map(|c| (c.2, c.1)).collect();
@@ -439,7 +439,8 @@ impl Strategy for RecordingPair {
                     if locks_safe && !opp_states.is_empty() {
                         if let Decision::Choices(plans) = phase1_plan_choices_with(state, &sim_opp, dice, false) {
                             let states: Vec<State> = plans.iter().map(|(_, s)| *s).collect();
-                            let values = bot.evaluate_batch(&states, &sim_opp);
+                            let values =
+                                bot.evaluate_batch(&states, &sim_opp, EvalClock::after_own_turn(opp_states.len() + 1));
                             let cands = collapse_plans(&plans, &values);
                             // Need the lock plus at least one distinct alternative.
                             if cands.len() >= 2 && cands.iter().any(|c| c.0 == Some(m)) {
@@ -467,7 +468,12 @@ impl Strategy for RecordingPair {
         if let Some((rf, sim_opp)) = decline_rf {
             if self.decline_lock() {
                 let bot = self.policy.bot();
-                return eval_decision(bot, Decision::Choices(rf), &sim_opp);
+                return eval_decision(
+                    bot,
+                    Decision::Choices(rf),
+                    &sim_opp,
+                    EvalClock::after_own_turn(opp_states.len() + 1),
+                );
             }
         }
 
@@ -512,7 +518,8 @@ impl Strategy for RecordingPair {
             match active_phase2_choices(state, opp_states, dice, has_marked) {
                 Decision::Choices(choices) => {
                     let states: Vec<State> = choices.iter().map(|(_, s)| *s).collect();
-                    let values = bot.evaluate_batch(&states, opp_states);
+                    let values =
+                        bot.evaluate_batch(&states, opp_states, EvalClock::after_own_turn(opp_states.len() + 1));
                     let cands = value_sort(&choices, &values);
                     if cands.len() >= 2 {
                         let value_posts: Vec<(f32, State)> = cands.iter().map(|c| (c.2, c.1)).collect();
@@ -538,7 +545,11 @@ impl Strategy for RecordingPair {
                             mark_choices_with(state, &marks, no_mark_state, opp_best, false)
                         {
                             let states: Vec<State> = choices.iter().map(|(_, s)| *s).collect();
-                            let values = bot.evaluate_batch(&states, opp_states);
+                            let values = bot.evaluate_batch(
+                                &states,
+                                opp_states,
+                                EvalClock::after_own_turn(opp_states.len() + 1),
+                            );
                             let cands = value_sort(&choices, &values);
                             if cands.len() >= 2 && cands.iter().any(|c| c.0 == Some(m)) {
                                 let rf: Vec<(Option<Mark>, State)> = cands.iter().map(|c| (c.0, c.1)).collect();
@@ -565,7 +576,12 @@ impl Strategy for RecordingPair {
         let forced_override: Option<Option<Mark>> = match decline_rf {
             Some(rf) if self.decline_lock() => {
                 let bot = self.policy.bot();
-                Some(eval_decision(bot, Decision::Choices(rf), opp_states))
+                Some(eval_decision(
+                    bot,
+                    Decision::Choices(rf),
+                    opp_states,
+                    EvalClock::after_own_turn(opp_states.len() + 1),
+                ))
             }
             _ => None,
         };
@@ -600,7 +616,8 @@ impl Strategy for RecordingPair {
             return None;
         }
 
-        let mut mark = passive_phase1_impl(self.policy.bot(), state, opp_states, dice);
+        let clock = EvalClock::mid_turn(opp_states.len() + 1, active_player + 1);
+        let mut mark = passive_phase1_impl(self.policy.bot(), state, opp_states, dice, clock);
 
         // Distill detection (player 0 only): lock firings always; gated
         // passive decisions when `distill_passive` (Phase 21 search gates).
@@ -610,7 +627,7 @@ impl Strategy for RecordingPair {
             if self.distill_passive && !opp_states.is_empty() {
                 if let Decision::Choices(choices) = passive_phase1_choices(state, opp_states, dice) {
                     let states: Vec<State> = choices.iter().map(|(_, s)| *s).collect();
-                    let values = bot.evaluate_batch(&states, opp_states);
+                    let values = bot.evaluate_batch(&states, opp_states, clock);
                     let cands = value_sort(&choices, &values);
                     if cands.len() >= 2 {
                         let value_posts: Vec<(f32, State)> = cands.iter().map(|c| (c.2, c.1)).collect();
@@ -635,7 +652,7 @@ impl Strategy for RecordingPair {
                 let opp_best = opp_best_phase1_score(opp_states, white_sum);
                 if let Decision::Choices(choices) = mark_choices_with(state, &marks, *state, opp_best, false) {
                     let states: Vec<State> = choices.iter().map(|(_, s)| *s).collect();
-                    let values = bot.evaluate_batch(&states, opp_states);
+                    let values = bot.evaluate_batch(&states, opp_states, clock);
                     let cands = value_sort(&choices, &values);
                     if cands.len() >= 2 && cands.iter().any(|c| c.0 == Some(lock)) {
                         let rf: Vec<(Option<Mark>, State)> = cands.iter().map(|c| (c.0, c.1)).collect();
@@ -659,7 +676,7 @@ impl Strategy for RecordingPair {
         if let Some(rf) = decline_rf {
             if self.decline_lock() {
                 let bot = self.policy.bot();
-                mark = eval_decision(bot, Decision::Choices(rf), opp_states);
+                mark = eval_decision(bot, Decision::Choices(rf), opp_states, clock);
             }
         }
 
@@ -752,8 +769,12 @@ fn build_distill_samples(
                     LockCtx::Ap1 => sim_opp,
                     _ => opps,
                 };
+                let clock = match lctx {
+                    LockCtx::Pp1 => EvalClock::mid_turn(opps.len() + 1, *active_player + 1),
+                    _ => EvalClock::after_own_turn(opps.len() + 1),
+                };
                 let states: Vec<State> = cands.iter().map(|(_, s)| *s).collect();
-                let values = boot.evaluate_batch(&states, eval_opps);
+                let values = boot.evaluate_batch(&states, eval_opps, clock);
                 let sorted = value_sort(cands, &values);
 
                 let lock_i = sorted.iter().position(|c| c.0 == Some(*lock));
@@ -1799,7 +1820,7 @@ mod tests {
         let marks = s.generate_white_moves(white_sum);
         let opp_best = opp_best_phase1_score(&opps, white_sum);
         let rule_free = mark_choices_with(&s, &marks, s, opp_best, false);
-        let expected_decline = eval_decision(&boot, rule_free, &opps);
+        let expected_decline = eval_decision(&boot, rule_free, &opps, EvalClock::mid_turn(2, 1));
 
         let mut decline = make(1.0);
         let played = decline.passive_phase1(&s, &opps, dice, 0);

@@ -16,6 +16,7 @@ use qwixxer::dqn::pair::PairStrategy;
 use qwixxer::state::State;
 use qwixxer::strategy::search::WinProb;
 use qwixxer::strategy::sim::{play_sim_turn, Fidelity, SimGame};
+use qwixxer::strategy::EvalClock;
 use rand::rngs::SmallRng;
 use rand::SeedableRng;
 use rayon::prelude::*;
@@ -118,7 +119,11 @@ fn play_game(bot: &PairStrategy, g: u64) -> Vec<Obs> {
         let st = [sim.states[0], sim.states[1]];
         let opp0 = [st[1]];
         let opp1 = [st[0]];
-        let ps = bot.win_prob_multi(&[(&st[0], &opp0[..]), (&st[1], &opp1[..])]);
+        // Turn start: from player j's frame the active seat sits at offset (active - j) mod 2.
+        let ps = bot.win_prob_multi(&[
+            (&st[0], &opp0[..], EvalClock::turn_start(2, sim.active)),
+            (&st[1], &opp1[..], EvalClock::turn_start(2, (sim.active + 1) % 2)),
+        ]);
         let phase = phase_of(&st);
         for j in 0..2 {
             let p = ps[j] as f64;

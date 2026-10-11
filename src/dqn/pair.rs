@@ -11,7 +11,7 @@ use super::{
     aggregate_weighted_probability, lockable_rows, row_progress, total_progress, MyBackend, LOG_VAR_MAX, LOG_VAR_MIN,
 };
 use crate::state::State;
-use crate::strategy::Bot;
+use crate::strategy::{Bot, EvalClock};
 use burn::{
     nn::{Linear, LinearConfig, Relu},
     prelude::*,
@@ -288,19 +288,21 @@ impl PairStrategy {
 }
 
 impl Bot for PairStrategy {
-    fn evaluate(&self, our_state: &State, opp_states: &[State]) -> f32 {
-        self.evaluate_batch(&[*our_state], opp_states)[0]
+    fn evaluate(&self, our_state: &State, opp_states: &[State], clock: EvalClock) -> f32 {
+        self.evaluate_batch(&[*our_state], opp_states, clock)[0]
     }
 
-    fn evaluate_batch(&self, candidates: &[State], opp_states: &[State]) -> Vec<f32> {
-        self.evaluate_batch_multi(&[(candidates, opp_states)]).pop().unwrap()
+    fn evaluate_batch(&self, candidates: &[State], opp_states: &[State], clock: EvalClock) -> Vec<f32> {
+        self.evaluate_batch_multi(&[(candidates, opp_states, clock)])
+            .pop()
+            .unwrap()
     }
 
-    fn evaluate_batch_multi(&self, groups: &[(&[State], &[State])]) -> Vec<Vec<f32>> {
+    fn evaluate_batch_multi(&self, groups: &[(&[State], &[State], EvalClock)]) -> Vec<Vec<f32>> {
         let default_opps = [State::default()];
         let mut leaders: Vec<isize> = Vec::with_capacity(groups.len());
         let mut feats: Vec<[f32; PAIR_FEATURES]> = Vec::new();
-        for (candidates, opp_states) in groups {
+        for (candidates, opp_states, _clock) in groups {
             // Solo fallback: rank against an empty default board. Solo play is
             // officially unsupported for the pair bot (the old DQN covers it).
             let opps: &[State] = if opp_states.is_empty() {
@@ -318,7 +320,7 @@ impl Bot for PairStrategy {
 
         let mut out = Vec::with_capacity(groups.len());
         let mut idx = 0;
-        for ((candidates, _), leader_points) in groups.iter().zip(leaders) {
+        for ((candidates, _, _), leader_points) in groups.iter().zip(leaders) {
             let group = candidates
                 .iter()
                 .map(|cand| {
@@ -336,11 +338,11 @@ impl Bot for PairStrategy {
 }
 
 impl crate::strategy::search::WinProb for PairStrategy {
-    fn win_z_multi(&self, groups: &[(&State, &[State])]) -> Vec<f32> {
+    fn win_z_multi(&self, groups: &[(&State, &[State], EvalClock)]) -> Vec<f32> {
         let default_opps = [State::default()];
         let mut feats = Vec::with_capacity(groups.len());
         let mut cdiffs = Vec::with_capacity(groups.len());
-        for (our, opps) in groups {
+        for (our, opps, _clock) in groups {
             let opps: &[State] = if opps.is_empty() { &default_opps } else { opps };
             let leader = opps.iter().max_by_key(|s| s.count_points()).unwrap();
             feats.push(pair_features(our, leader, opps));
@@ -466,8 +468,8 @@ mod tests {
         let candidates = [State::default(), cand];
         let opps = [State::default()];
 
-        let v1 = bot.evaluate_batch(&candidates, &opps);
-        let v2 = bot.evaluate_batch(&candidates, &opps);
+        let v1 = bot.evaluate_batch(&candidates, &opps, EvalClock::default());
+        let v2 = bot.evaluate_batch(&candidates, &opps, EvalClock::default());
         assert_eq!(v1.len(), 2);
         assert_eq!(v1, v2);
         assert!(v1.iter().all(|x| x.is_finite()));
@@ -526,9 +528,10 @@ mod tests {
         let g2_c = [b];
         let g2_o = [State::default(), a]; // different leader situation
 
-        let multi = bot.evaluate_batch_multi(&[(&g1_c[..], &g1_o[..]), (&g2_c[..], &g2_o[..])]);
-        let solo1 = bot.evaluate_batch(&g1_c, &g1_o);
-        let solo2 = bot.evaluate_batch(&g2_c, &g2_o);
+        let c = EvalClock::default();
+        let multi = bot.evaluate_batch_multi(&[(&g1_c[..], &g1_o[..], c), (&g2_c[..], &g2_o[..], c)]);
+        let solo1 = bot.evaluate_batch(&g1_c, &g1_o, c);
+        let solo2 = bot.evaluate_batch(&g2_c, &g2_o, c);
         assert_eq!(multi.len(), 2);
         assert_eq!(multi[0], solo1);
         assert_eq!(multi[1], solo2);
@@ -538,7 +541,7 @@ mod tests {
     fn evaluate_handles_empty_opponents() {
         let device = burn::backend::ndarray::NdArrayDevice::Cpu;
         let bot = PairStrategy::from_model(PairModelConfig::new().init::<MyBackend>(&device), device);
-        let v = bot.evaluate(&State::default(), &[]);
+        let v = bot.evaluate(&State::default(), &[], EvalClock::turn_start(1, 0));
         assert!(v.is_finite());
     }
 
@@ -550,7 +553,8 @@ mod tests {
         let mut a = State::default();
         a.apply_mark(Mark { row: 0, number: 4 });
         let b = State::default();
-        let groups: [(&State, &[State]); 2] = [(&a, &[b]), (&b, &[a])];
+        let c = EvalClock::after_own_turn(2);
+        let groups: [(&State, &[State], EvalClock); 2] = [(&a, &[b], c), (&b, &[a], c)];
         let zs = bot.win_z_multi(&groups);
         let ps = bot.win_prob_multi(&groups);
         for (z, p) in zs.iter().zip(&ps) {
@@ -572,7 +576,8 @@ mod tests {
         }
         let opp = State::default();
 
-        let p = bot.win_prob_multi(&[(&behind, &[opp]), (&ahead, &[opp])]);
+        let c = EvalClock::after_own_turn(2);
+        let p = bot.win_prob_multi(&[(&behind, &[opp], c), (&ahead, &[opp], c)]);
         assert_eq!(p.len(), 2);
         assert!(p.iter().all(|x| (0.0..=1.0).contains(x)));
         // A 28-point lead with the same opponent must not be rated worse.

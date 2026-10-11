@@ -419,11 +419,16 @@ impl DqnStrategy {
 }
 
 impl Bot for DqnStrategy {
-    fn evaluate(&self, our_state: &State, opp_states: &[State]) -> f32 {
-        self.evaluate_batch(&[*our_state], opp_states)[0]
+    fn evaluate(&self, our_state: &State, opp_states: &[State], clock: crate::strategy::EvalClock) -> f32 {
+        self.evaluate_batch(&[*our_state], opp_states, clock)[0]
     }
 
-    fn evaluate_batch(&self, candidates: &[State], opp_states: &[State]) -> Vec<f32> {
+    fn evaluate_batch(
+        &self,
+        candidates: &[State],
+        opp_states: &[State],
+        _clock: crate::strategy::EvalClock,
+    ) -> Vec<f32> {
         if opp_states.is_empty() {
             let ctx = OpponentContext::default();
             let feats: Vec<[f32; NUM_FEATURES]> = candidates.iter().map(|s| state_features(s, &ctx)).collect();

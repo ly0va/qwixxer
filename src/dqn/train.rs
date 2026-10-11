@@ -280,7 +280,7 @@ impl Strategy for RecordingDqn {
         state: &State,
         opp_states: &[State],
         dice: [u8; 6],
-        _active_player: usize,
+        active_player: usize,
     ) -> Option<Mark> {
         let white_sum = dice[0] + dice[1];
         let marks = state.generate_white_moves(white_sum);
@@ -288,7 +288,8 @@ impl Strategy for RecordingDqn {
             return None;
         }
 
-        let mark = crate::strategy::passive_phase1_impl(&self.bot, state, opp_states, dice);
+        let clock = crate::strategy::EvalClock::mid_turn(opp_states.len() + 1, active_player + 1);
+        let mark = crate::strategy::passive_phase1_impl(&self.bot, state, opp_states, dice, clock);
 
         if let Some(m) = mark {
             let mut s = *state;

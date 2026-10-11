@@ -6,6 +6,7 @@
 use super::bot_impl::{
     active_phase1_impl, active_phase2_choices, eval_decision, passive_phase1_choices, phase1_plan_choices, Decision,
 };
+use super::clock::EvalClock;
 use super::Bot;
 use crate::game::DiceSource;
 use crate::state::{Mark, State};
@@ -90,10 +91,20 @@ pub fn play_sim_turn(bot: &impl Bot, sim: &mut SimGame, fidelity: Fidelity) {
         let m = if j == sim.active {
             match fidelity {
                 Fidelity::Full => active_phase1_impl(bot, &snapshot[j], &view, dice),
-                Fidelity::Lite => eval_decision(bot, phase1_plan_choices(&snapshot[j], &view, dice), &view),
+                Fidelity::Lite => eval_decision(
+                    bot,
+                    phase1_plan_choices(&snapshot[j], &view, dice),
+                    &view,
+                    EvalClock::after_own_turn(n),
+                ),
             }
         } else {
-            eval_decision(bot, passive_phase1_choices(&snapshot[j], &view, dice), &view)
+            eval_decision(
+                bot,
+                passive_phase1_choices(&snapshot[j], &view, dice),
+                &view,
+                EvalClock::mid_turn(n, (sim.active + n - j) % n),
+            )
         };
         marks.push(m);
     }
@@ -112,7 +123,7 @@ pub fn play_sim_turn(bot: &impl Bot, sim: &mut SimGame, fidelity: Fidelity) {
     // Phase 2: active player only.
     let view = SimGame::opp_view(&sim.states, sim.active);
     let decision = active_phase2_choices(&sim.states[sim.active], &view, dice, has_marked);
-    match eval_decision(bot, decision, &view) {
+    match eval_decision(bot, decision, &view, EvalClock::after_own_turn(n)) {
         Some(m) => sim.states[sim.active].apply_mark(m),
         None if !has_marked => sim.states[sim.active].apply_strike(),
         None => {}
@@ -141,6 +152,7 @@ struct PendingChoice {
     cands: Vec<(Option<Mark>, State)>,
     states: Vec<State>,
     view: Vec<State>,
+    clock: EvalClock,
 }
 
 impl<'a, B: Bot> BatchedRollouts<'a, B> {
@@ -155,9 +167,9 @@ impl<'a, B: Bot> BatchedRollouts<'a, B> {
     /// Resolve a batch of pending choices with one multi-group evaluation.
     /// Returns (sim, player, chosen mark) triples.
     fn resolve(&self, pending: Vec<PendingChoice>) -> Vec<(usize, usize, Option<Mark>)> {
-        let groups: Vec<(&[State], &[State])> = pending
+        let groups: Vec<(&[State], &[State], EvalClock)> = pending
             .iter()
-            .map(|p| (p.states.as_slice(), p.view.as_slice()))
+            .map(|p| (p.states.as_slice(), p.view.as_slice(), p.clock))
             .collect();
         let values = self.bot.evaluate_batch_multi(&groups);
         pending
@@ -201,12 +213,18 @@ impl<'a, B: Bot> BatchedRollouts<'a, B> {
                     Decision::Forced(m) => marks[li][j] = m,
                     Decision::Choices(cands) => {
                         let states: Vec<State> = cands.iter().map(|(_, s)| *s).collect();
+                        let clock = if j == sim.active {
+                            EvalClock::after_own_turn(n)
+                        } else {
+                            EvalClock::mid_turn(n, (sim.active + n - j) % n)
+                        };
                         pending.push(PendingChoice {
                             sim: li,
                             player: j,
                             cands,
                             states,
                             view,
+                            clock,
                         });
                     }
                 }
@@ -251,6 +269,7 @@ impl<'a, B: Bot> BatchedRollouts<'a, B> {
                         cands,
                         states,
                         view,
+                        clock: EvalClock::after_own_turn(sim.n()),
                     });
                 }
             }
@@ -288,6 +307,31 @@ mod tests {
     use rand::SeedableRng;
     use std::sync::Arc;
 
+    type Log = std::rc::Rc<std::cell::RefCell<Vec<(Vec<State>, Vec<State>, EvalClock)>>>;
+
+    /// Records every evaluation (candidates, opps, clock) into a shared log.
+    #[derive(Debug)]
+    struct Rec {
+        inner: PairStrategy,
+        log: Log,
+    }
+
+    impl Bot for Rec {
+        fn evaluate(&self, o: &State, opps: &[State], c: EvalClock) -> f32 {
+            self.evaluate_batch(&[*o], opps, c)[0]
+        }
+        fn evaluate_batch(&self, cands: &[State], opps: &[State], c: EvalClock) -> Vec<f32> {
+            self.log.borrow_mut().push((cands.to_vec(), opps.to_vec(), c));
+            self.inner.evaluate_batch(cands, opps, c)
+        }
+    }
+
+    fn canon(log: &Log) -> Vec<String> {
+        let mut v: Vec<String> = log.borrow().iter().map(|e| format!("{e:?}")).collect();
+        v.sort();
+        v
+    }
+
     #[test]
     fn sim_turn_loop_matches_game_play() {
         let device = burn::backend::ndarray::NdArrayDevice::Cpu;
@@ -295,11 +339,16 @@ mod tests {
 
         for &n in &[2usize, 3, 4] {
             for seed in 0..3u64 {
-                // Reference: real Game with PairStrategy players.
+                // Reference: real Game with PairStrategy players, all
+                // recording into one log (players are called in seat order).
+                let game_log = Log::default();
                 let players: Vec<Player> = (0..n)
                     .map(|i| {
                         Player::new(
-                            Box::new(PairStrategy::from_shared(model.clone(), device)),
+                            Box::new(Rec {
+                                inner: PairStrategy::from_shared(model.clone(), device),
+                                log: game_log.clone(),
+                            }),
                             Box::new(SmallRng::seed_from_u64(1000 * seed + i as u64)),
                         )
                     })
@@ -308,7 +357,11 @@ mod tests {
                 game.play();
 
                 // Sim: same model, same per-player dice streams, full fidelity.
-                let bot = PairStrategy::from_shared(model.clone(), device);
+                let sim_log = Log::default();
+                let bot = Rec {
+                    inner: PairStrategy::from_shared(model.clone(), device),
+                    log: sim_log.clone(),
+                };
                 let mut sim = SimGame {
                     states: vec![State::default(); n],
                     active: 0,
@@ -330,6 +383,12 @@ mod tests {
                         "n={n} seed={seed} player={i}: sim diverged from Game::play"
                     );
                 }
+                assert!(!game_log.borrow().is_empty());
+                assert_eq!(
+                    *game_log.borrow(),
+                    *sim_log.borrow(),
+                    "n={n} seed={seed}: evaluation clocks diverged from Game::play"
+                );
             }
         }
 
@@ -380,44 +439,64 @@ mod tests {
     fn lockstep_driver_matches_sequential_lite_sims() {
         let device = burn::backend::ndarray::NdArrayDevice::Cpu;
         let model = Arc::new(PairModelConfig::new().init::<MyBackend>(&device));
-        let bot = PairStrategy::from_shared(model, device);
+        let mut any_over = false;
 
-        let make_sims = || -> Vec<SimGame> {
-            (0..8u64)
-                .map(|k| SimGame {
-                    states: vec![State::default(); 2],
-                    active: 0,
-                    rngs: (0..2).map(|i| SmallRng::seed_from_u64(7000 + 10 * k + i)).collect(),
-                    over: false,
-                })
-                .collect()
-        };
+        for &n in &[2usize, 3, 4] {
+            let make_sims = || -> Vec<SimGame> {
+                (0..8u64)
+                    .map(|k| SimGame {
+                        states: vec![State::default(); n],
+                        active: (k as usize) % n,
+                        rngs: (0..n as u64)
+                            .map(|i| SmallRng::seed_from_u64(7000 + 10 * k + i))
+                            .collect(),
+                        over: false,
+                    })
+                    .collect()
+            };
 
-        // Sequential reference (Lite fidelity).
-        let mut seq = make_sims();
-        for _ in 0..30 {
-            for sim in seq.iter_mut() {
-                play_sim_turn(&bot, sim, Fidelity::Lite);
+            // Sequential reference (Lite fidelity).
+            let seq_log = Log::default();
+            let seq_bot = Rec {
+                inner: PairStrategy::from_shared(model.clone(), device),
+                log: seq_log.clone(),
+            };
+            let mut seq = make_sims();
+            for _ in 0..30 {
+                for sim in seq.iter_mut() {
+                    play_sim_turn(&seq_bot, sim, Fidelity::Lite);
+                }
             }
-        }
 
-        // Lockstep.
-        let mut batched = BatchedRollouts::new(&bot, make_sims());
-        for _ in 0..30 {
-            batched.step_turn();
-        }
+            // Lockstep.
+            let drv_log = Log::default();
+            let drv_bot = Rec {
+                inner: PairStrategy::from_shared(model.clone(), device),
+                log: drv_log.clone(),
+            };
+            let mut batched = BatchedRollouts::new(&drv_bot, make_sims());
+            for _ in 0..30 {
+                batched.step_turn();
+            }
 
-        for (a, b) in seq.iter().zip(&batched.sims) {
-            assert_eq!(a.over, b.over);
-            assert_eq!(a.active, b.active);
-            assert_eq!(a.states, b.states);
+            for (a, b) in seq.iter().zip(&batched.sims) {
+                assert_eq!(a.over, b.over, "n={n}");
+                assert_eq!(a.active, b.active, "n={n}");
+                assert_eq!(a.states, b.states, "n={n}");
+            }
+            // The driver batches across sims in a different order: compare
+            // the evaluations (with their clocks) as multisets.
+            assert!(!drv_log.borrow().is_empty());
+            assert_eq!(
+                canon(&seq_log),
+                canon(&drv_log),
+                "n={n}: lockstep driver clocks diverged"
+            );
+            any_over |= batched.sims.iter().any(|s| s.over);
         }
 
         // The over-mask path must actually be exercised: with 30 turns the
         // random-init bot strikes out some sims at staggered times.
-        assert!(
-            batched.sims.iter().any(|s| s.over),
-            "no sim finished — over-mask path untested"
-        );
+        assert!(any_over, "no sim finished — over-mask path untested");
     }
 }

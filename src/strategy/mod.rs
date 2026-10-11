@@ -27,16 +27,19 @@ pub trait Strategy: std::fmt::Debug {
     }
 }
 
+/// Value of candidate post-move states. `clock` gives every board's turn
+/// position at the evaluation point (`clock.opps` aligned with `opp_states`);
+/// callers supply it from the decision context.
 pub trait Bot: std::fmt::Debug {
-    fn evaluate(&self, our_state: &State, opp_states: &[State]) -> f32;
-    fn evaluate_batch(&self, candidates: &[State], opp_states: &[State]) -> Vec<f32> {
-        candidates.iter().map(|s| self.evaluate(s, opp_states)).collect()
+    fn evaluate(&self, our_state: &State, opp_states: &[State], clock: EvalClock) -> f32;
+    fn evaluate_batch(&self, candidates: &[State], opp_states: &[State], clock: EvalClock) -> Vec<f32> {
+        candidates.iter().map(|s| self.evaluate(s, opp_states, clock)).collect()
     }
-    /// Evaluate several independent (candidates, opp_states) groups. The
-    /// default loops `evaluate_batch`; bots with batched inference override
-    /// this to run all groups in a single forward pass.
-    fn evaluate_batch_multi(&self, groups: &[(&[State], &[State])]) -> Vec<Vec<f32>> {
-        groups.iter().map(|(c, o)| self.evaluate_batch(c, o)).collect()
+    /// Evaluate several independent (candidates, opp_states, clock) groups.
+    /// The default loops `evaluate_batch`; bots with batched inference
+    /// override this to run all groups in a single forward pass.
+    fn evaluate_batch_multi(&self, groups: &[(&[State], &[State], EvalClock)]) -> Vec<Vec<f32>> {
+        groups.iter().map(|(c, o, k)| self.evaluate_batch(c, o, *k)).collect()
     }
 }
 

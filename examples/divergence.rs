@@ -17,7 +17,7 @@ use qwixxer::strategy::search::{
     context_seed, sample_player_seed, SearchBot, SearchConfig, WinProb, GATE_MARGIN, HORIZON_ROUNDS, K_CANDIDATES, K_SAMPLES,
 };
 use qwixxer::strategy::sim::{BatchedRollouts, SimGame};
-use qwixxer::strategy::{Bot, Strategy};
+use qwixxer::strategy::{Bot, EvalClock, Strategy};
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 use serde::{Deserialize, Serialize};
@@ -491,6 +491,7 @@ fn build_lock_cands(
     bot: &PairStrategy,
     state: &State,
     eval_opps: &[State],
+    clock: EvalClock,
     baseline: State,
     rule_free: Decision,
     lock: Mark,
@@ -499,7 +500,7 @@ fn build_lock_cands(
     let (cands, rule_free_forced) = match rule_free {
         Decision::Choices(plans) => {
             let states: Vec<State> = plans.iter().map(|(_, s)| *s).collect();
-            let values = bot.evaluate_batch(&states, eval_opps);
+            let values = bot.evaluate_batch(&states, eval_opps, clock);
             let cands = if collapse {
                 collapse_plans(&plans, &values)
             } else {
@@ -534,7 +535,7 @@ fn build_lock_cands(
                 None => baseline,
             };
             let states = [mk(alt), mk(Some(lock))];
-            let values = bot.evaluate_batch(&states, eval_opps);
+            let values = bot.evaluate_batch(&states, eval_opps, clock);
             let mut c: Vec<Cand> = [(alt, states[0], values[0]), (Some(lock), states[1], values[1])]
                 .into_iter()
                 .map(|(m, s, v)| Cand {
@@ -679,7 +680,7 @@ impl Strategy for ShadowPair {
             Decision::Choices(c) => c,
         };
         let states: Vec<State> = plans.iter().map(|(_, s)| *s).collect();
-        let values = self.static_bot.evaluate_batch(&states, &sim_opp);
+        let values = self.static_bot.evaluate_batch(&states, &sim_opp, EvalClock::after_own_turn(opp_states.len() + 1));
         // Production-identical static play: eval_decision == argmax over plans.
         let static_mark = plans[argmax(&values)].0;
         let cands = collapse_plans(&plans, &values);
@@ -697,7 +698,7 @@ impl Strategy for ShadowPair {
             Decision::Choices(c) => c,
         };
         let states: Vec<State> = choices.iter().map(|(_, s)| *s).collect();
-        let values = self.static_bot.evaluate_batch(&states, opp_states);
+        let values = self.static_bot.evaluate_batch(&states, opp_states, EvalClock::after_own_turn(opp_states.len() + 1));
         let static_mark = choices[argmax(&values)].0;
         let mut cands: Vec<Cand> = choices
             .iter()
@@ -807,7 +808,7 @@ impl Strategy for LockShadowPair {
             Decision::Forced(m) => Some(*m),
             Decision::Choices(_) => None,
         };
-        let prod_move = eval_decision(&self.static_bot, decision, &sim_opp);
+        let prod_move = eval_decision(&self.static_bot, decision, &sim_opp, EvalClock::after_own_turn(opp_states.len() + 1));
 
         let (scan_lock, rule_free) = phase1_plans_mirror(state, &sim_opp, dice);
         if let Some(lock) = scan_lock {
@@ -819,7 +820,7 @@ impl Strategy for LockShadowPair {
                 self.turn,
                 context_seed(state, &sim_opp, dice)
             );
-            match build_lock_cands(&self.static_bot, state, &sim_opp, *state, rule_free, lock, true) {
+            match build_lock_cands(&self.static_bot, state, &sim_opp, EvalClock::after_own_turn(opp_states.len() + 1), *state, rule_free, lock, true) {
                 Ok(lc) => self.log("ap1", None, state, opp_states, dice, lock, lc),
                 Err(reason) => self.skips.borrow_mut().push(reason),
             }
@@ -833,7 +834,7 @@ impl Strategy for LockShadowPair {
             Decision::Forced(m) => Some(*m),
             Decision::Choices(_) => None,
         };
-        let prod_move = eval_decision(&self.static_bot, decision, opp_states);
+        let prod_move = eval_decision(&self.static_bot, decision, opp_states, EvalClock::after_own_turn(opp_states.len() + 1));
 
         let marks = state.generate_color_moves(dice);
         if let Some(lock) = find_safe_lock(state, &marks) {
@@ -853,7 +854,7 @@ impl Strategy for LockShadowPair {
             };
             let opp_best = opp_states.iter().map(|s| s.count_points()).max().unwrap_or(0);
             let rule_free = mark_choices_nolock(state, &marks, baseline, opp_best);
-            match build_lock_cands(&self.static_bot, state, opp_states, baseline, rule_free, lock, false) {
+            match build_lock_cands(&self.static_bot, state, opp_states, EvalClock::after_own_turn(opp_states.len() + 1), baseline, rule_free, lock, false) {
                 Ok(lc) => self.log("ap2", Some(has_marked), state, opp_states, dice, lock, lc),
                 Err(reason) => self.skips.borrow_mut().push(reason),
             }
@@ -881,7 +882,7 @@ impl Strategy for LockShadowPair {
             );
             let opp_best = opp_best_phase1_score(opp_states, white_sum);
             let rule_free = mark_choices_nolock(state, &marks, *state, opp_best);
-            match build_lock_cands(&self.static_bot, state, opp_states, *state, rule_free, lock, false) {
+            match build_lock_cands(&self.static_bot, state, opp_states, EvalClock::mid_turn(opp_states.len() + 1, active_player + 1), *state, rule_free, lock, false) {
                 Ok(lc) => self.log("pp1", None, state, opp_states, dice, lock, lc),
                 Err(reason) => self.skips.borrow_mut().push(reason),
             }
@@ -933,10 +934,10 @@ impl Strategy for VariantPair {
         if self.suppressing(state, opp_states) {
             let (scan_lock, rule_free) = phase1_plans_mirror(state, &sim_opp, dice);
             if scan_lock.is_some() {
-                return eval_decision(&self.bot, rule_free, &sim_opp);
+                return eval_decision(&self.bot, rule_free, &sim_opp, EvalClock::after_own_turn(opp_states.len() + 1));
             }
         }
-        eval_decision(&self.bot, decision, &sim_opp)
+        eval_decision(&self.bot, decision, &sim_opp, EvalClock::after_own_turn(opp_states.len() + 1))
     }
 
     fn active_phase2(&mut self, state: &State, opp_states: &[State], dice: [u8; 6], has_marked: bool) -> Option<Mark> {
@@ -952,10 +953,15 @@ impl Strategy for VariantPair {
                 };
                 let opp_best = opp_states.iter().map(|s| s.count_points()).max().unwrap_or(0);
                 let rule_free = mark_choices_nolock(state, &marks, baseline, opp_best);
-                return eval_decision(&self.bot, rule_free, opp_states);
+                return eval_decision(&self.bot, rule_free, opp_states, EvalClock::after_own_turn(opp_states.len() + 1));
             }
         }
-        eval_decision(&self.bot, active_phase2_choices(state, opp_states, dice, has_marked), opp_states)
+        eval_decision(
+            &self.bot,
+            active_phase2_choices(state, opp_states, dice, has_marked),
+            opp_states,
+            EvalClock::after_own_turn(opp_states.len() + 1),
+        )
     }
 
     fn passive_phase1(
@@ -971,7 +977,7 @@ impl Strategy for VariantPair {
             if find_safe_lock(state, &marks).is_some() {
                 let opp_best = opp_best_phase1_score(opp_states, white_sum);
                 let rule_free = mark_choices_nolock(state, &marks, *state, opp_best);
-                return eval_decision(&self.bot, rule_free, opp_states);
+                return eval_decision(&self.bot, rule_free, opp_states, EvalClock::mid_turn(opp_states.len() + 1, active_player + 1));
             }
         }
         self.bot.passive_phase1(state, opp_states, dice, active_player)
@@ -1094,7 +1100,7 @@ fn phase1_entries(
             }
             let view = SimGame::opp_view(&all, 0);
             let d = active_phase2_choices(&all[0], &view, dice, c.mark.is_some());
-            match eval_decision(bot, d, &view) {
+            match eval_decision(bot, d, &view, EvalClock::after_own_turn(all.len())) {
                 Some(m) => all[0].apply_mark(m),
                 None if c.mark.is_none() => all[0].apply_strike(),
                 None => {}
@@ -1155,10 +1161,13 @@ fn rollout_scores(bot: &PairStrategy, entries: &[(Vec<State>, bool)], seed: u64,
         .iter()
         .map(|&i| SimGame::opp_view(&driver.sims[i].states, 0))
         .collect();
-    let groups: Vec<(&State, &[State])> = survivor_idx
+    let groups: Vec<(&State, &[State], EvalClock)> = survivor_idx
         .iter()
         .zip(&survivor_views)
-        .map(|(&i, v)| (&driver.sims[i].states[0], v.as_slice()))
+        .map(|(&i, v)| {
+            let sim = &driver.sims[i];
+            (&sim.states[0], v.as_slice(), EvalClock::turn_start(n, sim.active))
+        })
         .collect();
     let probs = bot.win_prob_multi(&groups);
     let mut prob_iter = probs.into_iter();
@@ -1212,7 +1221,7 @@ fn passive_entries(
             // Active player's phase 1 (index 1).
             let view = SimGame::opp_view(&all, 1);
             let (d, _) = active_phase1_choices(bot, &all[1], &view, dice);
-            let p1 = eval_decision(bot, d, &view);
+            let p1 = eval_decision(bot, d, &view, EvalClock::after_own_turn(all.len()));
             if let Some(m) = p1 {
                 all[1].apply_mark(m);
             }
@@ -1223,7 +1232,7 @@ fn passive_entries(
             // Active player's phase 2.
             let view = SimGame::opp_view(&all, 1);
             let d = active_phase2_choices(&all[1], &view, dice, p1.is_some());
-            match eval_decision(bot, d, &view) {
+            match eval_decision(bot, d, &view, EvalClock::after_own_turn(all.len())) {
                 Some(m) => all[1].apply_mark(m),
                 None if p1.is_none() => all[1].apply_strike(),
                 None => {}
@@ -1346,7 +1355,7 @@ fn relabel_event(ev: &DecisionEvent, bot: &PairStrategy, k: usize, lineno: usize
                 Decision::Forced(_) => panic!("line {lineno}: logged decision is now meta-forced — drift"),
             };
             let states: Vec<State> = plans.iter().map(|(_, s)| *s).collect();
-            let values = bot.evaluate_batch(&states, &sim_opp);
+            let values = bot.evaluate_batch(&states, &sim_opp, EvalClock::after_own_turn(opps.len() + 1));
             let cands = collapse_plans(&plans, &values);
             let entries = phase1_entries(bot, &our, &sim_opp, ev.dice, &cands[..cands.len().min(K_CANDIDATES)]);
             (cands, entries)
@@ -1357,7 +1366,7 @@ fn relabel_event(ev: &DecisionEvent, bot: &PairStrategy, k: usize, lineno: usize
                 Decision::Forced(_) => panic!("line {lineno}: logged decision is now meta-forced — drift"),
             };
             let states: Vec<State> = choices.iter().map(|(_, s)| *s).collect();
-            let values = bot.evaluate_batch(&states, &opps);
+            let values = bot.evaluate_batch(&states, &opps, EvalClock::after_own_turn(opps.len() + 1));
             let mut cands: Vec<Cand> = choices
                 .iter()
                 .zip(&values)
@@ -1701,7 +1710,7 @@ fn adjudicate_event(ev: &LockEvent, bot: &PairStrategy, k: usize, lineno: usize)
             sim_opp_holder = sim_opp;
             let (scan_lock, rule_free) = phase1_plans_mirror(&our, &sim_opp_holder, ev.dice);
             assert_eq!(scan_lock, Some(lock), "line {lineno}: ap1 lock rebuild mismatch");
-            build_lock_cands(bot, &our, &sim_opp_holder, our, rule_free, lock, true)
+            build_lock_cands(bot, &our, &sim_opp_holder, EvalClock::after_own_turn(opps.len() + 1), our, rule_free, lock, true)
         }
         "ap2" => {
             let marks = our.generate_color_moves(ev.dice);
@@ -1715,7 +1724,7 @@ fn adjudicate_event(ev: &LockEvent, bot: &PairStrategy, k: usize, lineno: usize)
             };
             let opp_best = opps.iter().map(|s| s.count_points()).max().unwrap_or(0);
             let rule_free = mark_choices_nolock(&our, &marks, baseline, opp_best);
-            build_lock_cands(bot, &our, &opps, baseline, rule_free, lock, false)
+            build_lock_cands(bot, &our, &opps, EvalClock::after_own_turn(opps.len() + 1), baseline, rule_free, lock, false)
         }
         "pp1" => {
             let white_sum = ev.dice[0] + ev.dice[1];
@@ -1723,7 +1732,7 @@ fn adjudicate_event(ev: &LockEvent, bot: &PairStrategy, k: usize, lineno: usize)
             assert_eq!(find_safe_lock(&our, &marks), Some(lock), "line {lineno}: pp1 lock rebuild mismatch");
             let opp_best = opp_best_phase1_score(&opps, white_sum);
             let rule_free = mark_choices_nolock(&our, &marks, our, opp_best);
-            build_lock_cands(bot, &our, &opps, our, rule_free, lock, false)
+            build_lock_cands(bot, &our, &opps, EvalClock::mid_turn(opps.len() + 1, 1), our, rule_free, lock, false)
         }
         c => panic!("line {lineno}: bad ctx {c}"),
     }
