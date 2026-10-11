@@ -74,14 +74,17 @@ pub fn board_features(state: &State, clock: BoardClock, others: &[&State]) -> [f
 pub fn pair_features(our: &State, paired_idx: usize, opps: &[State], clock: EvalClock) -> [f32; PAIR_FEATURES] {
     assert!(
         opps.len() < crate::strategy::clock::MAX_PLAYERS,
-        "pair features support up to 4 players"
+        "pair features support up to {} players",
+        crate::strategy::clock::MAX_PLAYERS
     );
     let paired = &opps[paired_idx];
-    let mut ours_others: [&State; 3] = [our; 3];
+    let mut ours_others: [&State; crate::strategy::clock::MAX_PLAYERS - 1] =
+        [our; crate::strategy::clock::MAX_PLAYERS - 1];
     for (i, o) in opps.iter().enumerate() {
         ours_others[i] = o;
     }
-    let mut theirs_others: [&State; 3] = [our; 3];
+    let mut theirs_others: [&State; crate::strategy::clock::MAX_PLAYERS - 1] =
+        [our; crate::strategy::clock::MAX_PLAYERS - 1];
     let mut m = 1;
     for (j, o) in opps.iter().enumerate() {
         if j != paired_idx {
@@ -763,5 +766,17 @@ mod tests {
                 assert!((u - v).abs() < 1e-5, "{a:?} vs {b:?}");
             }
         }
+    }
+
+    #[test]
+    fn five_player_pair_features_do_not_panic() {
+        let s: Vec<State> = (0..5u8)
+            .map(|i| State::from_parts(0, [(i, Some(2 + i)), (0, Some(2)), (0, Some(12)), (0, Some(12))]))
+            .collect();
+        let f = pair_features(&s[0], 3, &s[1..], EvalClock::mid_turn(5, 2));
+        assert!(f.iter().all(|x| x.is_finite()));
+        // rolls_in 4 (seat 3 when seat 4 rolls next) clamps to 1.
+        let g = pair_features(&s[0], 0, &s[1..], EvalClock::turn_start(5, 1));
+        assert_eq!(g[20], 1.0);
     }
 }

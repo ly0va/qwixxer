@@ -583,4 +583,22 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn five_player_games_run_for_clock_ignoring_bots() {
+        // Regression: GA (which ignores clocks) must still play 5-player games.
+        use crate::game::{Game, Player};
+        use rand::SeedableRng;
+        let genes = std::sync::Arc::new(crate::bot::default_genes());
+        let mut rng = rand::rngs::SmallRng::seed_from_u64(3);
+        let players: Vec<Player> = (0..5u64)
+            .map(|i| {
+                Player::new(
+                    Box::new(crate::bot::DNA::new_random(genes.clone(), &mut rng)),
+                    Box::new(rand::rngs::SmallRng::seed_from_u64(i)),
+                )
+            })
+            .collect();
+        Game::new(players).play();
+    }
 }

@@ -119,7 +119,7 @@ pub fn lock_threats(board: &State, others: &[&State]) -> [f32; 4] {
         // white-sum locks, P(sum = terminal) = 1/36) and each other player's.
         // Factors are multiplied in sorted order so the result is bit-identical
         // for any order of `others`.
-        let mut factors = [1.0f32; 4];
+        let mut factors = [1.0f32; crate::strategy::clock::MAX_PLAYERS];
         factors[0] = if any_white { 1.0 - 1.0 / 36.0 } else { 1.0 };
         for (i, s) in others.iter().enumerate() {
             let (act, uni) = t[row_key(s, r)];

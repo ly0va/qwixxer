@@ -3,8 +3,10 @@
 //! is a property of one board at one moment — independent of who evaluates —
 //! so it travels with its board when opponent lists are reordered.
 
-/// Most players the turn inputs support.
-pub const MAX_PLAYERS: usize = 4;
+/// Most players a clock can describe. The turn inputs are designed for 2–4
+/// players; with 5–6, `rolls_in` above 3 is clamped by the feature (spec §1),
+/// so games stay playable for every bot.
+pub const MAX_PLAYERS: usize = 6;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub struct BoardClock {
@@ -165,8 +167,19 @@ mod tests {
     }
 
     #[test]
+    fn five_and_six_player_clocks_are_valid() {
+        // Qwixx allows 5 players; clocks must not overflow (rolls_in is
+        // clamped by the feature, not by the clock).
+        let c = EvalClock::mid_turn(5, 4);
+        assert_eq!((c.opp(3), c.us), (bc(4, true), bc(0, false)));
+        let r = c.reframe_to_opp(3, 4);
+        assert_eq!(r.us, c.opp(3));
+        assert_eq!(EvalClock::turn_start(6, 2).opp(4), bc(3, false));
+    }
+
+    #[test]
     #[should_panic(expected = "opponents")]
     fn from_boards_rejects_too_many_opponents() {
-        EvalClock::from_boards(BoardClock::default(), &[BoardClock::default(); 4]);
+        EvalClock::from_boards(BoardClock::default(), &[BoardClock::default(); MAX_PLAYERS]);
     }
 }
