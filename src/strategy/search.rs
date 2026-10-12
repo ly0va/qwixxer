@@ -286,7 +286,7 @@ pub(crate) fn gates(values: &[(f32, State)], our: &State, opps: &[State]) -> (bo
 /// opponents' (simultaneous) phase-1 marks are `sim_opp` and our phase 2 is
 /// re-decided. Returns (all-player states, game-ended). Extracted from
 /// `SearchBot::active_phase1` for reuse by training-time distillation.
-pub(crate) fn phase1_entry(
+pub fn phase1_entry(
     bot: &impl Bot,
     state: &State,
     sim_opp: &[State],
@@ -316,7 +316,7 @@ pub(crate) fn phase1_entry(
 
 /// Post-phase-2 entry: candidate post-state + current opponents.
 /// Extracted from `SearchBot::active_phase2`.
-pub(crate) fn phase2_entry(post: State, opps: &[State]) -> (Vec<State>, bool) {
+pub fn phase2_entry(post: State, opps: &[State]) -> (Vec<State>, bool) {
     let mut all: Vec<State> = std::iter::once(post).chain(opps.iter().copied()).collect();
     SimGame::propagate_locks(&mut all);
     let ended = SimGame::game_over(&all);
@@ -339,7 +339,7 @@ pub(crate) fn phase2_entry(post: State, opps: &[State]) -> (Vec<State>, bool) {
 /// the contrast): the real phase-1 was simultaneous; here our candidate mark
 /// is applied first, then every OTHER passive player's phase 1, then the
 /// active player's phase 1 + phase 2, with lock propagation between steps.
-pub(crate) fn passive_entry(
+pub fn passive_entry(
     bot: &impl Bot,
     state: &State,
     opps: &[State],
@@ -419,7 +419,7 @@ pub(crate) fn select_lock_trio(state: &State, sorted: &[Option<Mark>], lock: Mar
 /// Entry-frame seat that takes the first rollout turn after a passive
 /// decision: the seat after the active one (`active_player` indexes the
 /// receiver's turn-ordered `opp_states`; see [`passive_entry`]).
-pub(crate) fn passive_first_active(active_player: usize, n: usize) -> usize {
+pub fn passive_first_active(active_player: usize, n: usize) -> usize {
     (active_player + 2) % n
 }
 

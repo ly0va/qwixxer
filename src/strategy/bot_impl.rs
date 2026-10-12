@@ -197,7 +197,7 @@ pub(crate) fn mark_choices_with(
 
 // ---------------------------------------------------------------------------
 
-pub(crate) fn passive_phase1_choices(state: &State, opp_states: &[State], dice: [u8; 6]) -> Decision {
+pub fn passive_phase1_choices(state: &State, opp_states: &[State], dice: [u8; 6]) -> Decision {
     let white_sum = dice[0] + dice[1];
     let marks = state.generate_white_moves(white_sum);
     let opp_best = opp_best_phase1_score(opp_states, white_sum);
