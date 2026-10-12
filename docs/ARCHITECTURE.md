@@ -268,7 +268,11 @@ docs/superpowers/specs/2026-06-11-expert-iteration-design.md.
 samples), `search_passive` (also search gated passive decisions via
 `passive_entry`), `lock_k` (adjudicate forced safe locks against the best
 non-lock alternative and runner-up lock by full-game rollouts), `stratify`
-(stratified first-roll white dice; did not help). `Default` = production
+(stratified first-roll white dice; did not help), `blend` (pick by
+`(1 − λ)·Φ(static z) + λ·rollout mean` instead of the rollout mean alone;
+spec `blend=λ`, off in production) and `gate` (close-gate margin, spec
+`gate=G`, default `GATE_MARGIN` = 0.15; distillation keeps the constant).
+`Default` = production
 = `k=128,passive,lock=256` since Phase 21; `SearchConfig::legacy()` = the
 Phase 13–20 search (active-only, forced locks), still used by the
 `pair-train --search` expert and the divergence harness.

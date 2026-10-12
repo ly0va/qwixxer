@@ -153,6 +153,11 @@ pub struct SearchConfig {
     /// Stratify each player's first rollout roll over the 36 ordered white
     /// pairs (exact balance when the sample count is a multiple of 36).
     pub stratify: bool,
+    /// Pick by `(1 − λ)·Φ(static z) + λ·rollout mean` (shrink the noisy
+    /// rollout estimate toward the static value); `None` = rollout mean alone.
+    pub blend: Option<f32>,
+    /// Close-gate margin: search when the top-2 static gap is below this.
+    pub gate: f32,
 }
 
 /// Full-game rollouts per compared candidate at a forced safe lock.
@@ -165,6 +170,8 @@ impl Default for SearchConfig {
             search_passive: true,
             lock_k: Some(LOCK_K),
             stratify: false,
+            blend: None,
+            gate: GATE_MARGIN,
         }
     }
 }
@@ -183,10 +190,16 @@ impl SearchConfig {
 
     /// Parse a comma-separated spec on top of the production defaults:
     /// `passive` / `nopassive`, `lock=N` / `nolock` (lock-adjudication
-    /// rollouts), `strat`, `k=N` (truncated-search samples). Empty = production.
+    /// rollouts), `strat`, `k=N` (truncated-search samples), `blend=λ`
+    /// (λ in [0, 1]), `gate=G` (close-gate margin ≥ 0). Empty = production.
     pub fn parse(spec: &str) -> Result<Self, String> {
         let mut cfg = Self::default();
         let num = |key: &str, v: &str| v.parse::<usize>().map_err(|e| format!("{key}={v}: {e}"));
+        let real = |key: &str, v: &str, max: f32| match v.parse::<f32>() {
+            Ok(x) if (0.0..=max).contains(&x) => Ok(x),
+            Ok(_) => Err(format!("{key}={v}: out of range [0, {max}]")),
+            Err(e) => Err(format!("{key}={v}: {e}")),
+        };
         for tok in spec.split(',').map(str::trim).filter(|t| !t.is_empty()) {
             match tok.split_once('=') {
                 None if tok == "passive" => cfg.search_passive = true,
@@ -195,11 +208,11 @@ impl SearchConfig {
                 None if tok == "strat" => cfg.stratify = true,
                 Some(("k", v)) => cfg.k_samples = num("k", v)?,
                 Some(("lock", v)) => cfg.lock_k = Some(num("lock", v)?),
-                _ => {
-                    return Err(format!(
-                        "unknown search option {tok:?} (passive, nopassive, lock=N, nolock, strat, k=N)"
-                    ))
-                }
+                Some(("blend", v)) => cfg.blend = Some(real("blend", v, 1.0)?),
+                Some(("gate", v)) => cfg.gate = real("gate", v, f32::MAX)?,
+                _ => return Err(format!(
+                    "unknown search option {tok:?} (passive, nopassive, lock=N, nolock, strat, k=N, blend=λ, gate=G)"
+                )),
             }
         }
         Ok(cfg)
@@ -217,6 +230,12 @@ impl std::fmt::Display for SearchConfig {
         }
         if self.stratify {
             write!(f, ",strat")?;
+        }
+        if let Some(l) = self.blend {
+            write!(f, ",blend={l}")?;
+        }
+        if self.gate != GATE_MARGIN {
+            write!(f, ",gate={}", self.gate)?;
         }
         Ok(())
     }
@@ -270,7 +289,12 @@ struct Candidate {
 /// semantics; the (value, post) signature avoids exposing the private
 /// `Candidate` type.
 pub(crate) fn gates(values: &[(f32, State)], our: &State, opps: &[State]) -> (bool, bool) {
-    let close = values[0].0 - values[1].0 < GATE_MARGIN;
+    gates_with(values, our, opps, GATE_MARGIN)
+}
+
+/// [`gates`] with an explicit close-gate margin ([`SearchConfig::gate`]).
+pub(crate) fn gates_with(values: &[(f32, State)], our: &State, opps: &[State], margin: f32) -> (bool, bool) {
+    let close = values[0].0 - values[1].0 < margin;
     let endgame = our.count_locked() >= 1
         || opps.iter().any(|s| s.count_locked() >= 1)
         || our.strikes >= 3
@@ -555,11 +579,19 @@ impl<B: WinProb> SearchBot<B> {
             }
         }
 
-        // Highest mean wins; ties keep the static (lower-index) candidate.
+        // Highest (optionally static-blended) mean wins; ties keep the
+        // static (lower-index) candidate.
+        let score = |ei: usize| {
+            let mean = scores[ei] / counts[ei] as f32;
+            match self.cfg.blend {
+                Some(l) => (1.0 - l) * phi(cands[ei].value) + l * mean,
+                None => mean,
+            }
+        };
         let mut best = 0;
-        let mut best_score = scores[0] / counts[0] as f32;
+        let mut best_score = score(0);
         for ei in 1..entries.len() {
-            let s = scores[ei] / counts[ei] as f32;
+            let s = score(ei);
             if s > best_score {
                 best = ei;
                 best_score = s;
@@ -654,7 +686,7 @@ impl<B: WinProb> SearchBot<B> {
             stats.borrow_mut().gaps.push(cands[0].value - cands[1].value);
         }
         let value_posts: Vec<(f32, State)> = cands.iter().map(|c| (c.value, c.post)).collect();
-        let (close, endgame) = gates(&value_posts, our, opps);
+        let (close, endgame) = gates_with(&value_posts, our, opps, self.cfg.gate);
         if let Some(stats) = &self.stats {
             let mut s = stats.borrow_mut();
             if close {
@@ -1197,6 +1229,55 @@ mod tests {
     }
 
     #[test]
+    fn search_config_parses_blend_and_gate() {
+        let cfg = SearchConfig::parse("blend=0.4,gate=0.3").unwrap();
+        assert_eq!(cfg.blend, Some(0.4));
+        assert_eq!(cfg.gate, 0.3);
+        assert_eq!(SearchConfig::parse(&cfg.to_string()), Ok(cfg));
+        // Production keeps the pure rollout mean and the 0.15 gate.
+        assert_eq!(SearchConfig::default().blend, None);
+        assert_eq!(SearchConfig::default().gate, GATE_MARGIN);
+        assert!(SearchConfig::parse("blend=1.5").is_err());
+        assert!(SearchConfig::parse("blend=x").is_err());
+        assert!(SearchConfig::parse("gate=-1").is_err());
+    }
+
+    #[test]
+    fn blend_zero_reproduces_static_pick() {
+        // λ = 0 scores the shortlist by Φ(static z) alone, so forced search
+        // must return exactly the static pipeline's move.
+        use crate::strategy::bot_impl::{active_phase1_impl, active_phase2_impl};
+        let cfg = SearchConfig {
+            blend: Some(0.0),
+            ..SearchConfig::legacy()
+        };
+        let mut bot = SearchBot::with_config(test_bot(), cfg);
+        bot.force = true;
+        let mut mid = State::default();
+        mid.apply_mark(Mark { row: 0, number: 4 });
+        mid.apply_mark(Mark { row: 3, number: 10 });
+        for state in [State::default(), mid] {
+            for dice in [[3, 4, 2, 3, 5, 1], [1, 1, 6, 6, 6, 6], [6, 5, 1, 2, 3, 4]] {
+                let opps = [mid];
+                let p1 = active_phase1_impl(&bot.bot, &state, &opps, dice);
+                assert_eq!(bot.active_phase1(&state, &opps, dice), p1);
+                for has_marked in [false, true] {
+                    let p2 = active_phase2_impl(&bot.bot, &state, &opps, dice, has_marked);
+                    assert_eq!(bot.active_phase2(&state, &opps, dice, has_marked), p2);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn gate_margin_is_configurable() {
+        let fresh = State::default();
+        let cands = [(1.00, fresh), (0.80, fresh)];
+        assert_eq!(gates_with(&cands, &fresh, &[fresh], GATE_MARGIN), (false, false));
+        assert_eq!(gates_with(&cands, &fresh, &[fresh], 0.3), (true, false));
+    }
+
+    #[test]
     fn search_config_parses_and_round_trips() {
         assert_eq!(SearchConfig::parse(""), Ok(SearchConfig::default()));
         let cfg = SearchConfig::parse("passive, lock=256,strat,k=144").unwrap();
@@ -1207,6 +1288,8 @@ mod tests {
                 search_passive: true,
                 lock_k: Some(256),
                 stratify: true,
+                blend: None,
+                gate: GATE_MARGIN,
             }
         );
         assert_eq!(SearchConfig::parse(&cfg.to_string()), Ok(cfg));
