@@ -287,7 +287,7 @@ Phase 13–20 search (active-only, forced locks), still used by the
 `pair-train --search` expert and the divergence harness.
 Bench bots `pair-search-exp` / `pair-search-exp-b` read a spec such as
 `nopassive,nolock` from `QWIXXER_SEARCH` / `QWIXXER_SEARCH_B`. Measured:
-production reaches 62.6% vs GA (20k games, seed 42; Phase 26), Phase 21
+production reaches 62.8% vs GA (100k games, seed 42; Phase 26), Phase 21
 production 62.4% (legacy 60.7%).
 Static pair: 60.1% vs GA on the Phase 22 checkpoint. Checkpoint comparisons
 use `pair-alt` / `pair-search-alt`, which load `QWIXXER_ALT_MODEL`.

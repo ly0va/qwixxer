@@ -1970,3 +1970,10 @@ vs GA, 20,000 games, seed 42 (big machine): 12,517 vs 7,137 wins, 346 ties,
 gain (Phase 22); the head-to-heads above are the evidence. Cumulative over
 the Phase 21 search: blend +0.23% and sequential k=512 +0.35%, measured
 separately.
+
+Larger vs-GA run, 100,000 games, seed 42 (user, big machine): 62,794 vs
+35,421 wins, 1,785 ties, **62.79%** (99% paired CI 62.44–63.15%, paired SE
+0.136pp). Phase 21 production measured 62.37% (50k, SE ≈ 0.19pp), so +0.42pp,
+z ≈ 1.8 unpaired (both runs start from seed 42, so the overlapping 50k games
+share dice and the true SE is somewhat smaller). This is the first vs-GA
+gain since Phase 21 and clears Phase 22's +0.3pp primary bar.
