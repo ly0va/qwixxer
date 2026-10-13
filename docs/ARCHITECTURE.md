@@ -277,16 +277,18 @@ exceeds `stop` × λ·SE of the CRN-paired mean difference; spec `seq=N` /
 `noseq`, `stop=C`; production 32 → 512 with stop 2 since Phase 26; with
 more than two candidates it is successive elimination: each round, every
 candidate the leader beats by `stop` SEs stops sampling), `cands`
-(candidates searched, spec `cands=N`, default `K_CANDIDATES` = 2; the
-endgame gate's lock check keeps the constant) and `gate` (close-gate margin, spec
+(candidates searched, spec `cands=N`, production 3 since Phase 27, always
+printed in the spec; `K_CANDIDATES` = 2 stays for `legacy()` and the
+endgame gate's lock check) and `gate` (close-gate margin, spec
 `gate=G`, default `GATE_MARGIN` = 0.15; distillation keeps the constant).
 Rollout sample `k`'s dice depend only on (decision seed, k, player), so
 sequential batches compose into exactly the fixed-k sample set.
 `Default` = production
-= `k=512,passive,lock=256,blend=0.7,seq=32` since Phase 26 (Phase 21 was
+= `k=512,passive,lock=256,blend=0.7,seq=32,cands=3` since Phase 27
+(Phase 26 was the same with 2 candidates, printed without `cands`; Phase 21 was
 `k=128,passive,lock=256` with fixed k and no blend; a spec that sets `k`
 stays sequential unless it adds `noseq`); `SearchConfig::legacy()` =
-`k=128,nopassive,nolock,noblend,noseq`, the
+`k=128,nopassive,nolock,noblend,noseq,cands=2`, the
 Phase 13–20 search (active-only, forced locks), still used by the
 `pair-train --search` expert and the divergence harness.
 Bench bots `pair-search-exp` / `pair-search-exp-b` read a spec such as

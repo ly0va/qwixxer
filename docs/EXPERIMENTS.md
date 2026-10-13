@@ -2011,3 +2011,11 @@ are identical. Both arms clear z = 2, contradicting the expectation from
 Phase 15 that disagreements live between the top two: under sequential
 sampling the third and fourth candidates are cheap and occasionally right.
 4 vs 3 (+0.03%) is not resolved.
+
+**Adopted: `cands=3`** (user call: +0.27% at z ≈ 2.8 for ~16% more search
+time locally, ~5% less than `cands=4`, whose extra +0.03% is unresolved).
+Production = `k=512,passive,lock=256,blend=0.7,seq=32,cands=3`; the spec
+now always prints `cands`, since Phase 26 logs show the 2-candidate
+production as `k=512,passive,lock=256,blend=0.7,seq=32`. `legacy()` keeps
+2 candidates. Checked: production and `QWIXXER_SEARCH=cands=3` give
+identical 200-game benches vs GA.

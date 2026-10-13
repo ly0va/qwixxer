@@ -15,9 +15,12 @@ use crate::state::{Mark, State};
 use rand::rngs::SmallRng;
 use rand::SeedableRng;
 
-/// Default candidates searched per decision (top by static value); also the
-/// endgame gate's lock check.
+/// Candidates searched per decision (top by static value) through Phase 26
+/// and in [`SearchConfig::legacy`]; also the endgame gate's lock check.
 pub const K_CANDIDATES: usize = 2;
+/// Production candidates searched per decision, with successive elimination
+/// under sequential sampling (Phase 27).
+pub const SEARCH_CANDS: usize = 3;
 /// Sampled futures per candidate (CRN: dice shared across candidates) at a
 /// fixed sample count: the Phase 13–25 production value, still used by
 /// [`SearchConfig::legacy`].
@@ -151,7 +154,7 @@ pub struct SearchStats {
 
 /// Search knobs. `Default` is the production configuration (Phase 21:
 /// passive search + lock adjudication; Phase 25: blend 0.7; Phase 26:
-/// sequential sampling 32 → 512);
+/// sequential sampling 32 → 512; Phase 27: 3 candidates);
 /// [`SearchConfig::legacy`] is the Phase 13–20 production search.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SearchConfig {
@@ -200,7 +203,7 @@ impl Default for SearchConfig {
             seq: Some(SEQ_START),
             stop: SEQ_STOP,
             gate: GATE_MARGIN,
-            cands: K_CANDIDATES,
+            cands: SEARCH_CANDS,
         }
     }
 }
@@ -216,6 +219,7 @@ impl SearchConfig {
             lock_k: None,
             blend: None,
             seq: None,
+            cands: K_CANDIDATES,
             ..Self::default()
         }
     }
@@ -294,9 +298,8 @@ impl std::fmt::Display for SearchConfig {
         if self.gate != GATE_MARGIN {
             write!(f, ",gate={}", self.gate)?;
         }
-        if self.cands != K_CANDIDATES {
-            write!(f, ",cands={}", self.cands)?;
-        }
+        // Always printed: Phase 26 logs show the same spec without it (2).
+        write!(f, ",cands={}", self.cands)?;
         Ok(())
     }
 }
@@ -1410,6 +1413,8 @@ mod tests {
         assert!(SearchConfig::parse("seq=0").is_err());
         // Production samples sequentially; noseq gives a fixed k.
         assert_eq!(SearchConfig::default().seq, Some(SEQ_START));
+        assert_eq!(SearchConfig::default().cands, SEARCH_CANDS);
+        assert_eq!(SearchConfig::legacy().cands, K_CANDIDATES);
         assert_eq!(SearchConfig::parse("k=128,noseq").unwrap().seq, None);
         assert!(SearchConfig::parse("stop=-1").is_err());
     }
@@ -1585,21 +1590,21 @@ mod tests {
                 seq: None,
                 stop: SEQ_STOP,
                 gate: GATE_MARGIN,
-                cands: K_CANDIDATES,
+                cands: SEARCH_CANDS,
             }
         );
         assert_eq!(SearchConfig::parse(&cfg.to_string()), Ok(cfg));
-        // Production default (Phase 26) and the pre-Phase-21 legacy config.
+        // Production default (Phase 27) and the pre-Phase-21 legacy config.
         assert_eq!(
             SearchConfig::default().to_string(),
-            "k=512,passive,lock=256,blend=0.7,seq=32"
+            "k=512,passive,lock=256,blend=0.7,seq=32,cands=3"
         );
         assert_eq!(
             SearchConfig::legacy().to_string(),
-            "k=128,nopassive,nolock,noblend,noseq"
+            "k=128,nopassive,nolock,noblend,noseq,cands=2"
         );
         assert_eq!(
-            SearchConfig::parse("k=128,nopassive,nolock,noblend,noseq"),
+            SearchConfig::parse("k=128,nopassive,nolock,noblend,noseq,cands=2"),
             Ok(SearchConfig::legacy())
         );
         assert_eq!(
