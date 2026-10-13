@@ -1779,3 +1779,116 @@ checkpoint selection should move off the vs-GA curve for the same reason.
 
 **Headline after Phase 22:** static pair 60.1% vs GA; production pair-search
 62.4% vs GA (unchanged), stronger head-to-head than the iter-57 pair-search.
+
+## Phase 25: Feature Screen — which inputs could fix static decisions?
+
+**Background (Phases 23–24, on unmerged branches `leaf-calibration` and
+`pair-inputs`).** Phase 23 measured leaf miscalibration (side-to-move offset
+b ≈ ±0.06; a ≈ 0.75 with a locked row); recalibrating search leaves was flat.
+Phase 24 added 14 pair-net inputs (turn position, colour phase pending,
+P(forced strike), per-row lock threats), migrated losslessly and retrained
+30 iterations: the best iteration scored 49.8% tie-inclusive (48.8% wins)
+head-to-head against the reference — **no-go, not merged**. In hindsight the
+turn inputs are identical for every candidate within a decision, and a
+recalibration that is the same for all candidates never changes an argmax.
+In 1v1 the 45 inputs already describe the full state (per row: next markable
+number, mark count, locked; plus strikes), so a new input can only supply a
+function the net approximates badly, not new information.
+
+**Question.** Before paying for another training run: does any candidate
+feature explain the static net's errors *on the differences between the
+candidates it chooses among*?
+
+### Method (`examples/feature_screen/`)
+
+Static pair self-play, 1v1, production pipeline, 1,000 games (seed 0). At
+every value-picked decision with ≥ 2 candidates (57,174 decisions), the net's
+top 4 candidates complete the turn (the search/distillation entry helpers)
+and get two independent batches of K = 256 full-game CRN rollouts under the
+rollout policy: batch A labels W_A (P(win)), batch B gives an independent W_B
+and the oracle game length. Per non-pick candidate c (128,293 pairs), the
+net's error on the difference is y = ΔW_A − ΔP (P = Φ(z), Δ relative to the
+pick). Each feature group is fitted y ~ Δf on half the games; reported on the
+other half: R² and the realised win-probability gain per player-game of
+re-picking with P + β·Δf (scored on W_A). Three splits (first/second half,
+reversed, even/odd); `analyze.py` re-runs the analysis from the CSV.
+
+Rollout noise is 38% of var(y) at K = 256; the remaining 62% is the net's real
+decision error.
+
+### Results
+
+| feature group | R² (3 splits) | held-out gain / player-game |
+|---|---|---|
+| ceiling: independent estimate ΔW_B − ΔP | 0.39–0.41 | **+0.016 to +0.020** |
+| game length (oracle E[turns], P(end ≤ 2, 4 turns)) | 0.011–0.016 | +0.0004 to +0.0021 (n.s.) |
+| game length × tanh(cdiff/10) | 0.017–0.023 | ≈ 0 |
+| dice mass left per row (2d6-weighted) | **0.071–0.075** | +0.0012 to +0.0038 (each 1–2σ) |
+| lock-aware recalibration (a = 0.75) | 0.040–0.045 | ≈ 0 |
+| Phase 24 threats (negative control) | 0.003 | ≈ 0 |
+
+- **The screen is valid:** the negative control is ≈ 0, as Phase 24's training
+  run found, and the ceiling shows the error is real and worth ≈ +1.6–2.0pp
+  score per player-game.
+- **Game length is ruled out**, as an input and as an auxiliary training
+  target: even the exact expected game length explains < 3% of the
+  explainable error and buys nothing measurable.
+- **Dice mass is the only stable signal** (same coefficient, −0.036, in every
+  split): the net overvalues keeping markable space, i.e. is slightly too
+  reluctant to skip — consistent with Phase 15's "search marks more". It is a
+  function of existing inputs (a value bias, not missing information) and
+  worth ≲ +0.2pp score: too small for a training run on its own.
+- **Lock-aware recalibration** explains calibration error but changes no picks.
+- The rest of the error is diffuse, as in Phase 15.
+
+### Side finding: shrink rollouts toward the static value
+
+Same data, picks by batch B scored on batch A (gain / player-game, 1,000 games):
+
+| pick rule | gain |
+|---|---|
+| argmax W_B (raw rollouts) | −0.0049 ± 0.0021 |
+| argmax W_B only when top-2 z gap < 0.15 (production gate), else static | −0.0025 ± 0.0019 |
+| argmax (1 − λ)·P + λ·W_B, λ = 0.3 / 0.5 | **+0.0182 ± 0.0015 / +0.0185 ± 0.0017** |
+| same, λ = 0.63 / 0.8 | +0.0160 / +0.0095 |
+
+Raw rollout picks chase noise; shrinkage toward the net wins and a hard gate
+captures little of it. Production search differs (top-2 only, one-round
+truncated rollouts with a leaf value, so less noise; its best λ should be
+higher), so these numbers do not transfer directly. This motivated the
+`blend=λ` and `gate=G` search options (`SearchConfig`), benched below.
+
+### Blend bench
+
+Head-to-head vs production pair-search, 10,000 games each, seed 42
+(`QWIXXER_SEARCH=<arm> bench pair-search-exp pair-search`):
+
+
+| Arm | Wins (exp) | Wins (prod) | Ties | Margin | Speed |
+|---|---:|---:|---:|---:|---:|
+| `blend=0.5` | 4903 | 4886 | 211 | +0.17% | 8 g/s |
+| `blend=0.7` | 4908 | 4878 | 214 | +0.30% | 8 g/s |
+| `blend=0.85` | 4902 | 4875 | 223 | +0.27% | 8 g/s |
+| `blend=0.5,gate=100` | 4904 | 4885 | 211 | +0.19% | 6 g/s |
+
+All four arms are inside noise: each 99% paired CI on the exp share
+straddles the production share, and the margin SE at 10k games is about
+0.6pp. Searching every decision (`gate=100`) with λ=0.5 is
+indistinguishable from the gated arm and 25% slower, so outside the gate
+the blend almost never overrules the net.
+
+The offline +0.018/player-game shrinkage gain was measured against a raw,
+ungated argmax of single 256-sample batches. Production already has the
+0.15 gate, 128 CRN samples on only two candidates, and a static tie-break,
+so most of that headroom was already taken.
+
+**Verdict: no-go.** Neither game-length features nor rollout shrinkage
+moves the production bot. `blend` and `gate` stay as `SearchConfig`
+options (default off / 0.15, so production is unchanged). No 50k
+confirmation was run: the best arm, +0.30%, is half an SE.
+
+Possible follow-ups, both low expected value given this result:
+per-decision λ from the paired rollout SE (λ = τ²/(τ²+SE²)), and
+sequential sampling (start at 32–64 samples, stop once the paired
+difference is decisive). Phase 13/23 put the ceiling for more rollout
+precision at about +0.3% margin.
