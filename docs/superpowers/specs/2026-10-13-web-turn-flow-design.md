@@ -44,22 +44,29 @@ These follow the engine (`src/game.rs`), which is the source of truth:
 
 ## The user's turn (user active)
 
-1. **Roll.** Dice appear.
+1. **Roll.** The user presses a physical **Roll** button in the dice tray.
+   It is redundant (the turn could roll by itself) but deliberate: it gives the
+   player agency. Before the roll the dice are blank, the white sum reads "–"
+   and the sheet shows no legal-move cues.
 2. **Bot's white-sum mark is revealed immediately.** The bot's phase-1 choice
    depends only on the dice and the pre-roll boards (rule 1), never on the
    user's choice, so revealing it first is fair and gives the user full
-   information. It animates onto the bot's board and is shown as pending until
-   the turn resolves. If it locks a row, see "Pending lock" below.
+   information. It draws in once on the bot's sheet as a pencil X (pending)
+   and is inked when the turn resolves. If it locks a row, see "Pending lock" below.
 3. **Select.** The user clicks squares on their own board:
    - up to 2 number squares, **or**
    - the strike box (see "Strike protection").
    Clicking a selected square deselects it.
 4. **Confirm.** One button whose label states the consequence: "Mark 1",
    "Mark 2", "Take strike", or "Pass" (only when rule 2 applies and nothing is
-   selected). It is disabled whenever the selection is not a legal turn. Enter
-   confirms.
+   selected). It is inactive whenever the selection is not a legal turn, but
+   stays clickable (`aria-disabled`, not `disabled`): pressing it then shows a
+   short tip in the action bar, e.g. "Select a square to mark, or the strike
+   box to take a strike." The action bar shows nothing else; no running
+   commentary on the selection. Enter confirms.
 5. **Resolve.** Phase-1 marks (both players) are applied, locks propagate, then
-   the user's phase-2 mark, then end-of-game check. Animated in that order.
+   the user's phase-2 mark, then end-of-game check. Animated in that order;
+   the user's pencil Xs are re-stroked in ink.
 
 ### Pending lock
 
@@ -72,10 +79,10 @@ the lock ends the game. The user must be able to tell at a glance that:
   and only a colour mark there is not (rule 3);
 - if it is the second locked row, the game ends after phase 1 (rule 2).
 
-A distinct row treatment (e.g. a hatched or dimmed row with a lock badge and a
-short label such as "Locking: bot marked 12") that stays until the turn
-resolves, then turns into the normal locked state. Exact styling is up to the
-rewrite.
+Agreed look: the row's colour band is hatched and its lock symbol ringed, on
+both sheets, plus a dark banner above the user's sheet ("Red is locking: the
+bot marked red 12. Your white sum may still go in red; a colour mark can't.").
+It stays until the turn resolves, then turns into the normal locked state.
 
 ### Which squares are legal
 
@@ -97,11 +104,21 @@ A selection is legal if one of these holds:
 - **Strike box alone:** active player, and the game does not end after phase 1.
 
 **Highlighting.** Only squares that can still complete a legal selection,
-given the current selection, are clickable and highlighted. Concretely: square
-s is highlighted if some legal selection contains the current selection plus s.
-After the first pick the highlights shrink to its possible partners. If none
-remain, a short hint explains why, e.g. "Game ends after the white sum" or "Red
-is locked".
+given the current selection, are clickable. Concretely: square s is clickable
+if some legal selection contains the current selection plus s. After the first
+pick the set shrinks to its possible partners. If none remain, a short hint
+explains why, e.g. "Game ends after the white sum" or "Red is locked".
+
+The cue is **weight and colour contrast**, not outlines or motion:
+
+- legal squares keep their number heavy (extra-bold) in full row colour;
+- the other open squares to the right of the row's last mark turn light
+  weight in a softened row colour;
+- squares left of the row's last mark can never be marked and are always
+  greyed out (both sheets, all the time);
+- before the roll, all open numbers look normal.
+
+Nothing moves while the user is deciding; motion is reserved for events.
 
 **Engine support.** The WASM layer exposes, per roll, the list of legal
 selections for the human (each a set of 0–2 squares, plus the strike option).
@@ -112,7 +129,7 @@ Optionally each greyed square carries a reason string for a hover tooltip
 
 ## The bot's turn (user passive)
 
-1. **Roll.** Dice appear.
+1. **Roll.** The bot rolls (animated dice; no button for the user).
 2. **Select.** The user may click one white-sum square on their board, or
    nothing. The strike box is greyed out (rule 4).
 3. **Confirm.** "Mark" or "Pass".
@@ -136,15 +153,60 @@ Optionally each greyed square carries a reason string for a hover tooltip
 
 ## Seeing what the bot did
 
-- **Last-move highlight.** The bot's marks (and strike) from its most recent
-  turn, or its revealed white-sum mark on the user's turn, stay outlined until
-  the user's next confirm.
+- **Draw-in, no highlight.** Each bot mark draws in once, like a pen stroke:
+  its revealed white sum on the user's turn in pencil (pending), its own
+  turn's marks in ink. No outlines, pulsing or persistent highlight; the log
+  is the record if the user looked away.
 - **Animation.** Bot marks appear in rule order, one at a time: phase 1, lock
   closing, phase 2 or strike. Short (about 300–500 ms per step); clicking
   anywhere or pressing a key skips to the end state.
-- **Turn log.** A compact list, newest on top, one line per player per turn,
-  e.g. "Bot: white 7 → red 7, blue 9 (locks blue)", "You: yellow 5 + strike".
-  Includes locks and game-end reasons.
+- **Turn log.** No sentences. One block per roll, newest on top, labelled
+  with the roll number; the roller's line first, then the other player's.
+  Each mark is a rounded square in its row colour with the number, a strike is
+  a red cross chip, a lock is a dark lock chip after the mark that caused it,
+  "–" means a pass. The current roll is not highlighted; the user's line reads
+  "choosing…" until they confirm.
+
+## Pencil and ink
+
+Pending marks are **pencil**: a thin, doubled graphite-grey X (the user's
+selected squares, the bot's revealed white sum). Final marks are **ink**: a
+bold hand-drawn X. Confirming re-strokes the user's pencil Xs in ink; the
+bot's pencil mark is inked when the turn resolves. Strikes are ink Xs in the
+strike boxes. This separates pending from done without motion, so it also
+works with reduced motion.
+
+## Header and chrome
+
+- Wordmark "Qwixxer", a turn pill ("Your turn · roll 14"), both scores, and a
+  **dark-mode toggle** (moon button). The dark palette is still to be
+  designed.
+- **Bot picker:** a dropdown in the bot sheet's header (pair search, pair
+  net, DQN, GA champion, Opportunist, Conservative). Open question: a change
+  mid-game should most likely apply from the next game, with a note saying
+  so.
+
+## Visual design
+
+Settled on the canvas "Qwixxer UI directions" (claude.ai artifact
+4eDmxXF5jEskvwxcFS26im, private to the owner), direction A, artboards A1–A3:
+the paper-sheet look, desktop 1280×800, no scrolling.
+
+- **Layout.** Left: dice tray with the Roll button and white sum; the user's
+  sheet (four coloured row bands, number squares, lock symbol, then the
+  score strip); the action bar (strike boxes, tip area, confirm). Right
+  column: the bot's sheet (smaller) with the picker, then the log.
+- **Sheet.** Rows keep the physical sheet's structure: red and yellow 2→12,
+  green and blue 12→2, lock symbol last, four strike boxes. No Qwixx logo or
+  box-art trade dress.
+- **Tokens.** Ground #F3EDE1, paper #FFFDF8, ink #1D1B18, muted #6B6459,
+  pencil #8B857C; rows red #C8323C, yellow #E9B824 (number ink #9A7400),
+  green #2F8F4E, blue #2C5FAF. Type: Barlow Condensed (numbers, headings,
+  wordmark), Barlow (text).
+- **Dice** have pips.
+- **Reduced motion:** draw-ins are skipped; everything else is already
+  static.
+- Still to do: phone layout, dark palette, a clickable prototype.
 
 ## Edge cases to test
 
@@ -160,7 +222,7 @@ Optionally each greyed square carries a reason string for a hover tooltip
 - The same square is both a legal white sum and a legal colour mark: one
   click selects it; it counts once.
 - No legal marks at all on the user's turn: only the strike box is
-  highlighted.
+  selectable.
 
 ## Later
 
