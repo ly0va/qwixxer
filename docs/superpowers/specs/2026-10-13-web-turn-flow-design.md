@@ -206,7 +206,20 @@ the paper-sheet look, desktop 1280×800, no scrolling.
 - **Dice** have pips.
 - **Reduced motion:** draw-ins are skipped; everything else is already
   static.
-- Still to do: phone layout, dark palette, a clickable prototype.
+- **Phone (portrait, artboards P0–P2, 390×844).** The sheet is turned
+  sideways: one column per row (red and yellow 2→12 top to bottom, green and
+  blue 12→2, lock at the bottom), with square 48 px cells. A narrow right
+  column holds the score breakdown, the strike boxes (2×2) and a tall confirm
+  button at thumb height. Above the sheet: header (wordmark, your score, a Bot
+  button that opens the drawer, dark-mode toggle), the dice tray with Roll,
+  and a permanent dark **"this roll" strip** whose content changes but whose
+  height does not (so the sheet never resizes mid-game): before rolling "Your
+  turn: roll the dice"; after the roll the white sum, the bot's move as log
+  chips, and a lock line only when a row is locking; "Bot passed" otherwise.
+  The bot's sheet (compact, horizontal, view-only), the bot picker and the
+  log live in a bottom drawer. Short phones shrink the cells, down to about
+  36 px; no scrolling. Portrait only.
+- Still to do: dark palette, a clickable prototype.
 
 ## Edge cases to test
 
