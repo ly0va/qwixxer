@@ -1947,3 +1947,10 @@ The win column is not a strength measurement: SE ≈ 1.5pp at 1k games, so
 
 ### Head-to-head vs production (seed 11)
 
+| Arm | Games | Wins (exp) | Wins (prod) | Ties | Margin | 99% paired CI (share) | Speed (big machine) |
+|---|---:|---:|---:|---:|---:|---|---:|
+| `seq=32` | 50,000 | 24,485 | 24,493 | 1,022 | −0.02% | 48.84–49.13% | 52 g/s |
+
+`seq=32` ties production at ~0.6× its search cost. The paired CI is tight
+because the two searchers make the same choice at most decisions, so most
+paired games are identical; it bounds a loss to about 0.3pp.
