@@ -273,19 +273,22 @@ non-lock alternative and runner-up lock by full-game rollouts), `stratify`
 spec `blend=λ` / `noblend`, 0.7 in production since Phase 25), `seq` /
 `stop` (sequential sampling: start at `seq` samples per candidate and double
 up to `k_samples` until every blended score difference to the static pick
-exceeds `stop` × λ·SE of the CRN-paired mean difference; spec `seq=N`,
-`stop=C`, default off / 2) and `gate` (close-gate margin, spec
+exceeds `stop` × λ·SE of the CRN-paired mean difference; spec `seq=N` /
+`noseq`, `stop=C`; production 32 → 512 with stop 2 since Phase 26) and `gate` (close-gate margin, spec
 `gate=G`, default `GATE_MARGIN` = 0.15; distillation keeps the constant).
 Rollout sample `k`'s dice depend only on (decision seed, k, player), so
 sequential batches compose into exactly the fixed-k sample set.
 `Default` = production
-= `k=128,passive,lock=256,blend=0.7` since Phase 25 (Phase 21 without the
-blend); `SearchConfig::legacy()` = the
+= `k=512,passive,lock=256,blend=0.7,seq=32` since Phase 26 (Phase 21 was
+`k=128,passive,lock=256` with fixed k and no blend; a spec that sets `k`
+stays sequential unless it adds `noseq`); `SearchConfig::legacy()` =
+`k=128,nopassive,nolock,noblend,noseq`, the
 Phase 13–20 search (active-only, forced locks), still used by the
 `pair-train --search` expert and the divergence harness.
 Bench bots `pair-search-exp` / `pair-search-exp-b` read a spec such as
 `nopassive,nolock` from `QWIXXER_SEARCH` / `QWIXXER_SEARCH_B`. Measured:
-production reaches 62.4% vs GA (legacy 60.7%; EXPERIMENTS.md Phase 21).
+production reaches 62.6% vs GA (20k games, seed 42; Phase 26), Phase 21
+production 62.4% (legacy 60.7%).
 Static pair: 60.1% vs GA on the Phase 22 checkpoint. Checkpoint comparisons
 use `pair-alt` / `pair-search-alt`, which load `QWIXXER_ALT_MODEL`.
 

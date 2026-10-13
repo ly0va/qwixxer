@@ -1962,3 +1962,11 @@ shares are anti-correlated), ≈ 0.18pp, so z ≈ 1.9. This is the size the
 sample-count curve predicts (Phase 13: k 128→256 +0.3%): sequential
 sampling turns that gain into one at no extra cost, on top of Phase 25's
 blend (+0.23%, z ≈ 1.4).
+
+**Adopted.** Production = `k=512,passive,lock=256,blend=0.7,seq=32`
+(`SearchConfig::default()`; `legacy()` stays at fixed k=128 with `noseq`).
+vs GA, 20,000 games, seed 42 (big machine): 12,517 vs 7,137 wins, 346 ties,
+62.6% (99% paired CI 61.80–63.37%), 85 games/s. GA cannot resolve the
+gain (Phase 22); the head-to-heads above are the evidence. Cumulative over
+the Phase 21 search: blend +0.23% and sequential k=512 +0.35%, measured
+separately.

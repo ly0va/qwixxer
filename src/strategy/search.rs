@@ -17,8 +17,15 @@ use rand::SeedableRng;
 
 /// Candidates searched per decision (top by static value).
 pub const K_CANDIDATES: usize = 2;
-/// Sampled futures per candidate (CRN: dice shared across candidates).
+/// Sampled futures per candidate (CRN: dice shared across candidates) at a
+/// fixed sample count: the Phase 13–25 production value, still used by
+/// [`SearchConfig::legacy`].
 pub const K_SAMPLES: usize = 128;
+/// Production sample cap per candidate with sequential sampling (Phase 26).
+pub const K_SAMPLES_SEQ: usize = 512;
+/// Production sequential start: samples per candidate before the first
+/// stopping check, doubled up to [`K_SAMPLES_SEQ`] (Phase 26).
+pub const SEQ_START: usize = 32;
 /// Top-2 static value gap (bot's evaluate units) below which search triggers.
 pub const GATE_MARGIN: f32 = 0.15;
 /// Full turns simulated after completing the current turn, as a multiple of
@@ -142,7 +149,8 @@ pub struct SearchStats {
 }
 
 /// Search knobs. `Default` is the production configuration (Phase 21:
-/// passive search + lock adjudication; Phase 25: blend 0.7);
+/// passive search + lock adjudication; Phase 25: blend 0.7; Phase 26:
+/// sequential sampling 32 → 512);
 /// [`SearchConfig::legacy`] is the Phase 13–20 production search.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SearchConfig {
@@ -180,12 +188,12 @@ pub const LOCK_K: usize = 256;
 impl Default for SearchConfig {
     fn default() -> Self {
         Self {
-            k_samples: K_SAMPLES,
+            k_samples: K_SAMPLES_SEQ,
             search_passive: true,
             lock_k: Some(LOCK_K),
             stratify: false,
             blend: Some(BLEND),
-            seq: None,
+            seq: Some(SEQ_START),
             stop: SEQ_STOP,
             gate: GATE_MARGIN,
         }
@@ -194,13 +202,15 @@ impl Default for SearchConfig {
 
 impl SearchConfig {
     /// Phase 13–20 production search: active decisions only, safe locks
-    /// forced by the meta-rule, pure rollout mean. Kept for reproducing
-    /// recorded analyses and training recipes.
+    /// forced by the meta-rule, pure rollout mean, fixed 128 samples. Kept
+    /// for reproducing recorded analyses and training recipes.
     pub fn legacy() -> Self {
         Self {
+            k_samples: K_SAMPLES,
             search_passive: false,
             lock_k: None,
             blend: None,
+            seq: None,
             ..Self::default()
         }
     }
@@ -208,8 +218,8 @@ impl SearchConfig {
     /// Parse a comma-separated spec on top of the production defaults:
     /// `passive` / `nopassive`, `lock=N` / `nolock` (lock-adjudication
     /// rollouts), `strat`, `k=N` (truncated-search samples), `blend=λ`
-    /// (λ in [0, 1]) / `noblend`, `seq=N`
-    /// (sequential sampling from N), `stop=C` (sequential threshold, may be
+    /// (λ in [0, 1]) / `noblend`, `seq=N` / `noseq`
+    /// (sequential sampling from N up to k; `noseq` = fixed k), `stop=C` (sequential threshold, may be
     /// `inf`), `gate=G` (close-gate margin ≥ 0). Empty = production.
     pub fn parse(spec: &str) -> Result<Self, String> {
         let mut cfg = Self::default();
@@ -226,6 +236,7 @@ impl SearchConfig {
                 None if tok == "nolock" => cfg.lock_k = None,
                 None if tok == "strat" => cfg.stratify = true,
                 None if tok == "noblend" => cfg.blend = None,
+                None if tok == "noseq" => cfg.seq = None,
                 Some(("k", v)) => cfg.k_samples = num("k", v)?,
                 Some(("lock", v)) => cfg.lock_k = Some(num("lock", v)?),
                 Some(("blend", v)) => cfg.blend = Some(real("blend", v, 1.0)?),
@@ -235,13 +246,13 @@ impl SearchConfig {
                 _ => {
                     return Err(format!(
                         "unknown search option {tok:?} (passive, nopassive, lock=N, nolock, strat, k=N, \
-                     blend=λ, noblend, seq=N, stop=C, gate=G)"
+                     blend=λ, noblend, seq=N, noseq, stop=C, gate=G)"
                     ))
                 }
             }
         }
-        if cfg.seq.is_some_and(|s| s == 0 || s > cfg.k_samples) {
-            return Err(format!("seq must be in 1..=k ({})", cfg.k_samples));
+        if cfg.seq == Some(0) {
+            return Err("seq must be at least 1".into());
         }
         Ok(cfg)
     }
@@ -263,8 +274,9 @@ impl std::fmt::Display for SearchConfig {
             Some(l) => write!(f, ",blend={l}")?,
             None => write!(f, ",noblend")?,
         }
-        if let Some(s) = self.seq {
-            write!(f, ",seq={s}")?;
+        match self.seq {
+            Some(s) => write!(f, ",seq={s}")?,
+            None => write!(f, ",noseq")?,
         }
         if self.stop != SEQ_STOP {
             write!(f, ",stop={}", self.stop)?;
@@ -1354,8 +1366,9 @@ mod tests {
         let cfg = SearchConfig::parse("seq=16,stop=1.5").unwrap();
         assert_eq!(SearchConfig::parse(&cfg.to_string()), Ok(cfg));
         assert!(SearchConfig::parse("seq=0").is_err());
-        assert!(SearchConfig::parse("seq=256").is_err());
-        assert!(SearchConfig::parse("k=256,seq=256").is_ok());
+        // Production samples sequentially; noseq gives a fixed k.
+        assert_eq!(SearchConfig::default().seq, Some(SEQ_START));
+        assert_eq!(SearchConfig::parse("k=128,noseq").unwrap().seq, None);
         assert!(SearchConfig::parse("stop=-1").is_err());
     }
 
@@ -1464,7 +1477,7 @@ mod tests {
     #[test]
     fn search_config_parses_and_round_trips() {
         assert_eq!(SearchConfig::parse(""), Ok(SearchConfig::default()));
-        let cfg = SearchConfig::parse("passive, lock=256,strat,k=144").unwrap();
+        let cfg = SearchConfig::parse("passive, lock=256,strat,k=144,noseq").unwrap();
         assert_eq!(
             cfg,
             SearchConfig {
@@ -1479,11 +1492,17 @@ mod tests {
             }
         );
         assert_eq!(SearchConfig::parse(&cfg.to_string()), Ok(cfg));
-        // Production default (Phase 21) and the pre-Phase-21 legacy config.
-        assert_eq!(SearchConfig::default().to_string(), "k=128,passive,lock=256,blend=0.7");
-        assert_eq!(SearchConfig::legacy().to_string(), "k=128,nopassive,nolock,noblend");
+        // Production default (Phase 26) and the pre-Phase-21 legacy config.
         assert_eq!(
-            SearchConfig::parse("nopassive,nolock,noblend"),
+            SearchConfig::default().to_string(),
+            "k=512,passive,lock=256,blend=0.7,seq=32"
+        );
+        assert_eq!(
+            SearchConfig::legacy().to_string(),
+            "k=128,nopassive,nolock,noblend,noseq"
+        );
+        assert_eq!(
+            SearchConfig::parse("k=128,nopassive,nolock,noblend,noseq"),
             Ok(SearchConfig::legacy())
         );
         assert_eq!(
