@@ -205,6 +205,13 @@ the paper-sheet look, desktop 1280×800, no scrolling.
   pencil #8B857C; rows red #C8323C, yellow #E9B824 (number ink #9A7400),
   green #2F8F4E, blue #2C5FAF. Type: Barlow Condensed (numbers, headings,
   wordmark), Barlow (text).
+- **Dark tokens** (the same sheet at night; artboards "A3 · Dark mode" and
+  "P1 · Phone, dark mode"): ground #171513, paper #24211D, log blocks
+  #1C1A17, ink (chalk) #ECE5D7, muted #A39B8D, pencil #8E877C; bands deeper
+  and numbers lighter tints of the row colour: red #A8343B / #F08A8F,
+  yellow #C49A22 / #F0CD62, green #2D7E4A / #74C994, blue #2F5E9F / #8DB0EE.
+  Primary buttons and the turn pill invert (chalk on charcoal); greyed and
+  soft squares dim a little more than in light mode.
 - **Dice** have pips.
 - **Reduced motion:** draw-ins are skipped; everything else is already
   static.
@@ -221,7 +228,7 @@ the paper-sheet look, desktop 1280×800, no scrolling.
   shows on the sheet itself. The bot's sheet (compact, horizontal, view-only), the bot picker and the
   log live in a bottom drawer. Short phones shrink the cells, down to about
   36 px; no scrolling. Portrait only.
-- Still to do: dark palette, a clickable prototype.
+- Still to do: a clickable prototype.
 
 ## Edge cases to test
 
