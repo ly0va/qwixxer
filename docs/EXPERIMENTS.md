@@ -1932,7 +1932,9 @@ candidate's blended score difference to the static pick is at least
 (decision seed, k, player), the batches compose into exactly the fixed-k
 sample set; with `stop=inf` the picks match fixed k (tested).
 
-Timing smoke, 1,000 games vs GA, seed 9 (searcher's own cost dominates):
+Timing smoke, 1,000 games vs GA, seed 9 (searcher's own cost dominates).
+The win column is not a strength measurement: SE ≈ 1.5pp at 1k games, so
+64.1% is consistent with the recorded 62.4% (Phase 21, unblended).
 
 | Arm | Wins vs GA | Games/s | Relative cost |
 |---|---:|---:|---:|
