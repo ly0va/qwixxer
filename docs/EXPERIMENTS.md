@@ -1950,7 +1950,15 @@ The win column is not a strength measurement: SE ≈ 1.5pp at 1k games, so
 | Arm | Games | Wins (exp) | Wins (prod) | Ties | Margin | 99% paired CI (share) | Speed (big machine) |
 |---|---:|---:|---:|---:|---:|---|---:|
 | `seq=32` | 50,000 | 24,485 | 24,493 | 1,022 | −0.02% | 48.84–49.13% | 52 g/s |
+| `k=512,seq=32` | 100,000 | 49,123 | 48,778 | 2,099 | +0.35% | 48.89–49.36% | 40 g/s |
 
 `seq=32` ties production at ~0.6× its search cost. The paired CI is tight
 because the two searchers make the same choice at most decisions, so most
 paired games are identical; it bounds a loss to about 0.3pp.
+
+`k=512,seq=32` (≈ production cost) gains +0.35%. The bench CI is on the
+exp share alone; the margin's SE is about twice the share's (the two
+shares are anti-correlated), ≈ 0.18pp, so z ≈ 1.9. This is the size the
+sample-count curve predicts (Phase 13: k 128→256 +0.3%): sequential
+sampling turns that gain into one at no extra cost, on top of Phase 25's
+blend (+0.23%, z ≈ 1.4).
