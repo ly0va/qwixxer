@@ -1977,3 +1977,24 @@ Larger vs-GA run, 100,000 games, seed 42 (user, big machine): 62,794 vs
 z ≈ 1.8 unpaired (both runs start from seed 42, so the overlapping 50k games
 share dice and the true SE is somewhat smaller). This is the first vs-GA
 gain since Phase 21 and clears Phase 22's +0.3pp primary bar.
+
+## Phase 27: More candidates under sequential sampling
+
+Branch `search-candidates` (from `distillation`). Phase 13 found 3
+candidates neutral at fixed k=64 (+1.67% vs +1.71% over static): a third
+candidate split a small budget. Under sequential sampling it can be cheap,
+so `cands=N` searches the top N static candidates with successive
+elimination: each round, the leader is the best paired blended score and
+every candidate it beats by `stop` SEs (λ·SE of the CRN-paired mean
+difference) stops sampling; search ends when one is left or at k. With two
+candidates this is exactly the Phase 26 rule (production picks unchanged,
+checked bit-for-bit on a 400-game bench vs GA). The gates are unchanged:
+search still fires on the top-2 gap or the endgame conditions. A
+two-round horizon was not retried: the user judged its rollout noise would
+outweigh the larger sample budget.
+
+Timing smoke, 1,000 games vs GA, seed 9 (local, 12 cores): production
+16 games/s, `cands=3` 14 g/s (+16% time), `cands=4` 13 g/s (+23%).
+
+### Head-to-head vs production
+

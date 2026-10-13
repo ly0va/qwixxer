@@ -15,7 +15,8 @@ use crate::state::{Mark, State};
 use rand::rngs::SmallRng;
 use rand::SeedableRng;
 
-/// Candidates searched per decision (top by static value).
+/// Default candidates searched per decision (top by static value); also the
+/// endgame gate's lock check.
 pub const K_CANDIDATES: usize = 2;
 /// Sampled futures per candidate (CRN: dice shared across candidates) at a
 /// fixed sample count: the Phase 13–25 production value, still used by
@@ -175,6 +176,9 @@ pub struct SearchConfig {
     pub stop: f32,
     /// Close-gate margin: search when the top-2 static gap is below this.
     pub gate: f32,
+    /// Candidates searched per decision (top by static value), at least 2.
+    /// With `seq`, candidates that fall decisively behind stop sampling.
+    pub cands: usize,
 }
 
 /// Production rollout/static blend weight (Phase 25).
@@ -196,6 +200,7 @@ impl Default for SearchConfig {
             seq: Some(SEQ_START),
             stop: SEQ_STOP,
             gate: GATE_MARGIN,
+            cands: K_CANDIDATES,
         }
     }
 }
@@ -219,7 +224,8 @@ impl SearchConfig {
     /// `passive` / `nopassive`, `lock=N` / `nolock` (lock-adjudication
     /// rollouts), `strat`, `k=N` (truncated-search samples), `blend=λ`
     /// (λ in [0, 1]) / `noblend`, `seq=N` / `noseq`
-    /// (sequential sampling from N up to k; `noseq` = fixed k), `stop=C` (sequential threshold, may be
+    /// (sequential sampling from N up to k; `noseq` = fixed k), `cands=N`
+    /// (candidates searched, ≥ 2), `stop=C` (sequential threshold, may be
     /// `inf`), `gate=G` (close-gate margin ≥ 0). Empty = production.
     pub fn parse(spec: &str) -> Result<Self, String> {
         let mut cfg = Self::default();
@@ -243,16 +249,20 @@ impl SearchConfig {
                 Some(("seq", v)) => cfg.seq = Some(num("seq", v)?),
                 Some(("stop", v)) => cfg.stop = real("stop", v, f32::INFINITY)?,
                 Some(("gate", v)) => cfg.gate = real("gate", v, f32::MAX)?,
+                Some(("cands", v)) => cfg.cands = num("cands", v)?,
                 _ => {
                     return Err(format!(
                         "unknown search option {tok:?} (passive, nopassive, lock=N, nolock, strat, k=N, \
-                     blend=λ, noblend, seq=N, noseq, stop=C, gate=G)"
+                     blend=λ, noblend, seq=N, noseq, stop=C, gate=G, cands=N)"
                     ))
                 }
             }
         }
         if cfg.seq == Some(0) {
             return Err("seq must be at least 1".into());
+        }
+        if cfg.cands < 2 {
+            return Err("cands must be at least 2".into());
         }
         Ok(cfg)
     }
@@ -283,6 +293,9 @@ impl std::fmt::Display for SearchConfig {
         }
         if self.gate != GATE_MARGIN {
             write!(f, ",gate={}", self.gate)?;
+        }
+        if self.cands != K_CANDIDATES {
+            write!(f, ",cands={}", self.cands)?;
         }
         Ok(())
     }
@@ -549,33 +562,49 @@ pub(crate) fn rollout_final_states(
     out
 }
 
-/// Pick among searched candidates from per-sample leaf values (`values[e][k]`,
-/// sample `k` CRN-paired across entries). Each candidate is scored by its
-/// difference to entry 0 (the static pick): `(1 − λ)·ΔΦ(static z) + λ·Δmean`,
-/// with λ = `blend` (1 = pure rollout mean when `None`). Highest score wins;
-/// ties keep the lower (static) index. Also returns whether the pick is
-/// decisive for sequential sampling: every |score| ≥ `stop`·λ·SE, with SE
-/// the standard error of the paired mean difference.
-fn pick_by_paired_rollouts(cands: &[Candidate], values: &[Vec<f32>], cfg: &SearchConfig) -> (usize, bool) {
-    let k = values[0].len() as f32;
-    let (mut best, mut best_score, mut decisive) = (0, 0.0f32, true);
-    for ei in 1..values.len() {
-        let diffs = values[ei].iter().zip(&values[0]).map(|(a, b)| a - b);
-        let mean = diffs.clone().sum::<f32>() / k;
-        let var = diffs.map(|d| (d - mean) * (d - mean)).sum::<f32>() / (k - 1.0).max(1.0);
-        let se = (var / k).sqrt();
-        let lambda = cfg.blend.unwrap_or(1.0);
-        let score = (1.0 - lambda) * (phi(cands[ei].value) - phi(cands[0].value)) + lambda * mean;
-        // An infinite `stop` never stops (and avoids ∞·0 = NaN at zero SE).
-        if !(cfg.stop.is_finite() && score.abs() >= cfg.stop * lambda * se) {
-            decisive = false;
-        }
-        if score > best_score {
-            best = ei;
-            best_score = score;
+/// Blended score of candidate `i` minus candidate `j` from their CRN-paired
+/// samples: `(1 − λ)·ΔΦ(static z) + λ·mean(x_i − x_j)`, with λ = `blend`
+/// (1 = pure rollout mean when `None`), and that difference's standard
+/// error `λ·SE(mean(x_i − x_j))`.
+fn paired_score(cands: &[Candidate], values: &[Vec<f32>], cfg: &SearchConfig, i: usize, j: usize) -> (f32, f32) {
+    let k = values[i].len() as f32;
+    let diffs = values[i].iter().zip(&values[j]).map(|(a, b)| a - b);
+    let mean = diffs.clone().sum::<f32>() / k;
+    let var = diffs.map(|d| (d - mean) * (d - mean)).sum::<f32>() / (k - 1.0).max(1.0);
+    let lambda = cfg.blend.unwrap_or(1.0);
+    let score = (1.0 - lambda) * (phi(cands[i].value) - phi(cands[j].value)) + lambda * mean;
+    (score, lambda * (var / k).sqrt())
+}
+
+/// One round of successive elimination over the still-`active` candidates
+/// (`values[e][k]` = sample k's leaf value, CRN-paired across entries; all
+/// active entries hold the same samples). The leader is the best paired
+/// score, ties keeping the lower (static) index. Every other active
+/// candidate the leader beats by at least `stop` standard errors is
+/// eliminated. Returns the leader and whether it is the last one standing.
+/// With two candidates this is a single paired test of the runner-up
+/// against the static pick.
+fn eliminate_by_paired_rollouts(
+    cands: &[Candidate],
+    values: &[Vec<f32>],
+    active: &mut [bool],
+    cfg: &SearchConfig,
+) -> (usize, bool) {
+    let live: Vec<usize> = (0..values.len()).filter(|&e| active[e]).collect();
+    let mut best = live[0];
+    for &e in &live[1..] {
+        if paired_score(cands, values, cfg, e, best).0 > 0.0 {
+            best = e;
         }
     }
-    (best, decisive)
+    for &e in &live {
+        let (gap, se) = paired_score(cands, values, cfg, best, e);
+        // An infinite `stop` never eliminates (and avoids ∞·0 = NaN at zero SE).
+        if e != best && cfg.stop.is_finite() && gap >= cfg.stop * se {
+            active[e] = false;
+        }
+    }
+    (best, active.iter().filter(|&&a| a).count() == 1)
 }
 
 impl<B: WinProb> SearchBot<B> {
@@ -583,10 +612,12 @@ impl<B: WinProb> SearchBot<B> {
     /// rollout of `HORIZON_ROUNDS` rounds, exact outcome where the game ended,
     /// else the bot's win prob. Sample `k`'s dice depend only on (seed, k,
     /// player), so ranges compose: samples are CRN across entries and
-    /// identical however `ks` is split. Ended entries get their outcome.
+    /// identical however `ks` is split. Ended entries get their outcome;
+    /// entries not in `active` are skipped (empty).
     fn rollout_values(
         &self,
         entries: &[(Vec<State>, bool)],
+        active: &[bool],
         seed: u64,
         first_active: usize,
         ks: std::ops::Range<usize>,
@@ -595,7 +626,7 @@ impl<B: WinProb> SearchBot<B> {
         let mut sims: Vec<SimGame> = Vec::new();
         let mut sim_owner: Vec<usize> = Vec::new(); // entry index per sim
         for (ei, (states, ended)) in entries.iter().enumerate() {
-            if *ended {
+            if *ended || !active[ei] {
                 continue;
             }
             for k in ks.clone() {
@@ -635,8 +666,11 @@ impl<B: WinProb> SearchBot<B> {
         let mut prob_iter = probs.into_iter();
         let mut out: Vec<Vec<f32>> = entries
             .iter()
-            .map(|(states, ended)| {
-                if *ended {
+            .zip(active)
+            .map(|((states, ended), &on)| {
+                if !on {
+                    Vec::new()
+                } else if *ended {
                     vec![SimGame::outcome(states); ks.len()]
                 } else {
                     Vec::with_capacity(ks.len())
@@ -667,23 +701,29 @@ impl<B: WinProb> SearchBot<B> {
         seed: u64,
         first_active: usize,
     ) -> usize {
-        debug_assert_eq!(entries.len(), cands.len().min(K_CANDIDATES));
+        debug_assert_eq!(entries.len(), cands.len().min(self.cfg.cands));
         let k_max = self.cfg.k_samples;
         let mut k = self.cfg.seq.unwrap_or(k_max).min(k_max);
-        let mut values = self.rollout_values(&entries, seed, first_active, 0..k);
+        let mut active = vec![true; entries.len()];
+        let mut values = self.rollout_values(&entries, &active, seed, first_active, 0..k);
+        let mut sampled = k * entries.len();
         loop {
-            let (best, decisive) = pick_by_paired_rollouts(cands, &values, &self.cfg);
-            if decisive || k >= k_max {
+            let (best, decided) = eliminate_by_paired_rollouts(cands, &values, &mut active, &self.cfg);
+            if decided || k >= k_max {
                 if let Some(st) = &self.stats {
-                    st.borrow_mut().rollout_samples += k as u64;
+                    // Samples per candidate, averaged over the shortlist.
+                    st.borrow_mut().rollout_samples += (sampled / entries.len()) as u64;
                 }
                 return best;
             }
             let next = (2 * k).min(k_max);
-            let more = self.rollout_values(&entries, seed, first_active, k..next);
-            for (v, m) in values.iter_mut().zip(more) {
-                v.extend(m);
+            let more = self.rollout_values(&entries, &active, seed, first_active, k..next);
+            for ((v, m), &on) in values.iter_mut().zip(more).zip(&active) {
+                if on {
+                    v.extend(m);
+                }
             }
+            sampled += (next - k) * active.iter().filter(|&&a| a).count();
             k = next;
         }
     }
@@ -862,7 +902,7 @@ impl<B: WinProb> Strategy for SearchBot<B> {
 
         // Entry per shortlisted phase-1 mark: opponents' (shared, simultaneous)
         // phase-1 marks are sim_opp; complete OUR turn deterministically.
-        let shortlist = &cands[..cands.len().min(K_CANDIDATES)];
+        let shortlist = &cands[..cands.len().min(self.cfg.cands)];
         let entries: Vec<(Vec<State>, bool)> = shortlist
             .iter()
             .map(|c| phase1_entry(&self.bot, state, &sim_opp, dice, c.mark))
@@ -924,7 +964,7 @@ impl<B: WinProb> Strategy for SearchBot<B> {
         };
 
         // Entry per candidate: post state + lock propagation; turn is then over.
-        let shortlist = &cands[..cands.len().min(K_CANDIDATES)];
+        let shortlist = &cands[..cands.len().min(self.cfg.cands)];
         let entries: Vec<(Vec<State>, bool)> = shortlist.iter().map(|c| phase2_entry(c.post, opp_states)).collect();
 
         let seed = context_seed(state, opp_states, dice);
@@ -991,7 +1031,7 @@ impl<B: WinProb> Strategy for SearchBot<B> {
         // Entry per candidate: our mark, then the rest of the turn (other
         // passive players, the active player's phase 1 + 2) completed by the
         // bot; the rollout starts at the seat after the active player.
-        let shortlist = &cands[..cands.len().min(K_CANDIDATES)];
+        let shortlist = &cands[..cands.len().min(self.cfg.cands)];
         let entries: Vec<(Vec<State>, bool)> = shortlist
             .iter()
             .map(|c| passive_entry(&self.bot, state, opp_states, dice, active_player, c.mark))
@@ -1363,7 +1403,9 @@ mod tests {
         let cfg = SearchConfig::parse("seq=32,stop=inf").unwrap();
         assert_eq!((cfg.seq, cfg.stop), (Some(32), f32::INFINITY));
         assert_eq!(SearchConfig::parse(&cfg.to_string()), Ok(cfg));
-        let cfg = SearchConfig::parse("seq=16,stop=1.5").unwrap();
+        let cfg = SearchConfig::parse("seq=16,stop=1.5,cands=4").unwrap();
+        assert_eq!(cfg.cands, 4);
+        assert!(SearchConfig::parse("cands=1").is_err());
         assert_eq!(SearchConfig::parse(&cfg.to_string()), Ok(cfg));
         assert!(SearchConfig::parse("seq=0").is_err());
         // Production samples sequentially; noseq gives a fixed k.
@@ -1380,6 +1422,10 @@ mod tests {
         }
     }
 
+    fn pick(cands: &[Candidate], values: &[Vec<f32>], cfg: &SearchConfig) -> (usize, bool) {
+        eliminate_by_paired_rollouts(cands, values, &mut vec![true; values.len()], cfg)
+    }
+
     #[test]
     fn paired_pick_blends_and_stops() {
         let cands = [cand(0.1), cand(0.0)];
@@ -1390,12 +1436,12 @@ mod tests {
         // Constant paired difference +0.1: zero SE, decisive, rollouts win
         // unless the static term outweighs them.
         let values = vec![vec![0.5; 8], vec![0.6; 8]];
-        assert_eq!(pick_by_paired_rollouts(&cands, &values, &noblend), (1, true));
+        assert_eq!(pick(&cands, &values, &noblend), (1, true));
         let static_only = SearchConfig {
             blend: Some(0.0),
             ..noblend
         };
-        assert_eq!(pick_by_paired_rollouts(&cands, &values, &static_only).0, 0);
+        assert_eq!(pick(&cands, &values, &static_only).0, 0);
         // Noisy difference with mean +0.01 (SE ≈ 0.038): not decisive at
         // stop=2; the rollouts alone prefer 1, blend 0.7 keeps the static
         // pick (ΔΦ ≈ −0.04).
@@ -1406,13 +1452,56 @@ mod tests {
             .map(|(i, x)| x + if i % 2 == 0 { 0.11 } else { -0.09 })
             .collect();
         let values = vec![a, b];
-        assert_eq!(pick_by_paired_rollouts(&cands, &values, &noblend), (1, false));
-        assert_eq!(
-            pick_by_paired_rollouts(&cands, &values, &SearchConfig::default()),
-            (0, false)
-        );
+        assert_eq!(pick(&cands, &values, &noblend), (1, false));
+        assert_eq!(pick(&cands, &values, &SearchConfig::default()), (0, false));
         let lax = SearchConfig { stop: 0.1, ..noblend };
-        assert_eq!(pick_by_paired_rollouts(&cands, &values, &lax), (1, true));
+        assert_eq!(pick(&cands, &values, &lax), (1, true));
+    }
+
+    #[test]
+    fn elimination_drops_only_decisively_worse_candidates() {
+        let cands = [cand(0.1), cand(0.0), cand(-0.1)];
+        let noblend = SearchConfig {
+            blend: None,
+            ..SearchConfig::default()
+        };
+        // 1 is a noisy +0.01 over 0 (undecided); 2 is a constant −0.2.
+        let a: Vec<f32> = (0..8).map(|i| if i % 2 == 0 { 0.0 } else { 1.0 }).collect();
+        let b: Vec<f32> = a
+            .iter()
+            .enumerate()
+            .map(|(i, x)| x + if i % 2 == 0 { 0.11 } else { -0.09 })
+            .collect();
+        let c: Vec<f32> = a.iter().map(|x| x - 0.2).collect();
+        let values = vec![a, b, c];
+        let mut active = vec![true; 3];
+        assert_eq!(
+            eliminate_by_paired_rollouts(&cands, &values, &mut active, &noblend),
+            (1, false)
+        );
+        assert_eq!(active, [true, true, false]);
+        // Already-eliminated entries are ignored (stale/empty samples).
+        let values = vec![values[0].clone(), values[1].clone(), Vec::new()];
+        assert_eq!(
+            eliminate_by_paired_rollouts(&cands, &values, &mut active, &noblend),
+            (1, false)
+        );
+        // Infinite stop never eliminates.
+        let never = SearchConfig {
+            stop: f32::INFINITY,
+            ..noblend
+        };
+        let mut active = vec![true; 3];
+        let values = vec![
+            values[0].clone(),
+            values[1].clone(),
+            values[0].iter().map(|x| x - 0.2).collect(),
+        ];
+        assert_eq!(
+            eliminate_by_paired_rollouts(&cands, &values, &mut active, &never),
+            (1, false)
+        );
+        assert_eq!(active, [true; 3]);
     }
 
     #[test]
@@ -1423,18 +1512,23 @@ mod tests {
         let mut marked = a;
         marked.apply_mark(Mark { row: 0, number: 5 });
         let entries = vec![phase2_entry(a, &[a]), phase2_entry(marked, &[a])];
-        let whole = bot.rollout_values(&entries, 11, 1, 0..24);
-        let mut split = bot.rollout_values(&entries, 11, 1, 0..8);
-        for (v, m) in split.iter_mut().zip(bot.rollout_values(&entries, 11, 1, 8..24)) {
+        let on = [true, true];
+        let whole = bot.rollout_values(&entries, &on, 11, 1, 0..24);
+        let mut split = bot.rollout_values(&entries, &on, 11, 1, 0..8);
+        for (v, m) in split.iter_mut().zip(bot.rollout_values(&entries, &on, 11, 1, 8..24)) {
             v.extend(m);
         }
         assert_eq!(whole, split);
+        // An inactive entry is skipped without changing the others' samples.
+        let only1 = bot.rollout_values(&entries, &[false, true], 11, 1, 0..24);
+        assert!(only1[0].is_empty());
+        assert_eq!(only1[1], whole[1]);
     }
 
     #[test]
     fn seq_with_infinite_stop_matches_fixed_k() {
         // Never decisive → doubles to k_samples and must pick exactly as
-        // the fixed-k search does.
+        // the fixed-k search does, for 2 and 3 candidates.
         let base = SearchConfig {
             k_samples: 32,
             ..SearchConfig::legacy()
@@ -1453,15 +1547,17 @@ mod tests {
         for state in [State::default(), mid] {
             for dice in [[3, 4, 2, 3, 5, 1], [1, 1, 6, 6, 6, 6], [6, 5, 1, 2, 3, 4]] {
                 let opps = [mid];
-                let mut picks = Vec::new();
-                for cfg in [base, seq] {
-                    bot.cfg = cfg;
-                    picks.push((
-                        bot.active_phase1(&state, &opps, dice),
-                        bot.active_phase2(&state, &opps, dice, false),
-                    ));
+                for cands in [2, 3] {
+                    let mut picks = Vec::new();
+                    for cfg in [base, seq] {
+                        bot.cfg = SearchConfig { cands, ..cfg };
+                        picks.push((
+                            bot.active_phase1(&state, &opps, dice),
+                            bot.active_phase2(&state, &opps, dice, false),
+                        ));
+                    }
+                    assert_eq!(picks[0], picks[1]);
                 }
-                assert_eq!(picks[0], picks[1]);
             }
         }
     }
@@ -1489,6 +1585,7 @@ mod tests {
                 seq: None,
                 stop: SEQ_STOP,
                 gate: GATE_MARGIN,
+                cands: K_CANDIDATES,
             }
         );
         assert_eq!(SearchConfig::parse(&cfg.to_string()), Ok(cfg));

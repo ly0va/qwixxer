@@ -274,7 +274,11 @@ spec `blend=λ` / `noblend`, 0.7 in production since Phase 25), `seq` /
 `stop` (sequential sampling: start at `seq` samples per candidate and double
 up to `k_samples` until every blended score difference to the static pick
 exceeds `stop` × λ·SE of the CRN-paired mean difference; spec `seq=N` /
-`noseq`, `stop=C`; production 32 → 512 with stop 2 since Phase 26) and `gate` (close-gate margin, spec
+`noseq`, `stop=C`; production 32 → 512 with stop 2 since Phase 26; with
+more than two candidates it is successive elimination: each round, every
+candidate the leader beats by `stop` SEs stops sampling), `cands`
+(candidates searched, spec `cands=N`, default `K_CANDIDATES` = 2; the
+endgame gate's lock check keeps the constant) and `gate` (close-gate margin, spec
 `gate=G`, default `GATE_MARGIN` = 0.15; distillation keeps the constant).
 Rollout sample `k`'s dice depend only on (decision seed, k, player), so
 sequential batches compose into exactly the fixed-k sample set.
