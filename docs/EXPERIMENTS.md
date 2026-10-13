@@ -1887,6 +1887,14 @@ moves the production bot. `blend` and `gate` stay as `SearchConfig`
 options (default off / 0.15, so production is unchanged). No 50k
 confirmation was run: the best arm, +0.30%, is half an SE.
 
+**100k follow-up.** `blend=0.7` vs production, 100,000 games, seed 7:
+49,105 vs 48,871 wins, 2,024 ties, avg 76.3 vs 76.1 points, 99% paired CI
+on the exp share 48.89%–49.32%, 226 min. Margin +0.23% (SE ≈ 0.17pp,
+z ≈ 1.4). Pooled with the 10k seed-42 run: +0.24% over 110k games,
+z ≈ 1.5. Every arm has leaned positive, so the effect is plausibly real,
+but it is under 2 SE and smaller than the +0.3% that more rollout samples
+buy. It does not justify changing the production config.
+
 Possible follow-ups, both low expected value given this result:
 per-decision λ from the paired rollout SE (λ = τ²/(τ²+SE²)), and
 sequential sampling (start at 32–64 samples, stop once the paired
