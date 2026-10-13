@@ -49,7 +49,7 @@ These follow the engine (`src/game.rs`), which is the source of truth:
    depends only on the dice and the pre-roll boards (rule 1), never on the
    user's choice, so revealing it first is fair and gives the user full
    information. It animates onto the bot's board and is shown as pending until
-   the turn resolves. If it locks a row, that row is shown as closing.
+   the turn resolves. If it locks a row, see "Pending lock" below.
 3. **Select.** The user clicks squares on their own board:
    - up to 2 number squares, **or**
    - the strike box (see "Strike protection").
@@ -60,6 +60,22 @@ These follow the engine (`src/game.rs`), which is the source of truth:
    confirms.
 5. **Resolve.** Phase-1 marks (both players) are applied, locks propagate, then
    the user's phase-2 mark, then end-of-game check. Animated in that order.
+
+### Pending lock
+
+If the bot's revealed white-sum mark locks a row, that row is marked as
+**about to be locked** on the user's board as well as the bot's, whether or not
+the lock ends the game. The user must be able to tell at a glance that:
+
+- the row closes when the turn resolves;
+- their own white-sum mark in that row is still allowed this turn (rule 1),
+  and only a colour mark there is not (rule 3);
+- if it is the second locked row, the game ends after phase 1 (rule 2).
+
+A distinct row treatment (e.g. a hatched or dimmed row with a lock badge and a
+short label such as "Locking: bot marked 12") that stays until the turn
+resolves, then turns into the normal locked state. Exact styling is up to the
+rewrite.
 
 ### Which squares are legal
 
@@ -136,8 +152,9 @@ Optionally each greyed square carries a reason string for a hover tooltip
   confirm reads "Mark 1", resolve skips phase 2, no strike.
 - Bot's revealed phase-1 mark locks the second row: game ends after phase 1;
   user may still mark the white sum, or pass; no strike option.
-- Bot locks row X in phase 1: the user's white-sum mark in X stays legal, a
-  colour mark in X does not.
+- Bot locks row X in phase 1 (game continues, and separately when it is the
+  second lock): row X shows as about to be locked on both boards; the user's
+  white-sum mark in X stays legal, a colour mark in X does not.
 - Both marks in one row: legal only with the white-sum square on the left.
 - The white-sum mark is the fifth in a row and makes the colour lock legal.
 - The same square is both a legal white sum and a legal colour mark: one
