@@ -1998,3 +1998,16 @@ Timing smoke, 1,000 games vs GA, seed 9 (local, 12 cores): production
 
 ### Head-to-head vs production
 
+100,000 games each, seed 13 (user, big machine):
+
+| Arm | Wins (exp) | Wins (prod) | Ties | Margin | 99% paired CI (share) | z | Speed |
+|---|---:|---:|---:|---:|---|---:|---:|
+| `cands=3` | 49,148 | 48,880 | 1,972 | +0.27% | 49.02–49.27% | ≈ 2.8 | 38 g/s |
+| `cands=4` | 49,164 | 48,869 | 1,967 | +0.30% | 49.04–49.29% | ≈ 3.0 | 36 g/s |
+
+Margin SE ≈ 2 × the share SE ≈ 0.10pp: tighter than Phase 26's runs
+because the extra candidate rarely changes the pick, so most paired games
+are identical. Both arms clear z = 2, contradicting the expectation from
+Phase 15 that disagreements live between the top two: under sequential
+sampling the third and fourth candidates are cheap and occasionally right.
+4 vs 3 (+0.03%) is not resolved.
