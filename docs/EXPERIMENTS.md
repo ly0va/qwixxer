@@ -1895,8 +1895,53 @@ z ≈ 1.5. Every arm has leaned positive, so the effect is plausibly real,
 but it is under 2 SE and smaller than the +0.3% that more rollout samples
 buy. It does not justify changing the production config.
 
-Possible follow-ups, both low expected value given this result:
-per-decision λ from the paired rollout SE (λ = τ²/(τ²+SE²)), and
-sequential sampling (start at 32–64 samples, stop once the paired
-difference is decisive). Phase 13/23 put the ceiling for more rollout
-precision at about +0.3% margin.
+**Adopted anyway** (user call): `blend=0.7` costs nothing and every arm
+leaned positive, so it is the production default from Phase 26 on
+(`SearchConfig::default()` = `k=128,passive,lock=256,blend=0.7`; `noblend`
+restores the Phase 21 search; `legacy()` stays unblended for the
+expert-iteration recipe).
+
+## Phase 26: Search follow-ups — adaptive blend and sequential sampling
+
+Branch `search-followups` (from `feature-screen`). Two follow-ups from
+Phase 25: a per-decision blend weight λ = τ²/(τ²+SE²) from the paired
+rollout standard error, and sequential sampling.
+
+### Adaptive λ: ruled out on paper
+
+Logging the paired (CRN) rollout difference at 3,704 production searches
+(200 games vs GA): SE of the mean difference is small at k=128 — median
+0.005, 10/90th percentiles 0.001/0.012 — against a static-error spread of
+τ ≈ 0.024 (Phase 25 CSV, top-2 pairs with gap < 0.15, τ² = cov of the two
+independent batches' residuals) or 0.029 (implied here: var(Δmean − ΔΦ)
+− mean SE²). A noise-only λ would sit at ≈ 0.96 almost everywhere, i.e.
+the unblended search Phase 25 already beat. What the fixed 0.7 corrects
+must be leaf bias, which more samples do not reduce (Phase 23 measured the
+leaf miscalibration directly). Adding a bias term σ_b ≈ 0.019 (the value
+that makes λ = 0.7 at median SE) leaves λ between 0.64 and 0.70 across
+decisions: practically the fixed blend. Not implemented beyond the probe.
+
+The same log shows 80% of searched decisions are already decided by more
+than 2 SE at 128 samples, which is what sequential sampling exploits.
+
+### Sequential sampling
+
+`seq=N`: run N samples per candidate, then double up to `k` until every
+candidate's blended score difference to the static pick is at least
+`stop` × λ·SE (default `stop=2`). Since sample k's dice depend only on
+(decision seed, k, player), the batches compose into exactly the fixed-k
+sample set; with `stop=inf` the picks match fixed k (tested).
+
+Timing smoke, 1,000 games vs GA, seed 9 (searcher's own cost dominates):
+
+| Arm | Wins vs GA | Games/s | Relative cost |
+|---|---:|---:|---:|
+| production (k=128, blend 0.7) | 64.1% | 16 | 1× |
+| `seq=32` | 63.7% | 27 | 0.6× |
+| `seq=16` | 63.6% | 35 | 0.45× |
+| `seq=32,stop=1` | 63.4% | 41 | 0.4× |
+| `k=256,seq=32` | 64.2% | 20 | 0.8× |
+| `k=512,seq=32` | 64.1% | 15 | ≈1× |
+
+### Head-to-head vs production (seed 11)
+

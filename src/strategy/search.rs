@@ -136,11 +136,14 @@ pub struct SearchStats {
     pub lock_adjudications: u32,
     /// ...of which an alternative beat the lock.
     pub lock_overrides: u32,
+    /// Rollout samples per candidate, summed over truncated searches
+    /// (`/ searched` = mean samples used; below `k_samples` with `seq`).
+    pub rollout_samples: u64,
 }
 
 /// Search knobs. `Default` is the production configuration (Phase 21:
-/// passive search + lock adjudication); [`SearchConfig::legacy`] is the
-/// Phase 13–20 production search.
+/// passive search + lock adjudication; Phase 25: blend 0.7);
+/// [`SearchConfig::legacy`] is the Phase 13–20 production search.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SearchConfig {
     /// Sampled futures per candidate in the truncated (gated) search.
@@ -156,9 +159,20 @@ pub struct SearchConfig {
     /// Pick by `(1 − λ)·Φ(static z) + λ·rollout mean` (shrink the noisy
     /// rollout estimate toward the static value); `None` = rollout mean alone.
     pub blend: Option<f32>,
+    /// Sequential sampling: start with this many samples per candidate and
+    /// double (up to `k_samples`) until the pick is decisive.
+    pub seq: Option<usize>,
+    /// Sequential stopping threshold: stop once every candidate's blended
+    /// score difference to the static pick exceeds `stop` × λ·SE.
+    pub stop: f32,
     /// Close-gate margin: search when the top-2 static gap is below this.
     pub gate: f32,
 }
+
+/// Production rollout/static blend weight (Phase 25).
+pub const BLEND: f32 = 0.7;
+/// Default sequential stopping threshold (in standard errors).
+pub const SEQ_STOP: f32 = 2.0;
 
 /// Full-game rollouts per compared candidate at a forced safe lock.
 pub const LOCK_K: usize = 256;
@@ -170,7 +184,9 @@ impl Default for SearchConfig {
             search_passive: true,
             lock_k: Some(LOCK_K),
             stratify: false,
-            blend: None,
+            blend: Some(BLEND),
+            seq: None,
+            stop: SEQ_STOP,
             gate: GATE_MARGIN,
         }
     }
@@ -178,12 +194,13 @@ impl Default for SearchConfig {
 
 impl SearchConfig {
     /// Phase 13–20 production search: active decisions only, safe locks
-    /// forced by the meta-rule. Kept for reproducing recorded analyses and
-    /// training recipes.
+    /// forced by the meta-rule, pure rollout mean. Kept for reproducing
+    /// recorded analyses and training recipes.
     pub fn legacy() -> Self {
         Self {
             search_passive: false,
             lock_k: None,
+            blend: None,
             ..Self::default()
         }
     }
@@ -191,7 +208,9 @@ impl SearchConfig {
     /// Parse a comma-separated spec on top of the production defaults:
     /// `passive` / `nopassive`, `lock=N` / `nolock` (lock-adjudication
     /// rollouts), `strat`, `k=N` (truncated-search samples), `blend=λ`
-    /// (λ in [0, 1]), `gate=G` (close-gate margin ≥ 0). Empty = production.
+    /// (λ in [0, 1]) / `noblend`, `seq=N`
+    /// (sequential sampling from N), `stop=C` (sequential threshold, may be
+    /// `inf`), `gate=G` (close-gate margin ≥ 0). Empty = production.
     pub fn parse(spec: &str) -> Result<Self, String> {
         let mut cfg = Self::default();
         let num = |key: &str, v: &str| v.parse::<usize>().map_err(|e| format!("{key}={v}: {e}"));
@@ -206,14 +225,23 @@ impl SearchConfig {
                 None if tok == "nopassive" => cfg.search_passive = false,
                 None if tok == "nolock" => cfg.lock_k = None,
                 None if tok == "strat" => cfg.stratify = true,
+                None if tok == "noblend" => cfg.blend = None,
                 Some(("k", v)) => cfg.k_samples = num("k", v)?,
                 Some(("lock", v)) => cfg.lock_k = Some(num("lock", v)?),
                 Some(("blend", v)) => cfg.blend = Some(real("blend", v, 1.0)?),
+                Some(("seq", v)) => cfg.seq = Some(num("seq", v)?),
+                Some(("stop", v)) => cfg.stop = real("stop", v, f32::INFINITY)?,
                 Some(("gate", v)) => cfg.gate = real("gate", v, f32::MAX)?,
-                _ => return Err(format!(
-                    "unknown search option {tok:?} (passive, nopassive, lock=N, nolock, strat, k=N, blend=λ, gate=G)"
-                )),
+                _ => {
+                    return Err(format!(
+                        "unknown search option {tok:?} (passive, nopassive, lock=N, nolock, strat, k=N, \
+                     blend=λ, noblend, seq=N, stop=C, gate=G)"
+                    ))
+                }
             }
+        }
+        if cfg.seq.is_some_and(|s| s == 0 || s > cfg.k_samples) {
+            return Err(format!("seq must be in 1..=k ({})", cfg.k_samples));
         }
         Ok(cfg)
     }
@@ -231,8 +259,15 @@ impl std::fmt::Display for SearchConfig {
         if self.stratify {
             write!(f, ",strat")?;
         }
-        if let Some(l) = self.blend {
-            write!(f, ",blend={l}")?;
+        match self.blend {
+            Some(l) => write!(f, ",blend={l}")?,
+            None => write!(f, ",noblend")?,
+        }
+        if let Some(s) = self.seq {
+            write!(f, ",seq={s}")?;
+        }
+        if self.stop != SEQ_STOP {
+            write!(f, ",stop={}", self.stop)?;
         }
         if self.gate != GATE_MARGIN {
             write!(f, ",gate={}", self.gate)?;
@@ -502,31 +537,56 @@ pub(crate) fn rollout_final_states(
     out
 }
 
+/// Pick among searched candidates from per-sample leaf values (`values[e][k]`,
+/// sample `k` CRN-paired across entries). Each candidate is scored by its
+/// difference to entry 0 (the static pick): `(1 − λ)·ΔΦ(static z) + λ·Δmean`,
+/// with λ = `blend` (1 = pure rollout mean when `None`). Highest score wins;
+/// ties keep the lower (static) index. Also returns whether the pick is
+/// decisive for sequential sampling: every |score| ≥ `stop`·λ·SE, with SE
+/// the standard error of the paired mean difference.
+fn pick_by_paired_rollouts(cands: &[Candidate], values: &[Vec<f32>], cfg: &SearchConfig) -> (usize, bool) {
+    let k = values[0].len() as f32;
+    let (mut best, mut best_score, mut decisive) = (0, 0.0f32, true);
+    for ei in 1..values.len() {
+        let diffs = values[ei].iter().zip(&values[0]).map(|(a, b)| a - b);
+        let mean = diffs.clone().sum::<f32>() / k;
+        let var = diffs.map(|d| (d - mean) * (d - mean)).sum::<f32>() / (k - 1.0).max(1.0);
+        let se = (var / k).sqrt();
+        let lambda = cfg.blend.unwrap_or(1.0);
+        let score = (1.0 - lambda) * (phi(cands[ei].value) - phi(cands[0].value)) + lambda * mean;
+        // An infinite `stop` never stops (and avoids ∞·0 = NaN at zero SE).
+        if !(cfg.stop.is_finite() && score.abs() >= cfg.stop * lambda * se) {
+            decisive = false;
+        }
+        if score > best_score {
+            best = ei;
+            best_score = score;
+        }
+    }
+    (best, decisive)
+}
+
 impl<B: WinProb> SearchBot<B> {
-    /// Shared post-static-eval flow: search the top-K entries, pick.
-    /// `entries[i]` = (full player states after candidate i's deterministic
-    /// completion of the current turn, game-already-over flag). Returns the
-    /// index of the winning candidate. Takes `&self` (stats use RefCell) so
-    /// `self.bot` can be borrowed by the rollout driver without fuss.
-    /// `first_active` = entry-frame seat that takes the first rollout turn.
-    fn search_pick(
+    /// Leaf values of samples `ks` for every non-ended entry: one batched
+    /// rollout of `HORIZON_ROUNDS` rounds, exact outcome where the game ended,
+    /// else the bot's win prob. Sample `k`'s dice depend only on (seed, k,
+    /// player), so ranges compose: samples are CRN across entries and
+    /// identical however `ks` is split. Ended entries get their outcome.
+    fn rollout_values(
         &self,
-        cands: &[Candidate],
-        entries: Vec<(Vec<State>, bool)>,
+        entries: &[(Vec<State>, bool)],
         seed: u64,
         first_active: usize,
-    ) -> usize {
-        debug_assert_eq!(entries.len(), cands.len().min(K_CANDIDATES));
+        ks: std::ops::Range<usize>,
+    ) -> Vec<Vec<f32>> {
         let n = entries[0].0.len();
-
-        // Build rollouts: k_samples per non-ended entry, CRN dice across entries.
         let mut sims: Vec<SimGame> = Vec::new();
         let mut sim_owner: Vec<usize> = Vec::new(); // entry index per sim
         for (ei, (states, ended)) in entries.iter().enumerate() {
             if *ended {
                 continue;
             }
-            for k in 0..self.cfg.k_samples {
+            for k in ks.clone() {
                 sims.push(SimGame {
                     states: states.clone(),
                     active: first_active,
@@ -549,8 +609,6 @@ impl<B: WinProb> SearchBot<B> {
 
         // Score: exact outcome for finished sims, win prob for survivors
         // (one batched call over all survivors of all entries).
-        let mut scores: Vec<f32> = vec![0.0; entries.len()];
-        let mut counts: Vec<u32> = vec![0; entries.len()];
         let survivor_idx: Vec<usize> = (0..driver.sims.len()).filter(|&i| !driver.sims[i].over).collect();
         let survivor_views: Vec<Vec<State>> = survivor_idx
             .iter()
@@ -563,41 +621,59 @@ impl<B: WinProb> SearchBot<B> {
             .collect();
         let probs = self.bot.win_prob_multi(&groups);
         let mut prob_iter = probs.into_iter();
+        let mut out: Vec<Vec<f32>> = entries
+            .iter()
+            .map(|(states, ended)| {
+                if *ended {
+                    vec![SimGame::outcome(states); ks.len()]
+                } else {
+                    Vec::with_capacity(ks.len())
+                }
+            })
+            .collect();
         for (i, sim) in driver.sims.iter().enumerate() {
             let p = if sim.over {
                 SimGame::outcome(&sim.states)
             } else {
                 prob_iter.next().unwrap()
             };
-            scores[sim_owner[i]] += p;
-            counts[sim_owner[i]] += 1;
+            out[sim_owner[i]].push(p);
         }
-        for (ei, (states, ended)) in entries.iter().enumerate() {
-            if *ended {
-                scores[ei] = SimGame::outcome(states);
-                counts[ei] = 1;
-            }
-        }
+        out
+    }
 
-        // Highest (optionally static-blended) mean wins; ties keep the
-        // static (lower-index) candidate.
-        let score = |ei: usize| {
-            let mean = scores[ei] / counts[ei] as f32;
-            match self.cfg.blend {
-                Some(l) => (1.0 - l) * phi(cands[ei].value) + l * mean,
-                None => mean,
+    /// Shared post-static-eval flow: search the top-K entries, pick.
+    /// `entries[i]` = (full player states after candidate i's deterministic
+    /// completion of the current turn, game-already-over flag). Returns the
+    /// index of the winning candidate. Takes `&self` (stats use RefCell) so
+    /// `self.bot` can be borrowed by the rollout driver without fuss.
+    /// `first_active` = entry-frame seat that takes the first rollout turn.
+    fn search_pick(
+        &self,
+        cands: &[Candidate],
+        entries: Vec<(Vec<State>, bool)>,
+        seed: u64,
+        first_active: usize,
+    ) -> usize {
+        debug_assert_eq!(entries.len(), cands.len().min(K_CANDIDATES));
+        let k_max = self.cfg.k_samples;
+        let mut k = self.cfg.seq.unwrap_or(k_max).min(k_max);
+        let mut values = self.rollout_values(&entries, seed, first_active, 0..k);
+        loop {
+            let (best, decisive) = pick_by_paired_rollouts(cands, &values, &self.cfg);
+            if decisive || k >= k_max {
+                if let Some(st) = &self.stats {
+                    st.borrow_mut().rollout_samples += k as u64;
+                }
+                return best;
             }
-        };
-        let mut best = 0;
-        let mut best_score = score(0);
-        for ei in 1..entries.len() {
-            let s = score(ei);
-            if s > best_score {
-                best = ei;
-                best_score = s;
+            let next = (2 * k).min(k_max);
+            let more = self.rollout_values(&entries, seed, first_active, k..next);
+            for (v, m) in values.iter_mut().zip(more) {
+                v.extend(m);
             }
+            k = next;
         }
-        best
     }
 
     /// Forced safe lock `lock` vs the rule-free alternatives (Phase 16
@@ -1234,9 +1310,10 @@ mod tests {
         assert_eq!(cfg.blend, Some(0.4));
         assert_eq!(cfg.gate, 0.3);
         assert_eq!(SearchConfig::parse(&cfg.to_string()), Ok(cfg));
-        // Production keeps the pure rollout mean and the 0.15 gate.
-        assert_eq!(SearchConfig::default().blend, None);
+        // Production blends at 0.7 (Phase 25) with the 0.15 gate.
+        assert_eq!(SearchConfig::default().blend, Some(BLEND));
         assert_eq!(SearchConfig::default().gate, GATE_MARGIN);
+        assert_eq!(SearchConfig::parse("noblend").unwrap().blend, None);
         assert!(SearchConfig::parse("blend=1.5").is_err());
         assert!(SearchConfig::parse("blend=x").is_err());
         assert!(SearchConfig::parse("gate=-1").is_err());
@@ -1270,6 +1347,113 @@ mod tests {
     }
 
     #[test]
+    fn search_config_parses_seq_stop() {
+        let cfg = SearchConfig::parse("seq=32,stop=inf").unwrap();
+        assert_eq!((cfg.seq, cfg.stop), (Some(32), f32::INFINITY));
+        assert_eq!(SearchConfig::parse(&cfg.to_string()), Ok(cfg));
+        let cfg = SearchConfig::parse("seq=16,stop=1.5").unwrap();
+        assert_eq!(SearchConfig::parse(&cfg.to_string()), Ok(cfg));
+        assert!(SearchConfig::parse("seq=0").is_err());
+        assert!(SearchConfig::parse("seq=256").is_err());
+        assert!(SearchConfig::parse("k=256,seq=256").is_ok());
+        assert!(SearchConfig::parse("stop=-1").is_err());
+    }
+
+    fn cand(value: f32) -> Candidate {
+        Candidate {
+            mark: None,
+            value,
+            post: State::default(),
+        }
+    }
+
+    #[test]
+    fn paired_pick_blends_and_stops() {
+        let cands = [cand(0.1), cand(0.0)];
+        let noblend = SearchConfig {
+            blend: None,
+            ..SearchConfig::default()
+        };
+        // Constant paired difference +0.1: zero SE, decisive, rollouts win
+        // unless the static term outweighs them.
+        let values = vec![vec![0.5; 8], vec![0.6; 8]];
+        assert_eq!(pick_by_paired_rollouts(&cands, &values, &noblend), (1, true));
+        let static_only = SearchConfig {
+            blend: Some(0.0),
+            ..noblend
+        };
+        assert_eq!(pick_by_paired_rollouts(&cands, &values, &static_only).0, 0);
+        // Noisy difference with mean +0.01 (SE ≈ 0.038): not decisive at
+        // stop=2; the rollouts alone prefer 1, blend 0.7 keeps the static
+        // pick (ΔΦ ≈ −0.04).
+        let a: Vec<f32> = (0..8).map(|i| if i % 2 == 0 { 0.0 } else { 1.0 }).collect();
+        let b: Vec<f32> = a
+            .iter()
+            .enumerate()
+            .map(|(i, x)| x + if i % 2 == 0 { 0.11 } else { -0.09 })
+            .collect();
+        let values = vec![a, b];
+        assert_eq!(pick_by_paired_rollouts(&cands, &values, &noblend), (1, false));
+        assert_eq!(
+            pick_by_paired_rollouts(&cands, &values, &SearchConfig::default()),
+            (0, false)
+        );
+        let lax = SearchConfig { stop: 0.1, ..noblend };
+        assert_eq!(pick_by_paired_rollouts(&cands, &values, &lax), (1, true));
+    }
+
+    #[test]
+    fn rollout_sample_ranges_compose() {
+        // Sequential sampling relies on samples [0, a) ++ [a, b) == [0, b).
+        let bot = SearchBot::new(test_bot());
+        let a = State::default();
+        let mut marked = a;
+        marked.apply_mark(Mark { row: 0, number: 5 });
+        let entries = vec![phase2_entry(a, &[a]), phase2_entry(marked, &[a])];
+        let whole = bot.rollout_values(&entries, 11, 1, 0..24);
+        let mut split = bot.rollout_values(&entries, 11, 1, 0..8);
+        for (v, m) in split.iter_mut().zip(bot.rollout_values(&entries, 11, 1, 8..24)) {
+            v.extend(m);
+        }
+        assert_eq!(whole, split);
+    }
+
+    #[test]
+    fn seq_with_infinite_stop_matches_fixed_k() {
+        // Never decisive → doubles to k_samples and must pick exactly as
+        // the fixed-k search does.
+        let base = SearchConfig {
+            k_samples: 32,
+            ..SearchConfig::legacy()
+        };
+        let seq = SearchConfig {
+            seq: Some(4),
+            stop: f32::INFINITY,
+            ..base
+        };
+        // One bot (test_bot() is randomly initialised), config swapped per call.
+        let mut bot = SearchBot::with_config(test_bot(), base);
+        bot.force = true;
+        let mut mid = State::default();
+        mid.apply_mark(Mark { row: 0, number: 4 });
+        mid.apply_mark(Mark { row: 3, number: 10 });
+        for state in [State::default(), mid] {
+            for dice in [[3, 4, 2, 3, 5, 1], [1, 1, 6, 6, 6, 6], [6, 5, 1, 2, 3, 4]] {
+                let opps = [mid];
+                let mut picks = Vec::new();
+                for cfg in [base, seq] {
+                    bot.cfg = cfg;
+                    picks.push((
+                        bot.active_phase1(&state, &opps, dice),
+                        bot.active_phase2(&state, &opps, dice, false),
+                    ));
+                }
+                assert_eq!(picks[0], picks[1]);
+            }
+        }
+    }
+
+    #[test]
     fn gate_margin_is_configurable() {
         let fresh = State::default();
         let cands = [(1.00, fresh), (0.80, fresh)];
@@ -1288,15 +1472,20 @@ mod tests {
                 search_passive: true,
                 lock_k: Some(256),
                 stratify: true,
-                blend: None,
+                blend: Some(BLEND),
+                seq: None,
+                stop: SEQ_STOP,
                 gate: GATE_MARGIN,
             }
         );
         assert_eq!(SearchConfig::parse(&cfg.to_string()), Ok(cfg));
         // Production default (Phase 21) and the pre-Phase-21 legacy config.
-        assert_eq!(SearchConfig::default().to_string(), "k=128,passive,lock=256");
-        assert_eq!(SearchConfig::legacy().to_string(), "k=128,nopassive,nolock");
-        assert_eq!(SearchConfig::parse("nopassive,nolock"), Ok(SearchConfig::legacy()));
+        assert_eq!(SearchConfig::default().to_string(), "k=128,passive,lock=256,blend=0.7");
+        assert_eq!(SearchConfig::legacy().to_string(), "k=128,nopassive,nolock,noblend");
+        assert_eq!(
+            SearchConfig::parse("nopassive,nolock,noblend"),
+            Ok(SearchConfig::legacy())
+        );
         assert_eq!(
             SearchConfig::parse(&SearchConfig::legacy().to_string()),
             Ok(SearchConfig::legacy())

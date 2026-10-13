@@ -270,10 +270,17 @@ samples), `search_passive` (also search gated passive decisions via
 non-lock alternative and runner-up lock by full-game rollouts), `stratify`
 (stratified first-roll white dice; did not help), `blend` (pick by
 `(1 − λ)·Φ(static z) + λ·rollout mean` instead of the rollout mean alone;
-spec `blend=λ`, off in production) and `gate` (close-gate margin, spec
+spec `blend=λ` / `noblend`, 0.7 in production since Phase 25), `seq` /
+`stop` (sequential sampling: start at `seq` samples per candidate and double
+up to `k_samples` until every blended score difference to the static pick
+exceeds `stop` × λ·SE of the CRN-paired mean difference; spec `seq=N`,
+`stop=C`, default off / 2) and `gate` (close-gate margin, spec
 `gate=G`, default `GATE_MARGIN` = 0.15; distillation keeps the constant).
+Rollout sample `k`'s dice depend only on (decision seed, k, player), so
+sequential batches compose into exactly the fixed-k sample set.
 `Default` = production
-= `k=128,passive,lock=256` since Phase 21; `SearchConfig::legacy()` = the
+= `k=128,passive,lock=256,blend=0.7` since Phase 25 (Phase 21 without the
+blend); `SearchConfig::legacy()` = the
 Phase 13–20 search (active-only, forced locks), still used by the
 `pair-train --search` expert and the divergence harness.
 Bench bots `pair-search-exp` / `pair-search-exp-b` read a spec such as
