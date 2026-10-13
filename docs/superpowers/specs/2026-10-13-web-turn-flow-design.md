@@ -80,9 +80,11 @@ the lock ends the game. The user must be able to tell at a glance that:
 - if it is the second locked row, the game ends after phase 1 (rule 2).
 
 Agreed look: the row's colour band is hatched and its lock symbol ringed, on
-both sheets, plus a dark banner above the user's sheet ("Red is locking: the
-bot marked red 12. Your white sum may still go in red; a colour mark can't.").
-It stays until the turn resolves, then turns into the normal locked state.
+both sheets, until the turn resolves; then it turns into the normal locked
+state. No banner. The explanation is a tip, shown when the user taps a
+blocked square in that row ("Red is locking: the bot marked red 12. Your
+white sum may still go in red; a colour mark can't."), using the same tip
+area as the inactive confirm button.
 
 ### Which squares are legal
 
@@ -212,11 +214,11 @@ the paper-sheet look, desktop 1280×800, no scrolling.
   column holds the score breakdown, the strike boxes (2×2) and a tall confirm
   button at thumb height. Above the sheet: header (wordmark, your score, a Bot
   button that opens the drawer, dark-mode toggle), the dice tray with Roll,
-  and a permanent dark **"this roll" strip** whose content changes but whose
-  height does not (so the sheet never resizes mid-game): before rolling "Your
-  turn: roll the dice"; after the roll the white sum, the bot's move as log
-  chips, and a lock line only when a row is locking; "Bot passed" otherwise.
-  The bot's sheet (compact, horizontal, view-only), the bot picker and the
+  whose Roll button's slot shows the white sum after rolling ("White 12").
+  There is no status strip or banner: the header's Bot button carries the
+  bot's most recent marks as small log chips (its revealed white sum on the
+  user's turn, its previous turn's marks before the user rolls), and locking
+  shows on the sheet itself. The bot's sheet (compact, horizontal, view-only), the bot picker and the
   log live in a bottom drawer. Short phones shrink the cells, down to about
   36 px; no scrolling. Portrait only.
 - Still to do: dark palette, a clickable prototype.
