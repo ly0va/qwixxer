@@ -119,4 +119,38 @@ describe('GameController', () => {
         expect(c.view?.phase).toBe('passive');
         expect(c.rollNo).toBe(1);
     });
+
+    it('settles the roll animation before surfacing a failed roll', async () => {
+        const e = fakeEngine({ youRoll: vi.fn(async () => { throw new Error('roll failed'); }) });
+        const later = () => new Promise<void>((r) => setTimeout(r, 0));
+        const c = new GameController(e, memStore({ 'qwixxer.save.v1': JSON.stringify({ snapshot: '{}', log: [], rollNo: 2, bot: 'master', nextBot: 'master' }) }), later, () => 1);
+        await c.init();
+        expect(c.view?.phase).toBe('you_to_roll');
+        await c.roll();
+        await new Promise((r) => setTimeout(r, 20));
+        expect(c.error).toContain('roll failed');
+        expect(c.thinking).toBe(false);
+        expect(c.rolling).toBe(false);
+        expect(c.shownDice).toBe(null);
+        expect(c.busy).toBe(false);
+    });
+
+    it('persists a bot change made mid-roll only to prefs', async () => {
+        let finish: (v: View) => void = () => {};
+        const e = fakeEngine({ youRoll: vi.fn(() => new Promise<View>((r) => { finish = r; })) });
+        const store = memStore({ 'qwixxer.save.v1': JSON.stringify({ snapshot: '{}', log: [], rollNo: 2, bot: 'master', nextBot: 'master' }) });
+        const c = new GameController(e, store, instant, () => 1);
+        await c.init();
+        const before = store.data['qwixxer.save.v1'];
+        const snaps = (e.snapshot as any).mock.calls.length;
+        const pending = c.roll();
+        expect(c.busy).toBe(true);
+        c.setBot('student');
+        await Promise.resolve();
+        expect((e.snapshot as any).mock.calls.length).toBe(snaps);
+        expect(store.data['qwixxer.save.v1']).toBe(before);
+        expect(JSON.parse(store.data['qwixxer.prefs.v1']).nextBot).toBe('student');
+        finish(v({ phase: 'active', dice: [1, 2, 3, 4, 5, 6], options: { selections: [[{ row: 0, n: 3 }]], strike: true, pass: false } }));
+        await pending;
+    });
 });

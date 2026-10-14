@@ -101,6 +101,7 @@ export class GameController {
         if (this.busy) return;
         await this.guard(async () => {
             this.bot = this.nextBot;
+            this.thinking = false;
             this.log = [];
             this.rollNo = 0;
             this.sel = [];
@@ -119,7 +120,9 @@ export class GameController {
         await this.guard(async () => {
             this.fresh = {};
             const result = this.engine.youRoll();
-            const [v] = await Promise.all([result, this.tumble().then(() => this.think())]);
+            let failed = false;
+            result.catch(() => (failed = true));
+            const v = await this.settled(result, this.tumble().then(() => (failed ? undefined : this.think())));
             this.thinking = false;
             this.view = v;
             this.rollNo += 1;
@@ -204,7 +207,9 @@ export class GameController {
     setBot(k: BotKind) {
         this.nextBot = k;
         this.savePrefs();
-        this.save();
+        // Mid-sequence the engine snapshot can be ahead of rollNo/log; the
+        // next regular save picks up nextBot.
+        if (!this.busy) this.save();
     }
 
     toggleTheme() {
@@ -216,8 +221,9 @@ export class GameController {
 
     private async botTurn() {
         this.fresh = {};
+        this.thinking = false;
         const result = this.engine.botRoll();
-        const [v] = await Promise.all([result, this.tumble()]);
+        const v = await this.settled(result, this.tumble());
         this.view = v;
         this.rollNo += 1;
         this.save();
@@ -255,6 +261,17 @@ export class GameController {
         this.fresh = fresh;
         this.log = [logEntry(this.rollNo, step.record), ...this.log];
         this.save();
+    }
+
+    /**
+     * Wait for both the engine call and its animation, so a failed call never
+     * leaves a tumble or think running past the error handling.
+     */
+    private async settled<T>(result: Promise<T>, anim: Promise<unknown>): Promise<T> {
+        const [r, a] = await Promise.allSettled([result, anim]);
+        if (r.status === 'rejected') throw r.reason;
+        if (a.status === 'rejected') throw a.reason;
+        return r.value;
     }
 
     private async tumble() {
