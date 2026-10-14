@@ -17,7 +17,11 @@
     .lock { box-sizing: border-box; width: var(--s); height: var(--s); border-radius: 50%; display: flex; align-items: center; justify-content: center; background: var(--paper); flex-shrink: 0; }
     .grey { opacity: 0.35; }
     .locking { border: var(--ring) solid var(--ink); }
-    .pencil { border: var(--ring) solid var(--pencil); }
+    /* The "locking" band's diagonal hatch, in pencil grey, scaled to the circle,
+       on the rim only: a paper disc behind the icon keeps the row colour clean. */
+    .pencil { --w: calc(var(--s) / 9); background:
+        radial-gradient(circle, var(--paper) calc(var(--s) * 0.3), transparent calc(var(--s) * 0.3 + 0.5px)),
+        repeating-linear-gradient(135deg, color-mix(in srgb, var(--pencil) 45%, var(--paper)) 0 var(--w), var(--paper) var(--w) calc(2 * var(--w))); }
     .locked_by { background: var(--ink); }
     .locked_other { opacity: 0.3; }
 </style>
