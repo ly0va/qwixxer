@@ -1,21 +1,11 @@
-import { defineConfig } from 'vite';
+import { defineConfig } from 'vitest/config';
+import { svelte } from '@sveltejs/vite-plugin-svelte';
 
 export default defineConfig({
-    root: '.',
     base: '/qwixxer/',
-    build: {
-        outDir: 'dist',
-        assetsInlineLimit: 0,
-        rollupOptions: {
-            input: {
-                main: 'index.html',
-                explorer: 'explorer.html',
-            },
-        },
-    },
-    server: {
-        fs: {
-            allow: ['.']
-        }
-    }
+    plugins: [svelte()],
+    worker: { format: 'es' },
+    build: { outDir: 'dist', assetsInlineLimit: 0 },
+    server: { fs: { allow: ['.'] } },
+    test: { environment: 'node', include: ['src/**/*.test.ts'] },
 });

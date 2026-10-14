@@ -1,64 +1,18 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#e74c3c" />
-    <title>Qwixx</title>
-    <link rel="stylesheet" href="/src/ts/style.css" />
+    <meta name="theme-color" content="#F3EDE1" />
+    <title>Qwixxer</title>
     <link rel="manifest" href="/qwixxer/manifest.json" />
     <link rel="icon" href="/qwixxer/icon-192.png" />
 </head>
 <body>
-    <div id="app">
-        <header>
-            <h1>Qwixx</h1>
-            <div id="controls">
-                <label for="bot-select">Bot:</label>
-                <select id="bot-select">
-                    <option value="ga">GA Champion</option>
-                    <option value="dqn" selected>DQN Neural Net</option>
-                    <option value="opportunist">Opportunist</option>
-                    <option value="conservative">Conservative</option>
-                    <option value="random">Random</option>
-                </select>
-                <button id="new-game-btn">New Game</button>
-                <a href="explorer.html" style="margin-left: 1rem;">State Explorer</a>
-            </div>
-        </header>
-
-        <section id="dice-area">
-            <div id="dice-container"></div>
-        </section>
-
-        <section id="message-area">
-            <div id="message"></div>
-        </section>
-
-        <section id="player-area" class="board-section player">
-            <div class="board-label">Your Scoresheet</div>
-            <div id="player-board"></div>
-        </section>
-
-        <section id="action-area">
-            <div id="action-buttons"></div>
-        </section>
-
-        <section id="scoring-area">
-            <div id="scoring-reference"></div>
-        </section>
-
-        <section id="bot-area" class="board-section opponent">
-            <div class="board-label">Bot's Scoresheet</div>
-            <div id="bot-board"></div>
-        </section>
-    </div>
-
-    <script type="module" src="/src/ts/main.ts"></script>
+    <div id="app"></div>
+    <script type="module" src="/src/main.ts"></script>
     <script>
-      if ('serviceWorker' in navigator) {
-        navigator.serviceWorker.register('/qwixxer/sw.js');
-      }
+        if ('serviceWorker' in navigator) navigator.serviceWorker.register('/qwixxer/sw.js');
     </script>
 </body>
 </html>
