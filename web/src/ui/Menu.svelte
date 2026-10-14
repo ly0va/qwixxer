@@ -2,7 +2,7 @@
     import type { GameController } from '../game/controller.svelte';
     let { c }: { c: GameController } = $props();
 
-    // The "⋯" header menu (both layouts): New game and dark mode. Open state
+    // The "⋯" header menu (both layouts): New game, dark mode and a rules link. Open state
     // lives on the controller so App's page-wide keys treat it as a modal.
     let trigger = $state<HTMLButtonElement>();
     let first = $state<HTMLButtonElement>();
@@ -62,6 +62,11 @@
                 <span>Dark mode</span>
                 <span class="switch" class:on={c.theme === 'dark'} aria-hidden="true"><span></span></span>
             </button>
+            <a role="menuitem" class="item" href="https://en.wikipedia.org/wiki/Qwixx" target="_blank" rel="noopener noreferrer"
+                onclick={() => (c.menuOpen = false)}>
+                <span>Rules</span>
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="var(--muted)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"></path></svg>
+            </a>
         </div>
     {/if}
 </div>
@@ -77,7 +82,7 @@
     .item {
         min-height: 44px; padding: 0 12px; border: none; border-radius: 8px; background: transparent; color: var(--ink);
         display: flex; align-items: center; justify-content: space-between; gap: 12px;
-        font-family: var(--text); font-weight: 600; font-size: 15px; text-align: left; cursor: pointer;
+        font-family: var(--text); font-weight: 600; font-size: 15px; text-align: left; text-decoration: none; cursor: pointer;
     }
     .item:hover { background: var(--log-bg); }
     .item.armed { background: var(--ink); color: var(--ground); }
