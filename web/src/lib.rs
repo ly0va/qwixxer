@@ -1,8 +1,10 @@
-//! WASM entry points for the web UI: `WasmGame` (one game, JSON in/out)
-//! and `bench`. Game logic lives in `session.rs` / `selection.rs`.
+//! WASM entry points for the web UI: `WasmGame` (one game, JSON in/out),
+//! `WasmExplorer` (the state explorer) and `bench`. Game logic lives in
+//! `session.rs` / `selection.rs`.
 
 pub mod bench;
 pub mod bots;
+pub mod explorer;
 pub mod selection;
 pub mod session;
 
@@ -63,5 +65,33 @@ impl WasmGame {
         let picks: Vec<Sq> = serde_json::from_str(picks_json).map_err(js)?;
         let rec = self.session.submit_active(&picks, strike).map_err(js)?;
         Ok(serde_json::to_string(&rec).unwrap())
+    }
+}
+
+/// The state explorer: stateless calls, one explorer per worker.
+#[wasm_bindgen]
+pub struct WasmExplorer {
+    inner: explorer::Explorer,
+}
+
+impl Default for WasmExplorer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[wasm_bindgen]
+impl WasmExplorer {
+    #[wasm_bindgen(constructor)]
+    pub fn new() -> WasmExplorer {
+        WasmExplorer {
+            inner: explorer::Explorer::new(),
+        }
+    }
+
+    pub fn explore(&mut self, position: &str) -> Result<String, JsError> {
+        let pos: explorer::Position = serde_json::from_str(position).map_err(js)?;
+        let answer = self.inner.explore(&pos).map_err(js)?;
+        Ok(serde_json::to_string(&answer).unwrap())
     }
 }

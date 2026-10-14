@@ -8,7 +8,7 @@ use qwixxer::strategy::{Opportunist, Strategy};
 use std::sync::Arc;
 
 const CHAMPION: &[u8] = include_bytes!("../../champion.txt");
-const PAIR_MODEL: &[u8] = include_bytes!("../../pair_model/model.mpk");
+pub(crate) const PAIR_MODEL: &[u8] = include_bytes!("../../pair_model/model.mpk");
 
 /// Master+ search config: "" = native production (`SearchConfig::default()`).
 /// Task 4's browser benchmark may set a lighter spec here.
@@ -23,6 +23,19 @@ pub enum BotKind {
 }
 
 impl BotKind {
+    /// Every web bot, strongest first (the order of the explorer's tags).
+    pub const ALL: [BotKind; 4] = [BotKind::MasterPlus, BotKind::Master, BotKind::Student, BotKind::Newbie];
+
+    /// The id `parse` accepts (and the explorer reports).
+    pub fn id(self) -> &'static str {
+        match self {
+            BotKind::MasterPlus => "master_plus",
+            BotKind::Master => "master",
+            BotKind::Student => "student",
+            BotKind::Newbie => "newbie",
+        }
+    }
+
     pub fn parse(s: &str) -> Result<BotKind, String> {
         match s {
             "master_plus" => Ok(BotKind::MasterPlus),
