@@ -32,6 +32,10 @@
     const current = $derived<LogEntry | null>(v?.phase === 'active'
         ? { n: c.rollNo, lines: [{ who: 'You', chips: [], empty: 'choosing…' }, { who: 'Bot', chips: chipsFor(v.bot_white ? [v.bot_white] : [], false), empty: '–' }] }
         : v?.phase === 'passive' ? { n: c.rollNo, lines: [{ who: 'Bot', chips: [], empty: '…' }, { who: 'You', chips: [], empty: 'choosing…' }] } : null);
+    // Whose turn it is: the active player's score in the header is inked, like
+    // the desktop's "Your turn" pill (none once the game is over).
+    const yourTurn = $derived(v?.phase === 'you_to_roll' || v?.phase === 'active');
+    const botTurn = $derived(v?.phase === 'bot_to_roll' || v?.phase === 'passive');
     // Spec "Game over": the result with its reason. On the phone it replaces
     // the dice row (the dice no longer matter), so it reads as a headline.
     const result = $derived(v?.over ? {
@@ -48,8 +52,8 @@
     <header class="head">
         <div class="word">Qwixxer</div>
         <div class="right">
-            <span>You <b>{v?.you.score ?? 0}</b></span>
-            <button type="button" class="botbtn" bind:this={botBtn} aria-label="Bot, {v?.bot.score ?? 0} points. Open bot sheet and log" onclick={() => (drawer = true)}>
+            <span class="you" class:turn={yourTurn}>You <b>{v?.you.score ?? 0}</b></span>
+            <button type="button" class="botbtn" class:turn={botTurn} bind:this={botBtn} aria-label="Bot, {v?.bot.score ?? 0} points. Open bot sheet and log" onclick={() => (drawer = true)}>
                 Bot <b>{v?.bot.score ?? 0}</b>
                 {#each botChips as ch}<ChipView chip={ch} size={20} />{/each}
             </button>
@@ -115,6 +119,8 @@
     .word { font-family: var(--cond); font-weight: 800; font-size: 26px; }
     .right { display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 14px; }
     .right b { font-family: var(--cond); font-size: 20px; }
+    .you { height: 44px; border-radius: 12px; display: flex; align-items: center; gap: 5px; padding: 0 10px; }
+    .you.turn, .botbtn.turn { background: var(--ink); color: var(--ground); box-shadow: none; }
     .botbtn { height: 44px; border-radius: 12px; border: none; background: var(--paper); box-shadow: 0 1px 0 var(--edge); color: var(--muted); display: flex; align-items: center; gap: 5px; padding: 0 10px; cursor: pointer; }
     .body { display: flex; gap: 10px; align-items: stretch; }
     .side { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 10px; }

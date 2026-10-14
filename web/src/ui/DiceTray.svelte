@@ -43,7 +43,7 @@
     /* Phone: tighter gaps to fit 390 px, and a fixed height so the sheet doesn't jump when Roll (48 px) swaps for the White badge (44 px). */
     .tray.compact { gap: 6px; min-height: 48px; }
     .roll { min-height: 48px; padding: 0; border: none; border-radius: 12px; display: inline-flex; align-items: center; justify-content: center; gap: 8px; font-weight: 700; font-size: 17px; flex-shrink: 0; cursor: not-allowed; background: var(--btn-muted-bg); color: var(--btn-muted-fg); }
-    .roll.primary { cursor: pointer; background: var(--ink); color: var(--ground); box-shadow: 0 0 0 4px var(--ground), 0 0 0 6px var(--ink); }
+    .roll.primary { cursor: pointer; background: var(--ink); color: var(--ground); }
     .sum { margin-left: 8px; display: flex; flex-direction: column; gap: 2px; }
     .sum span, .white-badge span { font-size: 12px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: 1px; }
     .sum b { font-family: var(--cond); font-weight: 800; font-size: 34px; line-height: 1; }
