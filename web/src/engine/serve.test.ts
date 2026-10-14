@@ -10,6 +10,17 @@ class FakeGame {
     }
 }
 
+class FakeExplorer {
+    static made = 0;
+    constructor() { FakeExplorer.made++; }
+    explore(json: string) {
+        const p = JSON.parse(json);
+        if (p.bad) throw new Error('bad position');
+        return JSON.stringify({ over: null, eval: { p_win: 0.5, margin: 0, sigma: 10 }, moves: null, echo: p.roller });
+    }
+    free() {}
+}
+
 function setup(failures: number) {
     const s = { inits: 0, fail: failures };
     const posted: Reply[] = [];
@@ -19,6 +30,7 @@ function setup(failures: number) {
             if (s.fail-- > 0) throw new Error('fetch failed');
         },
         WasmGame: FakeGame,
+        WasmExplorer: FakeExplorer,
     } as unknown as Wasm;
     const handle = serve(wasm, (r) => posted.push(r));
     const send = async (id: number, cmd: string, args: unknown[]) => {
@@ -44,5 +56,14 @@ describe('engine worker handler', () => {
         const { send } = setup(0);
         expect(await send(1, 'restore', ['master', 'bad', 1])).toMatchObject({ ok: false, kind: 'snapshot', error: 'bad snapshot' });
         expect(await send(2, 'nope', [])).toMatchObject({ ok: false, kind: 'engine' });
+    });
+
+    it('answers explore with one lazily created explorer, and reports bad positions as engine errors', async () => {
+        const { send } = setup(0);
+        FakeExplorer.made = 0;
+        expect(await send(1, 'explore', [{ roller: 'you' }])).toMatchObject({ ok: true, result: { echo: 'you', eval: { p_win: 0.5 } } });
+        expect(await send(2, 'explore', [{ roller: 'opponent' }])).toMatchObject({ ok: true, result: { echo: 'opponent' } });
+        expect(FakeExplorer.made).toBe(1);
+        expect(await send(3, 'explore', [{ bad: true }])).toMatchObject({ ok: false, kind: 'engine', error: 'bad position' });
     });
 });

@@ -1,4 +1,4 @@
-import type { WasmGame } from '../../pkg/qwixxer_web.js';
+import type { WasmExplorer, WasmGame } from '../../pkg/qwixxer_web.js';
 
 /** The wasm-bindgen pieces the worker needs (injected so tests don't need the built pkg). */
 export interface Wasm {
@@ -7,6 +7,7 @@ export interface Wasm {
         new (bot: string, seed: number): WasmGame;
         restore(bot: string, snapshot: string, seed: number): WasmGame;
     };
+    WasmExplorer: { new (): WasmExplorer };
 }
 export type Request = { id: number; cmd: string; args: any[] };
 export type Reply = { id: number; ok: boolean; result?: unknown; error?: string; kind?: 'snapshot' | 'engine' };
@@ -14,7 +15,7 @@ export type Reply = { id: number; ok: boolean; result?: unknown; error?: string;
 /**
  * The worker's message handler: loads the wasm (retrying a failed fetch or
  * instantiate on the next call instead of rejecting forever) and runs one
- * game. Starts loading at once.
+ * game and the explorer. Starts loading at once.
  */
 export function serve(wasm: Wasm, post: (r: Reply) => void): (req: Request) => Promise<void> {
     let ready: Promise<unknown> | null = null;
@@ -25,6 +26,7 @@ export function serve(wasm: Wasm, post: (r: Reply) => void): (req: Request) => P
         }));
     load().catch(() => {}); // a failure surfaces on the first call
     let game: WasmGame | null = null;
+    let explorer: WasmExplorer | null = null;
 
     const need = (): WasmGame => {
         if (!game) throw new Error('no game');
@@ -59,6 +61,10 @@ export function serve(wasm: Wasm, post: (r: Reply) => void): (req: Request) => P
                 const record = JSON.parse(need().submit_active(JSON.stringify(args[0]), args[1]));
                 return { view: view(), record };
             }
+            case 'explore':
+                // Created on first use and kept: the game and the explorer share the worker.
+                explorer ??= new wasm.WasmExplorer();
+                return JSON.parse(explorer.explore(JSON.stringify(args[0])));
             default:
                 throw new Error(`unknown command ${cmd}`);
         }

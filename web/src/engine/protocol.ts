@@ -26,6 +26,13 @@ export interface RollRecord {
     locked: number[];
 }
 export interface Step { view: View; record: RollRecord }
+export type Roller = 'you' | 'opponent';
+export interface SheetSnap { marks: boolean[][]; strikes: number }
+/** Mirrors explorer.rs `Position`. `locked` = rows closed by tapping their lock. */
+export interface Position { you: SheetSnap; opponent: SheetSnap; locked: boolean[]; dice: number[] | null; roller: Roller }
+export interface Eval { p_win: number; margin: number; sigma: number }
+export interface MoveOut { marks: Sq[]; strike: boolean; pass: boolean; p_win: number; bots: BotKind[] }
+export interface Answer { over: { you: number; opponent: number } | null; eval: Eval; moves: MoveOut[] | null }
 /**
  * Why an engine call failed: `snapshot` when `restore` rejected the saved
  * game itself (bad JSON or values), `engine` for anything else (the wasm or
@@ -49,5 +56,6 @@ export interface Engine {
     submitPassive(pick: Sq | null): Promise<Step>;
     youRoll(): Promise<View>;
     submitActive(picks: Sq[], strike: boolean): Promise<Step>;
+    explore(position: Position): Promise<Answer>;
 }
 export const BOT_NAMES: Record<BotKind, string> = { master_plus: 'Master+', master: 'Master', student: 'Student', newbie: 'Newbie' };
