@@ -1,7 +1,7 @@
 <script lang="ts">
     import type { LockLook } from '../game/rules';
     let { look, color, size, label }: { look: LockLook; color: string; size: number; label: string } = $props();
-    const stroke = $derived(look === 'locked_by' ? 'var(--paper)' : look === 'locked_other' ? 'var(--muted)' : look === 'grey' || look === 'open' ? `var(--${color}-ink)` : 'var(--ink)');
+    const stroke = $derived(look === 'locked_by' ? 'var(--paper)' : look === 'locked_other' ? 'var(--muted)' : look === 'grey' || look === 'open' || look === 'pencil' ? `var(--${color}-ink)` : 'var(--ink)');
 </script>
 
 <!-- Rings are drawn inside the circle (border), on the paper colour: an
