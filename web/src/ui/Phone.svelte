@@ -32,9 +32,13 @@
     const current = $derived<LogEntry | null>(v?.phase === 'active'
         ? { n: c.rollNo, lines: [{ who: 'You', chips: [], empty: 'choosing…' }, { who: 'Bot', chips: chipsFor(v.bot_white ? [v.bot_white] : [], false), empty: '–' }] }
         : v?.phase === 'passive' ? { n: c.rollNo, lines: [{ who: 'Bot', chips: [], empty: '…' }, { who: 'You', chips: [], empty: 'choosing…' }] } : null);
-    // Spec "Game over": the result with its reason, as ActionBar shows it on desktop.
-    const result = $derived(v?.over ? `${v.you.score > v.bot.score ? 'You win' : v.you.score < v.bot.score ? 'Bot wins' : 'Draw'} ${v.you.score} – ${v.bot.score}. `
-        + (v.over === 'locks' ? 'Two rows are locked.' : v.over === 'you_strikes' ? 'You took a fourth strike.' : 'The bot took a fourth strike.') : '');
+    // Spec "Game over": the result with its reason. On the phone it replaces
+    // the dice row (the dice no longer matter), so it reads as a headline.
+    const result = $derived(v?.over ? {
+        title: v.you.score > v.bot.score ? 'You win' : v.you.score < v.bot.score ? 'Bot wins' : 'Draw',
+        score: `${v.you.score} – ${v.bot.score}`,
+        reason: v.over === 'locks' ? 'Two rows are locked.' : v.over === 'you_strikes' ? 'You took a fourth strike.' : 'The bot took a fourth strike.',
+    } : null);
 </script>
 
 <svelte:window bind:innerWidth={w} bind:innerHeight={h} />
@@ -52,7 +56,14 @@
             <Menu {c} />
         </div>
     </header>
-    <DiceTray {c} size={L.die} compact />
+    {#if result}
+        <div class="result" role="status">
+            <div class="headline"><b>{result.title}</b><span>{result.score}</span></div>
+            <span class="reason">{result.reason}</span>
+        </div>
+    {:else}
+        <DiceTray {c} size={L.die} compact />
+    {/if}
     <div class="body">
         <SheetColumns {rows} size={L.size} onTap={(cell) => c.tapSquare(cell.sq)} />
         <aside class="side">
@@ -80,7 +91,7 @@
                 onclick={() => (c.error ? c.newGame() : c.confirm())}>{c.error ? 'New game' : conf.label}</button>
         </aside>
     </div>
-    <div class="msg" role="status">{c.error ? `Something went wrong: ${c.error}` : result || c.tip}</div>
+    <div class="msg" role="status">{c.error ? `Something went wrong: ${c.error}` : c.tip}</div>
     </div>
 
     {#if drawer}
@@ -117,6 +128,11 @@
     .box.faded { opacity: 0.35; }
     .confirm { margin-top: auto; min-height: 64px; border: none; border-radius: 14px; font-weight: 700; font-size: 18px; background: var(--btn-muted-bg); color: var(--btn-muted-fg); }
     .confirm.primary { background: var(--ink); color: var(--ground); }
+    .result { height: 48px; box-sizing: border-box; padding: 0 12px; border-radius: 12px; background: var(--paper); box-shadow: 0 1px 0 var(--edge); display: flex; flex-direction: column; justify-content: center; flex-shrink: 0; }
+    .headline { display: flex; align-items: baseline; gap: 10px; line-height: 1; }
+    .headline b { font-family: var(--cond); font-weight: 800; font-size: 26px; }
+    .headline span { font-family: var(--cond); font-weight: 700; font-size: 22px; }
+    .reason { font-size: 12px; color: var(--muted); line-height: 1.2; margin-top: 2px; }
     .msg { font-size: 13px; line-height: 1.3; color: var(--soft); min-height: 34px; }
     .scrim { position: fixed; inset: 0; z-index: 1; border: none; background: var(--scrim); }
     .drawer { position: fixed; z-index: 2; bottom: 0; left: 50%; transform: translateX(-50%); width: 100%; max-width: 430px; max-height: 75dvh; box-sizing: border-box; background: var(--paper); border-radius: 20px 20px 0 0; padding: 8px 14px 16px; display: flex; flex-direction: column; gap: 12px; overflow: hidden; }

@@ -40,7 +40,7 @@ export const strikeOpen = (view: View, sel: Sq[]) => view.phase === 'active' && 
 
 export type CellLook = 'normal' | 'legal' | 'soft' | 'skipped' | 'out';
 export interface CellModel { n: number; sq: Sq; mark: 'none' | 'ink' | 'pencil'; anim: '' | 'draw' | 'ink'; look: CellLook; clickable: boolean; label: string }
-export type LockLook = 'grey' | 'open' | 'locking' | 'locked_by' | 'locked_other';
+export type LockLook = 'grey' | 'open' | 'locking' | 'pencil' | 'locked_by' | 'locked_other';
 export interface RowModel { row: number; color: (typeof ROWS)[number]; band: 'normal' | 'locking' | 'locked'; cells: CellModel[]; lock: LockLook; label: string }
 export interface SheetUi { sel: Sq[]; strikeSel: boolean; committing: boolean; fresh: Record<string, 'draw' | 'ink'>; hidden: string[] }
 
@@ -74,7 +74,11 @@ export function sheetModel(view: View, who: 'you' | 'bot', ui: SheetUi): RowMode
             const state = mark === 'ink' ? ', marked' : mark === 'pencil' ? (isYou ? ', selected' : ', marked this roll') : canClick ? ', available' : '';
             return { n, sq, mark, anim, look, clickable: canClick, label: `${NAME[r]} ${n}${state}` };
         });
-        const lock: LockLook = ink[10] ? 'locked_by' : locked ? 'locked_other' : r === lockingRow ? 'locking' : lockable ? 'open' : 'grey';
+        // The lock counts as a mark: pencil-shaded while its row-ending number
+        // is pencilled on this sheet, solid ink once that mark is inked.
+        const end = cells[10].mark;
+        const lock: LockLook = end === 'ink' ? 'locked_by' : locked ? 'locked_other' : end === 'pencil' ? 'pencil'
+            : r === lockingRow ? 'locking' : lockable ? 'open' : 'grey';
         const band = locked ? 'locked' : r === lockingRow ? 'locking' : 'normal';
         return { row: r, color, band, cells, lock, label: `${NAME[r]} row${locked ? ', locked' : r === lockingRow ? ', locking this roll' : ''}` };
     });

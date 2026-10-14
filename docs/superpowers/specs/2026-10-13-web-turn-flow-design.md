@@ -174,6 +174,8 @@ Optionally each greyed square carries a reason string for a hover tooltip
 No dialog or overlay: the final sheets stay fully visible. The result sits in
 the action bar where tips appear ("You win 45 – 38 · Two rows are locked."),
 the turn pill reads "Game over", and the confirm button becomes **New game**.
+On the phone the result replaces the dice row at the top (the dice no longer
+matter): "You win" and the score in large type, the reason underneath.
 
 ## Pencil and ink
 
@@ -229,10 +231,13 @@ the paper-sheet look, desktop 1280×800, no scrolling.
   A locked row's die is out of the game: greyed, blank, never rolls.
 - **Lock symbol** at the end of each row: greyed while that sheet has fewer
   than 5 marks in the row (it cannot be locked yet), regular from 5 marks,
-  filled in ink for the player who locked it. Pencil Xs count toward the
-  five, since a pending fifth mark can be followed by the lock in the same
-  turn. The row-ending number (12 for red/yellow, 2 for green/blue) greys out
-  by the same rule.
+  filled in ink for the player who locked it, and greyed out on the other
+  player's sheet. While a row-ending number is pencilled (your selection, or
+  the bot's revealed white sum), its lock is shaded in pencil grey, since the
+  lock counts as a mark; it turns solid ink when the mark is inked. Pencil Xs
+  count toward the five, since a pending fifth mark can be followed by the
+  lock in the same turn. The row-ending number (12 for red/yellow, 2 for
+  green/blue) greys out by the same rule.
 - **Locked row:** the colour band turns a neutral grey (light #C9C1B2, dark
   #3A352E) and every remaining square greys out; marks stay readable.
 - **Reduced motion:** draw-ins are skipped; everything else is already

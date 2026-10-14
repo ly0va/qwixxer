@@ -34,6 +34,18 @@ describe('clickable / confirm', () => {
 });
 
 describe('sheetModel', () => {
+    it('shades the lock in pencil while its row-ending number is pencilled, ink once committed', () => {
+        const v = view({ options: { selections: [[{ row: 0, n: 12 }]], strike: true, pass: false } });
+        mark(v, 'you', 0, [0, 1, 2, 3, 4]); // red 2..6: the 12 is lockable
+        expect(sheetModel(v, 'you', ui())[0].lock).toBe('open');
+        expect(sheetModel(v, 'you', ui({ sel: [{ row: 0, n: 12 }] }))[0].lock).toBe('pencil');
+        expect(sheetModel(v, 'you', ui({ sel: [{ row: 0, n: 12 }], committing: true }))[0].lock).toBe('locked_by');
+        // The bot's revealed row-ending mark shades its own lock; your sheet shows the row locking.
+        const b = view({ bot_white: { row: 2, n: 2 } });
+        mark(b, 'bot', 2, [0, 1, 2, 3, 4]);
+        expect(sheetModel(b, 'bot', ui())[2].lock).toBe('pencil');
+        expect(sheetModel(b, 'you', ui())[2].lock).toBe('locking');
+    });
     it('greys skipped squares and the terminal number until five marks, pencil included', () => {
         const v = view({ options: { selections: [[{ row: 0, n: 8 }]], strike: true, pass: false } });
         mark(v, 'you', 0, [0, 1, 2, 4]); // red 2,3,4,6 → 5 is skipped
