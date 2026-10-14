@@ -1,4 +1,6 @@
+pub mod bots;
 pub mod selection;
+pub mod session;
 use qwixxer::bot::{self, DNA};
 use qwixxer::state::{Move, State};
 use qwixxer::strategy::{self, Strategy};
