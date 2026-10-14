@@ -389,6 +389,24 @@ The struct tracks per-cell marks (`player_marks` and `bot_marks` as `[[bool; 11]
 
 **`StateExplorer`** is a second `#[wasm_bindgen]` struct for the explorer page. It holds both a GA champion and a DQN model, and evaluates arbitrary board states constructed from a JSON-serialized marks array. Returns GA value, DQN value, score, blanks, probability, weighted probability, and per-gene breakdowns.
 
+### Web bot latency
+
+Measured 2026-10-14 with `./web/build.sh && node web/scripts/bench.mjs <bot> 10`
+(Node 22, single thread, `opt-level = 'z'` + `wasm-opt -Oz`, `.wasm` 1.0 MB).
+The bench (`web/src/bench.rs`, exported as `bench(bot, games, seed)`) plays
+games against random legal human choices and times every call into the bot
+(all three decision phases, including trivial ones), seed 1:
+
+| Bot | Games | Decisions | mean ms | p50 ms | p95 ms | max ms |
+|---|---|---|---|---|---|---|
+| Master+ (pair-search, `MASTER_PLUS_SPEC = ""`) | 10 | 291 | 20.80 | 0.17 | 121.92 | 308.33 |
+| Master (pair net) | 10 | 297 | 0.06 | 0.03 | 0.15 | 1.61 |
+| Student (GA champion) | 10 | 297 | 0.01 | 0.00 | 0.03 | 0.77 |
+
+Master+ passes the bar (p95 ≤ 400 ms, max ≤ 2500 ms) at the native production
+search config (`SearchConfig::default()`), so the web build keeps
+`MASTER_PLUS_SPEC = ""` and the size-optimised `opt-level = 'z'` / `-Oz`.
+
 ### TypeScript Frontend
 
 Built with Vite (vanilla TypeScript, no framework). Multi-page configuration serves both `index.html` (game) and `explorer.html` (explorer).
