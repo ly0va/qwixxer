@@ -284,8 +284,10 @@ real pair-search bot also needs a moment to compute):
 - **Turn order:** the bot starts every game (as today).
 - **Fonts:** Barlow and Barlow Condensed are self-hosted, not loaded from
   Google Fonts.
-- **Accessibility:** the log is an `aria-live` region so bot moves are
-  announced.
+- **Accessibility (now):** semantic markup only: real buttons for squares,
+  strike boxes and actions, descriptive labels ("Blue 12, available"),
+  `aria-pressed` / `aria-disabled` states. Full screen-reader play is
+  deferred (see "Later").
 
 ## Implementation notes
 
@@ -324,4 +326,7 @@ real pair-search bot also needs a moment to compute):
   On a bot's turn the user still confirms first; the other bots' phase-1 marks
   are fixed independently, as above.
 - Hover tooltips for greyed squares, if the reason strings turn out cheap.
+- **Screen-reader play:** the log as an `aria-live` region announcing bot
+  moves and locks, focus management after confirm, arrow-key navigation of
+  the sheet; test with a real screen reader.
 - Animation speed setting.
