@@ -53,3 +53,13 @@ export function phoneLayout(innerWidth: number, innerHeight: number): PhoneLayou
     const size = Math.max(MIN, Math.min(cap, Math.floor((innerHeight - PHONE_FIXED_SHORT) / 12)));
     return { size, die, botSize, short: true, scroll: PHONE_FIXED_SHORT + 12 * size > innerHeight };
 }
+
+/**
+ * Explorer phone: two compact SheetColumns side by side. Each is 4 s + 41 px
+ * wide (paper padding 2×4, band padding 4×2×3, 3 gaps of 3), plus an 8 px gap
+ * and 2×12 page padding: 8 s + 114 within the (≤ 430 px) column.
+ */
+export function explorerPhoneSize(innerWidth: number): number {
+    const w = Math.min(innerWidth, 430);
+    return Math.max(24, Math.min(40, Math.floor((w - 114) / 8)));
+}

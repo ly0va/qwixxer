@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { deskScale, PHONE_FIXED, PHONE_FIXED_SHORT, phoneLayout } from './layout';
+import { deskScale, explorerPhoneSize, PHONE_FIXED, PHONE_FIXED_SHORT, phoneLayout } from './layout';
 
 // Height the phone page needs for a given layout (see layout.ts).
 const needed = (l: ReturnType<typeof phoneLayout>) => (l.short ? PHONE_FIXED_SHORT : PHONE_FIXED) + 12 * l.size;
@@ -46,5 +46,14 @@ describe('deskScale', () => {
         expect(deskScale(1366, 650)).toBe(0.8125); // 1366×768 laptop, browser chrome included
         expect(deskScale(1100, 700)).toBeCloseTo(0.859375, 6);
         expect(deskScale(1440, 760)).toBe(0.95);
+    });
+});
+
+describe('explorerPhoneSize', () => {
+    it('fits two compact sheets side by side, 24–40 px', () => {
+        expect(explorerPhoneSize(390)).toBe(34); // 8s + 114 ≤ 390
+        expect(explorerPhoneSize(320)).toBe(25);
+        expect(explorerPhoneSize(1000)).toBe(39); // the 430 px phone column caps it
+        expect(explorerPhoneSize(200)).toBe(24);
     });
 });

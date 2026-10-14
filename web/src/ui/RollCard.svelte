@@ -6,7 +6,16 @@
     const FACES = [['var(--die-face)', 'var(--die-pip)', 'White'], ['var(--die-face)', 'var(--die-pip)', 'White'],
         ['var(--red-band)', 'var(--on-band)', 'Red'], ['var(--yellow-band)', 'var(--on-yellow)', 'Yellow'],
         ['var(--green-band)', 'var(--on-band)', 'Green'], ['var(--blue-band)', 'var(--on-band)', 'Blue']];
-    const size = $derived(compact ? 40 : 52);
+    // Compact (phone) row: Sum 46 + 6 dice × 38 + 6 gaps × 5 = 304 px, within
+    // the 312 px a 360 px phone leaves inside the card (2×12 page, 2×12 card).
+    const size = $derived(compact ? 38 : 52);
+    const gap = $derived(compact ? 5 : 10);
+    const lead = $derived(compact ? 46 + gap : 0); // the Sum box before the dice
+    const rowEnd = $derived(lead + 6 * size + 5 * gap);
+    // The 1–6 picker (6 × 44 + 5 × 4 + 2 × 6 = 296 px) sits under its die,
+    // centred but clamped to the dice row so it never leaves the card.
+    const PICKER_W = 296;
+    const pickerLeft = (i: number) => Math.max(0, Math.min(lead + i * (size + gap) + size / 2 - PICKER_W / 2, rowEnd - PICKER_W));
     const closed = $derived(closedRows(x.pos));
     // Colour dice are ignored on the opponent's roll and for closed rows: greyed.
     const out = (i: number) => i >= 2 && (x.pos.roller === 'opponent' || closed[i - 2]);
@@ -19,7 +28,7 @@
         {#if !compact}<h2>Roll</h2>{/if}
         <div class="seg" role="radiogroup" aria-label="Whose roll">
             <button type="button" role="radio" aria-checked={x.pos.roller === 'you'} onclick={() => x.setRoller('you')}>Your roll</button>
-            <button type="button" role="radio" aria-checked={x.pos.roller === 'opponent'} onclick={() => x.setRoller('opponent')}>{compact ? 'Opponent’s' : 'Opponent’s roll'}</button>
+            <button type="button" role="radio" aria-checked={x.pos.roller === 'opponent'} onclick={() => x.setRoller('opponent')}>Opponent’s roll</button>
         </div>
         <button type="button" class="tool" aria-label="Random roll" onclick={() => x.random()}>
             <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="4"></rect><circle cx="8.5" cy="8.5" r="1.2" fill="currentColor"></circle><circle cx="15.5" cy="15.5" r="1.2" fill="currentColor"></circle><circle cx="15.5" cy="8.5" r="1.2" fill="currentColor"></circle><circle cx="8.5" cy="15.5" r="1.2" fill="currentColor"></circle></svg>
@@ -40,7 +49,7 @@
                     {/if}
                 </button>
                 {#if x.picker === i}
-                    <div class="picker" role="group" aria-label="Set the {f[2].toLowerCase()} die">
+                    <div class="picker" role="group" style="left: {pickerLeft(i)}px" aria-label="Set the {f[2].toLowerCase()} die">
                         {#each [1, 2, 3, 4, 5, 6] as v}
                             <button type="button" aria-label="Face {v}" onclick={() => x.pickFace(v)}>{v}</button>
                         {/each}
@@ -63,18 +72,21 @@
     .tool { height: 36px; min-width: 40px; padding: 0 12px; border-radius: 9px; border: none; background: var(--ground); color: var(--ink); display: flex; align-items: center; justify-content: center; gap: 6px; font-weight: 600; font-size: 14px; cursor: pointer; }
     .top .tool:first-of-type { margin-left: auto; }
     .tool.muted { color: var(--muted); }
-    .dice { display: flex; align-items: center; gap: 10px; }
-    .compact .dice { gap: 6px; }
-    .slot { position: relative; }
+    .compact .top { gap: 6px; }
+    .compact .seg button { padding: 0 8px; font-size: 13px; }
+    .compact .tool { min-width: 36px; padding: 0 8px; }
+    /* The picker is positioned against the dice row (see pickerLeft). */
+    .dice { position: relative; display: flex; align-items: center; gap: 10px; }
+    .compact .dice { gap: 5px; }
     .diebtn { display: block; padding: 0; border: none; background: none; border-radius: 12px; cursor: pointer; }
     .diebtn.open { outline: 3px solid var(--ink); outline-offset: 2px; }
     .unset { box-sizing: border-box; width: var(--s); height: var(--s); border-radius: calc(var(--s) * 0.21); border: 2px dashed var(--c); display: flex; align-items: center; justify-content: center; font-family: var(--cond); font-weight: 700; font-size: 22px; color: var(--muted); background: var(--paper); }
-    .picker { position: absolute; z-index: 3; top: calc(100% + 8px); left: 0; display: flex; gap: 4px; padding: 6px; border-radius: 12px; background: var(--paper); box-shadow: 0 0 0 1px var(--edge), 0 10px 30px var(--shadow); }
-    .slot:nth-last-child(-n + 4) .picker { left: auto; right: 0; }
+    .picker { position: absolute; z-index: 3; top: calc(100% + 8px); display: flex; gap: 4px; padding: 6px; border-radius: 12px; background: var(--paper); box-shadow: 0 0 0 1px var(--edge), 0 10px 30px var(--shadow); }
     .picker button { width: 44px; height: 44px; border-radius: 9px; border: none; background: var(--ground); color: var(--ink); font-family: var(--cond); font-weight: 700; font-size: 22px; cursor: pointer; }
     .wsum, .sum { display: flex; flex-direction: column; gap: 2px; margin-left: 6px; }
     .wsum span, .sum span { font-size: 12px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: 1px; }
     .wsum b { font-family: var(--cond); font-weight: 800; font-size: 30px; line-height: 1; }
-    .sum { min-height: 40px; min-width: 56px; margin: 0; flex-direction: row; align-items: center; justify-content: center; gap: 5px; border-radius: 10px; background: var(--ground); }
-    .sum b { font-family: var(--cond); font-weight: 800; font-size: 24px; line-height: 1; }
+    .sum { box-sizing: border-box; flex: none; width: 46px; height: 38px; margin: 0; align-items: center; justify-content: center; gap: 1px; border-radius: 10px; background: var(--ground); }
+    .sum span { font-size: 10px; }
+    .sum b { font-family: var(--cond); font-weight: 800; font-size: 20px; line-height: 1; }
 </style>

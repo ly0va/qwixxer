@@ -1,6 +1,8 @@
 <script lang="ts">
     import type { GameController } from '../game/controller.svelte';
-    let { c }: { c: GameController } = $props();
+    import type { Nav } from './nav';
+    // `nav` is accepted now and wired up with the routes (explorer task 8).
+    let { c }: { c: GameController; nav?: Nav } = $props();
 
     // The "⋯" header menu (both layouts): New game, dark mode, the rules PDF,
     // the source repo and a trademark notice. Open state lives on the

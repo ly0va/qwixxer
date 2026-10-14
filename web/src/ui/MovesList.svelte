@@ -10,10 +10,12 @@
     const noDice = $derived(x.pos.dice.some((d) => d === null));
 </script>
 
+<!-- A finished game shows its result (PositionCard) and no move list. -->
+{#if !x.answer?.over}
 <section class="card" class:compact class:stale={x.pending} aria-label="Moves">
     <div class="top">
         <h2>Best moves</h2>
-        {#if moves}<span class="muted">{moves.length} legal{compact ? '' : ' · your chance to win after each'}</span>{/if}
+        {#if moves}<span class="muted">{moves.length} legal · your chance to win after each</span>{/if}
     </div>
     {#if noDice}
         <div class="empty">
@@ -45,12 +47,13 @@
         {/if}
     {/if}
 </section>
+{/if}
 
 <style>
     .card { display: flex; flex-direction: column; gap: 8px; background: var(--paper); border-radius: 14px; padding: 12px 16px; box-shadow: 0 1px 0 var(--edge); transition: opacity 0.15s; }
     .card.compact { padding: 10px 12px; gap: 7px; }
     .stale { opacity: 0.6; }
-    .top { display: flex; align-items: center; gap: 10px; }
+    .top { display: flex; align-items: baseline; flex-wrap: wrap; column-gap: 10px; row-gap: 2px; }
     h2 { margin: 0; font-family: var(--cond); font-size: 20px; font-weight: 700; }
     .muted { font-size: 13px; color: var(--muted); }
     .empty { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; padding: 24px 16px; text-align: center; color: var(--muted); font-size: 14px; }
