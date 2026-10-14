@@ -7,7 +7,9 @@
     // Controller ruling: during the bot's think after your tumble, the rolled
     // dice (pendingDice) are shown while the view is still 'you_to_roll'.
     // While thinking before they arrive, the last tumble faces (shownDice) stay up.
-    const idle = $derived(v?.phase === 'you_to_roll' && !c.rolling && !c.pendingDice && !c.thinking);
+    // Before your roll the previous roll's dice stay up; the tray is blank
+    // ("idle") only when there has been no roll yet.
+    const idle = $derived(v?.phase === 'you_to_roll' && !c.rolling && !c.pendingDice && !c.thinking && !v?.dice);
     const values = $derived(c.rolling ? c.shownDice : (c.pendingDice ?? c.shownDice ?? v?.dice));
     const faces = [['var(--die-face)', 'var(--die-pip)', 'White'], ['var(--die-face)', 'var(--die-pip)', 'White'],
         ['var(--red-band)', 'var(--on-band)', 'Red'], ['var(--yellow-band)', 'var(--on-yellow)', 'Yellow'],

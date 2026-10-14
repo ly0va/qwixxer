@@ -46,8 +46,9 @@ These follow the engine (`src/game.rs`), which is the source of truth:
 
 1. **Roll.** The user presses a physical **Roll** button in the dice tray.
    It is redundant (the turn could roll by itself) but deliberate: it gives the
-   player agency. Before the roll the dice are blank, the white sum reads "–"
-   and the sheet shows no legal-move cues.
+   player agency. Before the roll the previous roll's dice (and white sum)
+   stay visible until Roll is pressed; only before the game's first roll are
+   the dice blank and the white sum "–". The sheet shows no legal-move cues.
 2. **Bot's white-sum mark is revealed immediately.** The bot's phase-1 choice
    depends only on the dice and the pre-roll boards (rule 1), never on the
    user's choice, so revealing it first is fair and gives the user full
