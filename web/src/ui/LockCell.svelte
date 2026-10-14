@@ -17,7 +17,7 @@
     .lock { box-sizing: border-box; width: var(--s); height: var(--s); border-radius: 50%; display: flex; align-items: center; justify-content: center; background: var(--paper); flex-shrink: 0; }
     .grey { opacity: 0.35; }
     .locking { border: var(--ring) solid var(--ink); }
-    .pencil { background: color-mix(in srgb, var(--pencil) 45%, var(--paper)); }
+    .pencil { border: var(--ring) solid var(--pencil); }
     .locked_by { background: var(--ink); }
     .locked_other { opacity: 0.35; }
 </style>

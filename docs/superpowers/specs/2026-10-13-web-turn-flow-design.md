@@ -234,7 +234,7 @@ the paper-sheet look, desktop 1280×800, no scrolling.
   than 5 marks in the row (it cannot be locked yet), regular from 5 marks,
   filled in ink for the player who locked it, and greyed out on the other
   player's sheet. While a row-ending number is pencilled (your selection, or
-  the bot's revealed white sum), its lock is shaded in pencil grey, since the
+  the bot's revealed white sum), its lock is circled in pencil grey, since the
   lock counts as a mark; it turns solid ink when the mark is inked. Pencil Xs
   count toward the five, since a pending fifth mark can be followed by the
   lock in the same turn. The row-ending number (12 for red/yellow, 2 for
