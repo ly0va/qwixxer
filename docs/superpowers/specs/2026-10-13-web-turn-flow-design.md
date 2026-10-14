@@ -180,7 +180,8 @@ works with reduced motion.
 
 ## Header and chrome
 
-- Wordmark "Qwixxer", a turn pill ("Your turn · roll 14"), both scores, and a
+- Wordmark "Qwixxer", a turn pill ("Your turn", "Bot's turn", "Bot's turn ·
+  your white sum?"; no roll number), both scores, and a
   **dark-mode toggle** (moon button). The dark palette is still to be
   designed.
 - **Bot picker:** a dropdown in the bot sheet's header (pair search, pair
@@ -212,7 +213,14 @@ the paper-sheet look, desktop 1280×800, no scrolling.
   yellow #C49A22 / #F0CD62, green #2D7E4A / #74C994, blue #2F5E9F / #8DB0EE.
   Primary buttons and the turn pill invert (chalk on charcoal); greyed and
   soft squares dim a little more than in light mode.
-- **Dice** have pips.
+- **Dice** have pips. Rolling plays a short tumble (about 0.6 s): the dice
+  spin while their faces shuffle, then settle; skipped with reduced motion.
+  A locked row's die is out of the game: greyed, blank, never rolls.
+- **Lock symbol** at the end of each row: greyed while that sheet has fewer
+  than 5 marks in the row (it cannot be locked yet), regular from 5 marks,
+  filled in ink for the player who locked it.
+- **Locked row:** the colour band turns a neutral grey (light #C9C1B2, dark
+  #3A352E) and every remaining square greys out; marks stay readable.
 - **Reduced motion:** draw-ins are skipped; everything else is already
   static.
 - **Phone (portrait, artboards P0–P2, 390×844).** The sheet is turned
@@ -228,7 +236,9 @@ the paper-sheet look, desktop 1280×800, no scrolling.
   shows on the sheet itself. The bot's sheet (compact, horizontal, view-only), the bot picker and the
   log live in a bottom drawer. Short phones shrink the cells, down to about
   36 px; no scrolling. Portrait only.
-- Still to do: a clickable prototype.
+- Clickable prototype: the "Prototype · play a game (desktop)" artboard plays
+  full games against a simple greedy stand-in bot (rules re-implemented in
+  JavaScript for the prototype only).
 
 ## Edge cases to test
 
