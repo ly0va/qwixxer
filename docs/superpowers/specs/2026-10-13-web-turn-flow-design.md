@@ -180,8 +180,8 @@ works with reduced motion.
 
 ## Header and chrome
 
-- Wordmark "Qwixxer", a turn pill ("Your turn", "Bot's turn", "Bot's turn ·
-  your white sum?"; no roll number), both scores, and a
+- Wordmark "Qwixxer", a turn pill ("Your turn" or "Bot's turn", nothing
+  more), both scores, and a
   **dark-mode toggle** (moon button). The dark palette is still to be
   designed.
 - **Bot picker:** a dropdown in the bot sheet's header (pair search, pair
@@ -218,7 +218,10 @@ the paper-sheet look, desktop 1280×800, no scrolling.
   A locked row's die is out of the game: greyed, blank, never rolls.
 - **Lock symbol** at the end of each row: greyed while that sheet has fewer
   than 5 marks in the row (it cannot be locked yet), regular from 5 marks,
-  filled in ink for the player who locked it.
+  filled in ink for the player who locked it. Pencil Xs count toward the
+  five, since a pending fifth mark can be followed by the lock in the same
+  turn. The row-ending number (12 for red/yellow, 2 for green/blue) greys out
+  by the same rule.
 - **Locked row:** the colour band turns a neutral grey (light #C9C1B2, dark
   #3A352E) and every remaining square greys out; marks stay readable.
 - **Reduced motion:** draw-ins are skipped; everything else is already
