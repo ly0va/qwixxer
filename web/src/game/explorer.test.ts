@@ -19,12 +19,14 @@ function manualEngine() {
 const flush = () => new Promise((r) => setTimeout(r, 0));
 
 describe('ExplorerController', () => {
-    it('starts empty when storage is empty or garbage, and evaluates', async () => {
+    it('starts empty when storage is empty or garbage, and evaluates on refresh', async () => {
         for (const store of [memStore(), memStore({ 'qwixxer.explorer.v1': 'garbage' })]) {
             const { engine, calls } = manualEngine();
             const x = new ExplorerController(engine, store);
             x.init();
             expect(x.pos).toEqual(emptyPosition());
+            expect(calls).toHaveLength(0); // init only restores; the explorer evaluates when entered
+            x.refresh();
             expect(calls).toHaveLength(1);
             calls[0].resolve(answer(0.5));
             await flush();
@@ -33,10 +35,39 @@ describe('ExplorerController', () => {
         }
     });
 
+    it('refresh evaluates once, and does nothing while a call is in flight or with a good answer', async () => {
+        const { engine, calls } = manualEngine();
+        const x = new ExplorerController(engine, memStore());
+        x.init();
+        x.refresh();
+        x.refresh();
+        expect(calls).toHaveLength(1);
+        calls[0].resolve(answer(0.3));
+        await flush();
+        expect(x.answer?.eval.p_win).toBe(0.3);
+        x.refresh();
+        expect(calls).toHaveLength(1);
+    });
+
+    it('refresh after an engine failure evaluates again', async () => {
+        const engine = { explore: vi.fn().mockRejectedValueOnce(new Error('engine was reset')).mockResolvedValue(answer(0.8)) } as unknown as Engine;
+        const x = new ExplorerController(engine, memStore());
+        x.init();
+        x.refresh();
+        await flush();
+        expect(x.error).toBe('engine was reset');
+        x.refresh();
+        await flush();
+        expect(engine.explore).toHaveBeenCalledTimes(2);
+        expect(x.error).toBe('');
+        expect(x.answer?.eval.p_win).toBe(0.8);
+    });
+
     it('evaluates only the latest of rapid edits, and never lands an older answer', async () => {
         const { engine, calls } = manualEngine();
         const x = new ExplorerController(engine, memStore());
         x.init();
+        x.refresh();
         x.tapSquare('you', 0, 0);
         x.tapSquare('you', 0, 1);
         x.tapSquare('you', 0, 2);
@@ -110,6 +141,7 @@ describe('ExplorerController', () => {
         } as unknown as Engine;
         const x = new ExplorerController(engine, memStore());
         x.init();
+        x.refresh();
         x.tapSquare('you', 2, 0);
         reject(new Error('boom'));
         await flush();
@@ -124,6 +156,7 @@ describe('ExplorerController', () => {
         const engine = { explore: vi.fn().mockRejectedValueOnce(new Error('boom')).mockResolvedValue(answer(0.4)) } as unknown as Engine;
         const x = new ExplorerController(engine, memStore());
         x.init();
+        x.refresh();
         await flush();
         expect(x.error).toBe('boom');
         expect(x.pending).toBe(false);

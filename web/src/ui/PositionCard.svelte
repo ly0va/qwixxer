@@ -10,7 +10,7 @@
         <h2>Game over</h2>
         <b class="big">{overText(a.over)}</b>
     {:else if a}
-        {#if !compact}<div class="top"><h2>Position</h2><span class="muted">before the roll · Master+’s view</span></div>{/if}
+        {#if !compact}<div class="top"><h2>Position</h2><span class="muted">before the roll</span></div>{/if}
         <div class="line"><b class="big">{percent(a.eval.p_win, 0)}</b><span class="what">chance you win</span>
             {#if !compact}<span class="margin">{marginText(a.eval)}</span>{/if}</div>
         <div class="bar" role="img" aria-label="You {percent(a.eval.p_win, 0)}"><span style="width: {a.eval.p_win * 100}%"></span></div>

@@ -22,7 +22,10 @@
     let phone = $state(mq.matches);
     // The phone's bot/log drawer (bound from Phone): page-wide keys must not reach the game under it.
     let drawer = $state(false);
-    let route = $state<Route>({ view: 'play' });
+    // The initial view comes from the address, so a shared link never flashes
+    // the game first; a link's code itself loads in sync() on mount.
+    const first = parseRoute(location.hash);
+    let route = $state<Route>(first.view === 'explore' ? { view: 'explore', code: null } : first);
 
     // A link (`?p=`) loads once, then the address becomes plain #/explore so
     // a reload keeps your edits instead of reloading the link.
@@ -33,12 +36,14 @@
             history.replaceState(null, '', '#/explore');
             route = { view: 'explore', code: null };
         } else route = r;
+        // The explorer evaluates when entered (loadCode already has).
+        if (route.view === 'explore') x.refresh();
         c.menuOpen = false;
         x.picker = null;
     }
     const nav: Nav = {
         get current() { return route.view; },
-        play: () => { history.pushState(null, '', location.pathname + location.search); sync(); },
+        play: () => { if (route.view === 'play') return; history.pushState(null, '', location.pathname + location.search); sync(); },
         explorer: () => { location.hash = '#/explore'; },
         exploreThis: () => { if (c.view) x.loadView(c.view); location.hash = '#/explore'; },
     };

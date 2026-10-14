@@ -14,7 +14,25 @@ function randomPosition(rand: () => number): ExPosition {
     return p;
 }
 
+/** A fixed v1 position: shared links must keep decoding to it. */
+function vectorPosition(): ExPosition {
+    const p = emptyPosition();
+    for (const [r, i] of [[0, 0], [0, 3], [2, 5], [3, 10]]) p.you.marks[r][i] = true;
+    p.you.strikes = 1;
+    for (const [r, i] of [[1, 1], [1, 2], [3, 0]]) p.opponent.marks[r][i] = true;
+    p.opponent.strikes = 3;
+    p.locked[2] = true;
+    p.dice = [6, 1, null, 4, null, 2];
+    p.roller = 'opponent';
+    return p;
+}
+
 describe('link codec', () => {
+    it('keeps the v1 format: fixed test vectors', () => {
+        expect(encode(emptyPosition())).toBe('1AAAAAAAAAAAAAAAAAAAA');
+        expect(decode('1kAAAEAASABgAAIAMsRAo')).toEqual(vectorPosition());
+        expect(encode(vectorPosition())).toBe('1kAAAEAASABgAAIAMsRAo');
+    });
     it('round-trips random positions in 21 URL-safe characters', () => {
         let seed = 7;
         const rand = () => ((seed = (seed * 1103515245 + 12345) % 2 ** 31) / 2 ** 31);

@@ -21,7 +21,14 @@
     const out = (i: number) => i >= 2 && (x.pos.roller === 'opponent' || closed[i - 2]);
     const d = $derived(x.pos.dice);
     const white = $derived(d[0] !== null && d[1] !== null ? String(d[0] + d[1]) : '–');
+    // A click outside the picker closes it; a die button toggles it itself.
+    // (closest, not contains: a picked face may already have left the DOM.)
+    function outside(e: MouseEvent) {
+        if (x.picker !== null && !(e.target as Element | null)?.closest?.('.diebtn, .picker')) x.picker = null;
+    }
 </script>
+
+<svelte:document onclick={outside} />
 
 <section class="card" class:compact aria-label="Roll">
     <div class="top">

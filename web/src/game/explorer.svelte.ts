@@ -37,7 +37,10 @@ export class ExplorerController {
         this.later = later;
     }
 
-    /** The remembered position (saved as a link code), else an empty one. */
+    /**
+     * The remembered position (saved as a link code), else an empty one.
+     * Not evaluated yet: that waits for refresh(), when the explorer is entered.
+     */
     init() {
         let saved: ExPosition | null = null;
         try {
@@ -46,7 +49,13 @@ export class ExplorerController {
         } catch {
             saved = null;
         }
-        this.set(saved ?? P.emptyPosition());
+        this.pos = saved ?? P.emptyPosition();
+    }
+
+    /** Evaluate the position unless it has an answer or a call is already on it. */
+    refresh() {
+        if (this.pending || (this.answer && !this.error)) return;
+        void this.evaluate();
     }
 
     loadCode(code: string): boolean {
