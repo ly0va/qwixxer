@@ -2,9 +2,9 @@
     import type { GameController } from '../game/controller.svelte';
     let { c }: { c: GameController } = $props();
 
-    // The "⋯" header menu (both layouts): New game, dark mode, the rules PDF and a
-    // trademark notice. Open state lives on the controller so App's page-wide
-    // keys treat it as a modal.
+    // The "⋯" header menu (both layouts): New game, dark mode, the rules PDF,
+    // the source repo and a trademark notice. Open state lives on the
+    // controller so App's page-wide keys treat it as a modal.
     let trigger = $state<HTMLButtonElement>();
     let first = $state<HTMLButtonElement>();
     let root = $state<HTMLDivElement>();
@@ -66,6 +66,11 @@
             <a role="menuitem" class="item" href="https://m.media-amazon.com/images/I/A1Y4fDIZZmL.pdf" target="_blank" rel="noopener noreferrer"
                 onclick={() => (c.menuOpen = false)}>
                 <span>Rules</span>
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="var(--muted)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"></path></svg>
+            </a>
+            <a role="menuitem" class="item" href="https://github.com/ly0va/qwixxer" target="_blank" rel="noopener noreferrer"
+                onclick={() => (c.menuOpen = false)}>
+                <span>Source code</span>
                 <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="var(--muted)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"></path></svg>
             </a>
             <p class="legal">Unofficial fan project. Qwixx is a trademark of Nürnberger-Spielkarten-Verlag, published in North America by Gamewright. Not affiliated with or endorsed by either.</p>
