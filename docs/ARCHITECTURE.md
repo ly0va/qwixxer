@@ -31,13 +31,15 @@ qwixxer/
       engine/
         protocol.ts    -- TS mirror of the session's JSON types, Engine interface
         client.ts      -- WorkerEngine: promise RPC over postMessage
-        engine.worker.ts -- Web Worker holding the WasmGame
+        engine.worker.ts -- Web Worker entry: wires the wasm pkg into serve.ts
+        serve.ts       -- Worker message handler: wasm load (with retry), one WasmGame
       game/
         rules.ts       -- Pure sheet/confirm/log model (lookups over engine data only)
         controller.svelte.ts -- GameController: turn sequencing, pacing, tips, persistence
         keys.ts        -- keyAction: pure page-wide keyboard decisions
-        layout.ts      -- phoneLayout: pure phone sizing
+        layout.ts      -- phoneLayout / deskScale: pure layout sizing
         *.test.ts      -- Vitest unit tests
+      test/client-env.ts -- Vitest environment compiling runes for the client
       ui/              -- Svelte 5 components (App, Desktop, Phone, sheets, dice, log, ...)
       styles/theme.css -- Light/dark tokens, self-hosted Barlow fonts
     scripts/bench.mjs  -- Node runner for the latency bench
@@ -444,13 +446,19 @@ search config (`SearchConfig::default()`), so the web build keeps
 
 ### Frontend (`web/src/`)
 
-**Worker engine.** `engine.worker.ts` holds one `WasmGame` per worker, so bot
+**Worker engine.** The worker (`engine.worker.ts`, logic in `serve.ts`) holds one `WasmGame`, so bot
 decisions (Master+ can take hundreds of ms) never stall animations.
 `WorkerEngine` (`client.ts`) implements the `Engine` interface of
 `protocol.ts` as promise RPC over `postMessage` (`start`, `restore`,
 `snapshot`, `botRoll`, `submitPassive`, `youRoll`, `submitActive`);
-`protocol.ts` mirrors the session's serde JSON types. A failed `start` or
-`restore` leaves the worker usable; calls to a dead worker reject.
+`protocol.ts` mirrors the session's serde JSON types. Arguments are deep-copied
+to plain JSON data before `postMessage`, since callers pass Svelte `$state`
+Proxies, which cannot be structured-cloned. Failures reject with an
+`EngineError` whose `kind` is `snapshot` (the worker loaded and `restore`
+rejected the snapshot itself; `Session::restore` validates it) or `engine`
+(anything else, e.g. the wasm failed to load). A failed wasm load is retried
+on the next call; calls to a dead worker reject until `reset()` terminates it
+and spawns a new one.
 
 **`GameController`** (`game/controller.svelte.ts`) is the Svelte 5 rune state
 for one page: it sequences turns against the `Engine`, enforces the pacing
@@ -465,14 +473,23 @@ up the engine's lists and never re-derives legality.
 
 **Persistence** (`localStorage`): `qwixxer.save.v1` holds the snapshot, log,
 roll count, current and next bot; it is written after each resolved step and
-restored on load (a game waiting on the bot's roll resumes its turn). If the
-engine rejects a saved snapshot, the save is discarded and a new game starts.
+restored on load (a game waiting on the bot's roll resumes its turn). Your
+roll is saved as soon as the engine has rolled, before the tumble and think
+finish, so a reload cannot re-roll. If the engine rejects a saved snapshot
+(`kind: 'snapshot'`), the save is discarded and a new game starts; if the
+engine fails to load, the controller retries once on a fresh worker, then
+keeps the save and shows the error. After any engine failure, New game
+recreates the worker. The stored preference for the next bot wins over the
+one in the save.
 `qwixxer.prefs.v1` holds the theme and the bot for the next game (changing the
 bot applies from the next game).
 
 **Layouts.** `App.svelte` picks `Desktop.svelte` (paper sheet, targets
 1280×800) or `Phone.svelte` (sheet turned sideways, portrait 390×844) by the
-media query `(max-width: 1099px), (orientation: portrait)`. On the phone the
+media query `(max-width: 1099px), (orientation: portrait)`. Windows smaller
+than 1280×800 (laptops at 1366×768, landscape tablets) get the desktop scaled
+down by `deskScale` = min(1, width / 1280, height / 800) with a CSS transform,
+inside a box of the scaled size, so the page never scrolls. On the phone the
 bot's sheet, the bot picker and the log live in a modal drawer.
 `game/layout.ts` (`phoneLayout`) sizes the phone: 48 px squares shrinking to a
 28 px floor; if even that does not fit, the page scrolls vertically rather
@@ -488,7 +505,11 @@ Barlow Condensed (`@fontsource/*`). Squares, strike boxes and actions are real
 
 **Tests.** Rust: `cd web && cargo test --release` (session and selection edge
 cases). TypeScript: `npm test` (Vitest: rules, controller with a fake engine,
-keys, layout) and `npm run check` (svelte-check).
+worker RPC and handler, keys, layout) and `npm run check` (svelte-check).
+Vitest runs in a custom environment (`src/test/client-env.ts`) that compiles
+runes for the client, so `$state` values are Proxies as in the browser; the
+fake engine `structuredClone`s its arguments like `postMessage`. CI
+(`.github/workflows/test.yml`) runs both the Rust and the Vitest suites.
 
 ---
 
