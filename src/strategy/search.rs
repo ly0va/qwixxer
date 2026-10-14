@@ -346,19 +346,33 @@ struct Candidate {
     post: State,
 }
 
-/// A decision with the evidence behind it (the web explorer's ranking):
-/// the move the bot plays, and the blended score `(1 − λ)·Φ(static z) +
+/// A decision with the evidence behind it (the web explorer's notes): the
+/// move the bot plays, whether a meta-rule forced it (safe lock, winning or
+/// must-mark endgame), and the blended score `(1 − λ)·Φ(static z) +
 /// λ·mean(rollout outcomes)` of each candidate it played out. `searched` is
 /// empty when no search ran (forced move, closed gates, too few candidates).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Explanation {
     pub pick: Option<Mark>,
+    pub forced: bool,
     pub searched: Vec<(Option<Mark>, f32)>,
 }
 
 impl Explanation {
     fn unsearched(pick: Option<Mark>) -> Self {
-        Explanation { pick, searched: vec![] }
+        Explanation {
+            pick,
+            forced: false,
+            searched: vec![],
+        }
+    }
+
+    fn forced(pick: Option<Mark>) -> Self {
+        Explanation {
+            pick,
+            forced: true,
+            searched: vec![],
+        }
     }
 }
 
@@ -883,7 +897,7 @@ impl<B: WinProb> SearchBot<B> {
         let plans = match decision {
             Decision::Forced(Some(lock)) if self.cfg.lock_k.is_some() && is_safe_lock(state, Some(lock)) => {
                 let rule_free = phase1_plan_choices_with(state, &sim_opp, dice, false);
-                return Explanation::unsearched(self.adjudicate_lock(
+                return Explanation::forced(self.adjudicate_lock(
                     state,
                     lock,
                     rule_free,
@@ -895,7 +909,7 @@ impl<B: WinProb> SearchBot<B> {
                     1 % (opp_states.len() + 1),
                 ));
             }
-            Decision::Forced(m) => return Explanation::unsearched(m),
+            Decision::Forced(m) => return Explanation::forced(m),
             Decision::Choices(c) => c,
         };
         let states: Vec<State> = plans.iter().map(|(_, s)| *s).collect();
@@ -942,6 +956,7 @@ impl<B: WinProb> SearchBot<B> {
         self.record_search_result(close || endgame, pick != 0);
         Explanation {
             pick: shortlist[pick].mark,
+            forced: false,
             searched: shortlist.iter().map(|c| c.mark).zip(scores).collect(),
         }
     }
@@ -1040,7 +1055,7 @@ impl<B: WinProb> SearchBot<B> {
                 let marks = state.generate_white_moves(white_sum);
                 let opp_best = opp_best_phase1_score(opp_states, white_sum);
                 let rule_free = mark_choices_with(state, &marks, *state, opp_best, false);
-                return Explanation::unsearched(self.adjudicate_lock(
+                return Explanation::forced(self.adjudicate_lock(
                     state,
                     lock,
                     rule_free,
@@ -1052,7 +1067,7 @@ impl<B: WinProb> SearchBot<B> {
                     passive_first_active(active_player, opp_states.len() + 1),
                 ));
             }
-            Decision::Forced(m) => return Explanation::unsearched(m),
+            Decision::Forced(m) => return Explanation::forced(m),
             Decision::Choices(c) => c,
         };
         if !self.cfg.search_passive {
@@ -1097,6 +1112,7 @@ impl<B: WinProb> SearchBot<B> {
         }
         Explanation {
             pick: shortlist[pick].mark,
+            forced: false,
             searched: shortlist.iter().map(|c| c.mark).zip(scores).collect(),
         }
     }

@@ -94,25 +94,21 @@ faded, until the new one arrives.
   "Strike" (or "Pass" when the game's rules make a pass legal).
 - **Opponent's roll:** each legal white-sum mark, plus "Pass".
 - Each row: rank, the marks as row-coloured chips (strike chip / "Pass"
-  text), the bot tags, and Master+'s score for the move with a bar.
-- **Ranked the way Master+ weighs the moves.** Each move's score is the
-  pair net's P(win) for your sheet after it, judged as Master+ judges it:
-  on your roll against the opponent's *predicted* white-sum mark (the
-  bots' own prediction), on the opponent's roll against their sheet. When
-  Master+'s search plays moves out (at most 3, only when Master+ itself
-  would search: a close decision or the endgame), those moves show its
-  blended score instead (0.3 × static + 0.7 × share of playouts won). On
-  your roll the search scores a white-sum choice; the blended score goes
-  to the full turn Master+ completes from it.
-- Master+'s own pick is always first (a move forced by its rules — a safe
-  lock, a game-winning end — has no score to rank by); the rest follow by
-  score, highest first; ties keep engine order.
-- The top row is outlined in ink. The first 6 rows show; "Show all *N*"
-  expands the list in place.
+  text), the bot tags, and your chance to win after the move with a bar.
+- **The chance to win** is the pair net's P(win) for your sheet after the
+  move, judged as Master+ judges it: on your roll against the opponent's
+  *predicted* white-sum mark (the bots' own prediction), on the opponent's
+  roll against their sheet. Moves are listed highest to lowest; ties keep
+  engine order, with Master+'s move first among equals.
+- **Notes:** when Master+'s move is not ranked first, its row says why
+  Master+ still plays it: "rolled out" (its search played the roll out and
+  preferred it) or "rule" (a fixed rule forced it: a safe lock or a
+  game-winning end).
+- No row is highlighted. The first 6 rows show; "Show all *N*" expands the
+  list in place.
 - **Bot tags:** Master+, Master, Student, Newbie, each on the move that bot
   would make in your seat with this roll. Master+ is ink-filled, the others
-  outlined. Several tags may share a row. Master+'s tag is always on rank
-  1; the other bots' tags show where they disagree with it.
+  outlined. Several tags may share a row.
 - No dice: the list area says "Set the dice to rank the moves" and "Tap a
   die to choose its face, or press Random."
 

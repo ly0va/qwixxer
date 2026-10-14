@@ -1,7 +1,8 @@
 //! The state explorer (spec `docs/superpowers/specs/2026-10-14-state-explorer-design.md`):
 //! any two-sheet position, evaluated by the pair net, and for a roll every
-//! legal move of yours ranked the way Master+ weighs them, tagged with the
-//! move each web bot would make in your seat.
+//! legal move of yours ranked by the pair net's chance to win after it (as
+//! Master+ judges it), tagged with the move each web bot would make in your
+//! seat.
 
 use crate::bots::{make_bot, master_plus, BotKind, PAIR_MODEL};
 use crate::selection::{active_options, n_locked, passive_options, union};
@@ -9,9 +10,8 @@ use crate::session::{SheetSnap, Sq};
 use qwixxer::dqn::pair::{pair_features, PairStrategy};
 use qwixxer::dqn::{LOG_VAR_MAX, LOG_VAR_MIN};
 use qwixxer::state::{Mark, State};
-use qwixxer::strategy::bot_impl::{active_phase1_choices, active_phase2_choices, eval_decision};
+use qwixxer::strategy::bot_impl::active_phase1_choices;
 use qwixxer::strategy::search::{phi, SearchBot, WinProb};
-use qwixxer::strategy::sim::SimGame;
 use qwixxer::strategy::{Bot, Strategy};
 use serde::{Deserialize, Serialize};
 use std::slice::from_ref;
@@ -72,11 +72,15 @@ pub struct MoveOut {
     pub marks: Vec<Sq>,
     pub strike: bool,
     pub pass: bool,
-    /// Master+'s score for the move: its blended rollout score when it
-    /// played the move out, else the pair net's P(you win) after it.
+    /// The pair net's P(you win) after the move, judged as Master+ judges
+    /// it (see `Explorer::moves`).
     pub p_win: f32,
     /// Ids of the bots that would make this move in your seat.
     pub bots: Vec<&'static str>,
+    /// On Master+'s move when it isn't ranked first, why Master+ still
+    /// plays it: "rolled_out" (its search preferred it) or "rule" (a
+    /// meta-rule forced it).
+    pub note: Option<&'static str>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -206,26 +210,6 @@ fn finish_turn(bot: &mut dyn Strategy, you: &State, opp: &State, dice: [u8; 6], 
     Turn { marks, strike }
 }
 
-/// The full turn Master+'s search plays out for the phase-1 mark `w`
-/// (`search::phase1_entry`): opponents' predicted phase-1 marks `sim_opp`,
-/// locks propagated, then the static phase 2 against them.
-fn searched_turn(net: &PairStrategy, you: &State, sim_opp: &[State], dice: [u8; 6], w: Option<Mark>) -> Turn {
-    let mut all: Vec<State> = std::iter::once(*you).chain(sim_opp.iter().copied()).collect();
-    if let Some(m) = w {
-        all[0].apply_mark(m);
-    }
-    SimGame::propagate_locks(&mut all);
-    let mut marks: Vec<Mark> = w.into_iter().collect();
-    if !SimGame::game_over(&all) {
-        let view = SimGame::opp_view(&all, 0);
-        if let Some(c) = eval_decision(net, active_phase2_choices(&all[0], &view, dice, w.is_some()), &view) {
-            marks.push(c);
-        }
-    }
-    let strike = marks.is_empty() && !SimGame::game_over(&all);
-    Turn { marks, strike }
-}
-
 pub struct Explorer {
     net: PairStrategy,
     /// Master+ ranks the moves (and is tagged); the other bots are only tagged.
@@ -273,12 +257,11 @@ impl Explorer {
         }
     }
 
-    /// Spec "Moves": every legal turn, scored the way Master+ weighs it. On
-    /// your roll Master+ judges turns against the opponent's predicted
-    /// white-sum mark (as every bot does); on theirs, against their board.
-    /// Turns it played out carry its blended score, the rest the pair net's
-    /// P(win). Master+'s own pick goes first (a forced move has no score to
-    /// rank by), the rest by score.
+    /// Spec "Moves": every legal turn with the pair net's P(win) after it,
+    /// judged as Master+ judges it (on your roll against the opponent's
+    /// predicted white-sum mark, as every bot predicts it; on theirs against
+    /// their sheet), highest first. Master+'s move carries a note when it
+    /// isn't first: its search preferred it, or a meta-rule forced it.
     fn moves(&mut self, you: &State, opp: &State, dice: [u8; 6], roller: Roller) -> Vec<MoveOut> {
         let turns = legal_turns(you, opp, dice, roller);
         let keys: Vec<_> = turns.iter().map(Turn::key).collect();
@@ -306,34 +289,17 @@ impl Explorer {
                 y
             })
             .collect();
-        let mut score: Vec<f32> = self
-            .net
-            .evaluate_batch(&posts, &eval_opps)
-            .into_iter()
-            .map(phi)
-            .collect();
-        for &(w, blended) in &explained.searched {
-            let turn = match roller {
-                Roller::You => searched_turn(&self.net, you, &eval_opps, dice, w),
-                Roller::Opponent => Turn {
-                    marks: w.into_iter().collect(),
-                    strike: false,
-                },
-            };
-            if let Some(i) = keys.iter().position(|k| *k == turn.key()) {
-                score[i] = blended;
-            }
-        }
-
+        let z = self.net.evaluate_batch(&posts, &eval_opps);
         let mut out: Vec<MoveOut> = turns
             .iter()
-            .zip(score)
-            .map(|(t, p_win)| MoveOut {
+            .zip(z)
+            .map(|(t, z)| MoveOut {
                 marks: t.marks.iter().map(|&m| Sq::from(m)).collect(),
                 strike: t.strike,
                 pass: t.marks.is_empty() && !t.strike,
-                p_win,
+                p_win: phi(z),
                 bots: vec![],
+                note: None,
             })
             .collect();
         let plus_pick = match roller {
@@ -343,12 +309,11 @@ impl Explorer {
                 strike: false,
             },
         };
-        let picks = std::iter::once((BotKind::MasterPlus, plus_pick.key())).chain(
-            self.others
-                .iter_mut()
-                .map(|(kind, bot)| (*kind, bot_turn(bot.as_mut(), you, opp, dice, roller).key())),
-        );
-        for (kind, pick) in picks.collect::<Vec<_>>() {
+        let mut picks = vec![(BotKind::MasterPlus, plus_pick.key())];
+        for (kind, bot) in self.others.iter_mut() {
+            picks.push((*kind, bot_turn(bot.as_mut(), you, opp, dice, roller).key()));
+        }
+        for (kind, pick) in picks {
             // A pick that matches no listed move is an engine bug: it tags
             // nothing, and development builds report it (the random-position
             // test pins that it never happens).
@@ -358,12 +323,23 @@ impl Explorer {
                 debug_assert!(false, "{} picked {:?}, which is not a listed move", kind.id(), pick);
             }
         }
+        // Highest first; on a tie Master+'s move leads.
+        let plus = |m: &MoveOut| m.bots.first() == Some(&"master_plus");
         out.sort_by(|a, b| {
-            let plus = |m: &MoveOut| m.bots.first() == Some(&"master_plus");
-            plus(b)
-                .cmp(&plus(a))
-                .then(b.p_win.partial_cmp(&a.p_win).unwrap_or(std::cmp::Ordering::Equal))
+            b.p_win
+                .partial_cmp(&a.p_win)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then(plus(b).cmp(&plus(a)))
         });
+        if let Some(m) = out.iter_mut().skip(1).find(|m| plus(m)) {
+            m.note = if !explained.searched.is_empty() {
+                Some("rolled_out")
+            } else if explained.forced {
+                Some("rule")
+            } else {
+                None
+            };
+        }
         out
     }
 }
@@ -412,9 +388,7 @@ mod tests {
         let o = active_options(&State::default(), &State::default(), None, dice);
         assert_eq!(moves.len(), o.selections.len() + 1); // + strike
         assert!(moves.iter().any(|m| m.strike && m.marks.is_empty() && !m.pass));
-        // Master+'s pick first, then the rest by Master+'s score.
-        assert_eq!(moves[0].bots.first(), Some(&"master_plus"));
-        assert!(moves[1..].windows(2).all(|w| w[0].p_win >= w[1].p_win));
+        assert!(moves.windows(2).all(|w| w[0].p_win >= w[1].p_win));
         assert!(moves.iter().all(|m| (0.0..=1.0).contains(&m.p_win)));
         for id in ["master_plus", "master", "student", "newbie"] {
             assert_eq!(moves.iter().filter(|m| m.bots.contains(&id)).count(), 1, "{id}");
@@ -513,8 +487,12 @@ mod tests {
             assert!(a.eval.p_win.is_finite());
             if let Some(moves) = a.moves {
                 assert!(!moves.is_empty());
-                assert_eq!(moves[0].bots.first(), Some(&"master_plus"), "{p:?}");
-                assert!(moves[1..].windows(2).all(|w| w[0].p_win >= w[1].p_win));
+                assert!(moves.windows(2).all(|w| w[0].p_win >= w[1].p_win));
+                // Only Master+'s move can carry a note, and only below rank 1.
+                assert!(moves[0].note.is_none());
+                assert!(moves
+                    .iter()
+                    .all(|m| m.note.is_none() || m.bots.first() == Some(&"master_plus")));
                 for id in ["master_plus", "master", "student", "newbie"] {
                     assert_eq!(
                         moves.iter().filter(|m| m.bots.contains(&id)).count(),

@@ -31,7 +31,8 @@ export interface SheetSnap { marks: boolean[][]; strikes: number }
 /** Mirrors explorer.rs `Position`. `locked` = rows closed by tapping their lock. */
 export interface Position { you: SheetSnap; opponent: SheetSnap; locked: boolean[]; dice: number[] | null; roller: Roller }
 export interface Eval { p_win: number; margin: number; sigma: number }
-export interface MoveOut { marks: Sq[]; strike: boolean; pass: boolean; p_win: number; bots: BotKind[] }
+/** `note` (only on Master+'s move when it isn't ranked first): why Master+ still plays it. */
+export interface MoveOut { marks: Sq[]; strike: boolean; pass: boolean; p_win: number; bots: BotKind[]; note: 'rolled_out' | 'rule' | null }
 export interface Answer { over: { you: number; opponent: number } | null; eval: Eval; moves: MoveOut[] | null }
 /**
  * Why an engine call failed: `snapshot` when `restore` rejected the saved
