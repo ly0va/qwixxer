@@ -32,12 +32,12 @@
         const t = e.target instanceof Element ? e.target : null;
         const field = !!t?.closest('select, input, textarea');
         const keyboardFocus = !!t && t !== document.body && focusVisible(t);
-        const action = keyAction(e.key, { field, keyboardFocus, modal: phone && drawer }, c.view?.phase);
+        const action = keyAction(e.key, { field, keyboardFocus, modal: (phone && drawer) || c.menuOpen }, c.view?.phase);
         if (action && action !== 'clear' && action !== 'close') e.preventDefault();
         if (action === 'confirm') c.confirm();
         else if (action === 'roll') c.roll();
         else if (action === 'clear') c.clearSelection();
-        else if (action === 'close') drawer = false;
+        else if (action === 'close') { if (c.menuOpen) c.menuOpen = false; else drawer = false; }
     }
 </script>
 

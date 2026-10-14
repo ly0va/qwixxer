@@ -187,18 +187,18 @@ works with reduced motion.
 ## Header and chrome
 
 - Wordmark "Qwixxer", a turn pill ("Your turn" or "Bot's turn", nothing
-  more), both scores, and a
-  **dark-mode toggle** (moon button). The dark palette is still to be
-  designed.
+  more), both scores, and a **"⋯" menu** (same on desktop and phone) with
+  **New game** and a **Dark mode** switch. While the menu is open it is
+  modal for page-wide keys: Escape closes it, Enter/Space don't act on the
+  game.
 - **Bot picker:** a dropdown in the bot sheet's header with four bots:
   **Master+** (pair-search, the default), **Master** (pair net, static),
   **Student** (GA champion) and **Newbie** (the hand-written Opportunist).
   A change mid-game applies from the next game, with a note saying so.
-- **New game:** a button beside the bot picker (so on phones it lives in the
-  bot drawer) abandons the current game and starts a new one. Mid-game it
-  takes two clicks: the first arms it ("Abandon game?") for 3 s, the second
-  starts the game; after a game is over one click is enough. On phones the
-  drawer closes when the new game starts.
+- **New game** (in the "⋯" menu) abandons the current game and starts a new
+  one with the picked bot. Mid-game it takes two clicks: the first arms it
+  ("Abandon game?") for 3 s, the second starts the game; after a game is
+  over one click is enough.
 
 ## Visual design
 
@@ -242,7 +242,7 @@ the paper-sheet look, desktop 1280×800, no scrolling.
   blue 12→2, lock at the bottom), with square 48 px cells. A narrow right
   column holds the score breakdown, the strike boxes (2×2) and a tall confirm
   button at thumb height. Above the sheet: header (wordmark, your score, a Bot
-  button that opens the drawer, dark-mode toggle), the dice tray with Roll,
+  button that opens the drawer, the "⋯" menu), the dice tray with Roll,
   whose Roll button's slot shows the white sum after rolling ("White 12").
   There is no status strip or banner: the header's Bot button carries the
   bot's most recent marks as small log chips (its revealed white sum on the

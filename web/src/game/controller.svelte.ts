@@ -33,6 +33,8 @@ export class GameController {
     theme = $state<'light' | 'dark'>('light');
     bot = $state<BotKind>('master_plus');
     nextBot = $state<BotKind>('master_plus');
+    /** The header "⋯" menu is open (UI state: page-wide keys treat it as a modal). */
+    menuOpen = $state(false);
 
     // Plain fields assigned in the constructor: `.svelte.ts` files do not
     // support TypeScript parameter properties.

@@ -7,6 +7,7 @@
     import DiceTray from './DiceTray.svelte';
     import Log from './Log.svelte';
     import MarkX from './MarkX.svelte';
+    import Menu from './Menu.svelte';
     import SheetColumns from './SheetColumns.svelte';
     // `drawer` is bound by App so its page-wide key handler knows the drawer is open (keys.ts).
     let { c, drawer = $bindable(false) }: { c: GameController; drawer?: boolean } = $props();
@@ -48,13 +49,7 @@
                 Bot <b>{v?.bot.score ?? 0}</b>
                 {#each botChips as ch}<ChipView chip={ch} size={20} />{/each}
             </button>
-            <button type="button" class="theme" aria-label="Dark mode" aria-pressed={c.theme === 'dark'} onclick={() => c.toggleTheme()}>
-                {#if c.theme === 'dark'}
-                    <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="var(--ink)" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"></path></svg>
-                {:else}
-                    <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="var(--ink)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"></path></svg>
-                {/if}
-            </button>
+            <Menu {c} />
         </div>
     </header>
     <DiceTray {c} size={L.die} compact />
@@ -92,7 +87,7 @@
         <button type="button" class="scrim" aria-label="Close" onclick={() => (drawer = false)}></button>
         <div class="drawer" role="dialog" aria-modal="true" aria-label="Bot and log">
             <div class="handle"></div>
-            <BotPanel {c} size={L.botSize} onNewGame={() => (drawer = false)} />
+            <BotPanel {c} size={L.botSize} />
             <Log entries={c.log} {current} chip={24} />
             <button type="button" class="close" bind:this={closeBtn} onclick={() => (drawer = false)}>Close</button>
         </div>
@@ -109,8 +104,7 @@
     .word { font-family: var(--cond); font-weight: 800; font-size: 26px; }
     .right { display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 14px; }
     .right b { font-family: var(--cond); font-size: 20px; }
-    .botbtn, .theme { height: 44px; border-radius: 12px; border: none; background: var(--paper); box-shadow: 0 1px 0 var(--edge); color: var(--muted); display: flex; align-items: center; gap: 5px; padding: 0 10px; cursor: pointer; }
-    .theme { width: 44px; justify-content: center; color: var(--ink); font-size: 18px; }
+    .botbtn { height: 44px; border-radius: 12px; border: none; background: var(--paper); box-shadow: 0 1px 0 var(--edge); color: var(--muted); display: flex; align-items: center; gap: 5px; padding: 0 10px; cursor: pointer; }
     .body { display: flex; gap: 10px; align-items: stretch; }
     .side { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 10px; }
     .card { display: flex; flex-direction: column; gap: 5px; background: var(--paper); border-radius: 14px; padding: 8px 6px; box-shadow: 0 1px 0 var(--edge); }

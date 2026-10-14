@@ -419,8 +419,8 @@ default) = pair-search over the pair net with `SearchConfig::parse(MASTER_PLUS_S
 where `MASTER_PLUS_SPEC = ""` is the native production config (see the latency
 table below); **Master** (`master`) = the static pair net; **Student**
 (`student`) = the GA champion; **Newbie** (`newbie`) = the hand-written
-Opportunist. The bot panel's New game button abandons the current game (two
-clicks mid-game). `champion.txt` and `pair_model/model.mpk` are
+Opportunist. The header's "⋯" menu (`Menu.svelte`, both layouts) holds New
+game (two clicks mid-game) and the dark-mode switch. `champion.txt` and `pair_model/model.mpk` are
 embedded at compile time via `include_bytes!`, so rebuild after changing them.
 
 **`WasmGame`** (`lib.rs`) wraps a `Session` for wasm-bindgen with JSON in/out:
