@@ -2,7 +2,7 @@
     import type { CellModel, RowModel } from '../game/rules';
     import Cell from './Cell.svelte';
     import LockCell from './LockCell.svelte';
-    let { rows, size, onTap }: { rows: RowModel[]; size: number; onTap?: (c: CellModel) => void } = $props();
+    let { rows, size, onTap, onLock }: { rows: RowModel[]; size: number; onTap?: (c: CellModel) => void; onLock?: (row: number) => void } = $props();
     const gap = $derived(size >= 40 ? 6 : 3);
 </script>
 
@@ -13,7 +13,7 @@
                 <Cell {cell} color={row.color} {size} {onTap} />
             {/each}
             <span style="width: {size >= 40 ? 4 : 2}px"></span>
-            <LockCell look={row.lock} color={row.color} {size} label="{row.label} lock" />
+            <LockCell look={row.lock} color={row.color} {size} label="{row.label} lock" onTap={onLock ? () => onLock(row.row) : undefined} />
         </div>
     {/each}
 </div>
