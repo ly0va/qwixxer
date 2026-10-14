@@ -15,3 +15,16 @@ jobs:
 
       - name: Run tests
         run: cargo test --lib --release
+
+      - name: Run web crate tests
+        run: cd web && cargo test --release
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Run web frontend tests
+        run: cd web && npm ci && npm test

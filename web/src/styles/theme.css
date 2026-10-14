@@ -1,0 +1,52 @@
+@import '@fontsource/barlow/400.css';
+@import '@fontsource/barlow/500.css';
+@import '@fontsource/barlow/600.css';
+@import '@fontsource/barlow/700.css';
+@import '@fontsource/barlow-condensed/500.css';
+@import '@fontsource/barlow-condensed/600.css';
+@import '@fontsource/barlow-condensed/700.css';
+@import '@fontsource/barlow-condensed/800.css';
+
+:root {
+    --ground: #F3EDE1; --paper: #FFFDF8; --edge: #D9D0BF; --shadow: rgba(60, 40, 10, 0.08);
+    --ink: #1D1B18; --muted: #6B6459; --soft: #4A443B; --faint: #A39B8D; --log-bg: #F6F1E7;
+    --pencil: #8B857C; --btn-muted-bg: #E6DED0; --btn-muted-fg: #8A8273; --strike-red: #C8323C;
+    --locked-band: #C9C1B2; --dot: #E9B824; --die-face: #FFFDF8; --die-pip: #1D1B18;
+    --on-band: #FFFDF8; --on-yellow: #1D1B18; --score-yellow: #B88C0B; --soft-mix: 50%;
+    --scrim: rgba(29, 27, 24, 0.45);
+    --red-band: #C8323C; --red-dark: #9E2530; --red-ink: #C8323C;
+    --yellow-band: #E9B824; --yellow-dark: #C99A12; --yellow-ink: #9A7400;
+    --green-band: #2F8F4E; --green-dark: #23703C; --green-ink: #2F8F4E;
+    --blue-band: #2C5FAF; --blue-dark: #214B8C; --blue-ink: #2C5FAF;
+    --cond: 'Barlow Condensed', sans-serif; --text: 'Barlow', sans-serif;
+}
+
+:root[data-theme='dark'] {
+    --ground: #171513; --paper: #24211D; --edge: #0E0D0B; --shadow: rgba(0, 0, 0, 0.35);
+    --ink: #ECE5D7; --muted: #A39B8D; --soft: #C9C1B2; --faint: #6E675C; --log-bg: #1C1A17;
+    --pencil: #8E877C; --btn-muted-bg: #2F2B26; --btn-muted-fg: #7D766B; --strike-red: #E0575E;
+    --locked-band: #3A352E; --dot: #C49A22; --die-face: #ECE5D7; --die-pip: #171513;
+    --on-band: #FFF8EC; --on-yellow: #1D1B18; --score-yellow: #C49A22; --soft-mix: 44%;
+    --scrim: rgba(0, 0, 0, 0.6);
+    --red-band: #A8343B; --red-dark: #7C252B; --red-ink: #F08A8F;
+    --yellow-band: #C49A22; --yellow-dark: #977414; --yellow-ink: #F0CD62;
+    --green-band: #2D7E4A; --green-dark: #215E37; --green-ink: #74C994;
+    --blue-band: #2F5E9F; --blue-dark: #234776; --blue-ink: #8DB0EE;
+}
+
+html, body { margin: 0; background: var(--ground); color: var(--ink); font-family: var(--text); }
+button, select { font: inherit; }
+
+@keyframes qx-draw { from { stroke-dashoffset: 60; } to { stroke-dashoffset: 0; } }
+@keyframes qx-ink { from { stroke-dashoffset: 60; } to { stroke-dashoffset: 0; } }
+@keyframes qx-roll {
+    0% { transform: rotate(0deg) scale(1); }
+    45% { transform: rotate(200deg) scale(1.1); }
+    100% { transform: rotate(360deg) scale(1); }
+}
+.anim-draw path { stroke-dasharray: 60; animation: qx-draw 0.6s ease-out both; }
+.anim-ink path { stroke-dasharray: 60; animation: qx-ink 0.6s ease-out both; }
+.qx-roll { animation: qx-roll 0.6s ease-out; }
+@media (prefers-reduced-motion: reduce) {
+    .anim-draw path, .anim-ink path, .qx-roll { animation: none; }
+}

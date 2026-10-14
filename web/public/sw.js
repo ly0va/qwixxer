@@ -1,4 +1,4 @@
-const CACHE_NAME = 'qwixx-v1';
+const CACHE_NAME = 'qwixxer-v2';
 
 self.addEventListener('install', (event) => {
   self.skipWaiting();

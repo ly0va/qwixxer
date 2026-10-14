@@ -1,7 +1,6 @@
 use crate::game::{Game, Player};
-use crate::state::Move;
 use crate::state::State;
-use crate::strategy::Strategy;
+use crate::strategy::Bot;
 
 use rand::distributions::WeightedIndex;
 #[cfg(feature = "parallel")]
@@ -12,12 +11,7 @@ use rand::{prelude::*, rngs::SmallRng, Rng};
 
 pub type GeneFn = fn(&State) -> f64;
 
-pub const GENE_NAMES: [&str; 4] = [
-    "weighted_prob",
-    "strikes",
-    "concentration",
-    "blanks",
-];
+pub const GENE_NAMES: [&str; 4] = ["weighted_prob", "strikes", "concentration", "blanks"];
 
 pub fn default_genes() -> Vec<GeneFn> {
     vec![
@@ -37,13 +31,7 @@ pub fn default_genes() -> Vec<GeneFn> {
         // strikes
         |state| state.strikes as f64,
         // concentration: sum of row totals squared
-        |state| {
-            state
-                .row_totals()
-                .iter()
-                .map(|&t| (t as f64) * (t as f64))
-                .sum()
-        },
+        |state| state.row_totals().iter().map(|&t| (t as f64) * (t as f64)).sum(),
         // blanks: skipped positions
         |state| state.blanks() as f64,
     ]
@@ -53,68 +41,18 @@ pub fn default_genes() -> Vec<GeneFn> {
 pub struct DNA {
     weights: Vec<f64>,
     genes: Arc<Vec<GeneFn>>,
-    score_gap: isize,
 }
 
-impl Strategy for DNA {
-    fn your_move(&mut self, state: &State, dice: [u8; 6]) -> Move {
-        use crate::state::MetaDecision;
-        let moves = match state.apply_meta_rules(dice, self.score_gap) {
-            MetaDecision::Forced(mov) => return mov,
-            MetaDecision::Choices(moves) => moves,
-        };
-
-        moves
-            .into_iter()
-            .map(|mov| {
-                let mut new_state = *state;
-                new_state.apply_move(mov);
-                (self.instinct(&new_state), mov)
-            })
-            .max_by(|(a, _), (b, _)| a.partial_cmp(b).unwrap())
-            .unwrap()
-            .1
-    }
-
-    fn opponents_move(&mut self, state: &State, number: u8, locked: [bool; 4]) -> Option<Move> {
-        let moves = state.generate_opponent_moves(number);
-
-        if let Some(mov) = state.find_smart_lock(&moves, self.score_gap) {
-            return Some(mov);
-        }
-
-        let mut states: Vec<_> = moves
-            .into_iter()
-            .map(|mov| {
-                let mut new_state = *state;
-                new_state.apply_move(mov);
-                (new_state, Some(mov))
-            })
-            .collect();
-        states.push((*state, None));
-
-        for (state, _) in states.iter_mut() {
-            state.lock(locked);
-        }
-
-        *states
-            .iter()
-            .map(|(state, mov)| (self.instinct(state), mov))
-            .max_by(|(a, _), (b, _)| a.partial_cmp(b).unwrap())
-            .unwrap()
-            .1
-    }
-
-    fn observe_opponents(&mut self, our_score: isize, opponents: &[State]) {
-        let max_opp_score = opponents.iter().map(|s| s.count_points()).max().unwrap_or(0);
-        self.score_gap = our_score - max_opp_score;
+impl Bot for DNA {
+    fn evaluate(&self, our_state: &State, _opp_states: &[State]) -> f32 {
+        self.instinct(our_state) as f32
     }
 }
 
 impl DNA {
     pub fn new_random(genes: Arc<Vec<GeneFn>>, rng: &mut impl Rng) -> Self {
         let weights: Vec<f64> = (0..genes.len()).map(|_| rng.gen_range(-1.0..=1.0)).collect();
-        DNA { weights, genes, score_gap: 0 }.normalize()
+        DNA { weights, genes }.normalize()
     }
 
     fn normalize(mut self) -> Self {
@@ -136,7 +74,6 @@ impl DNA {
         DNA {
             weights,
             genes: Arc::clone(&self.genes),
-            score_gap: 0,
         }
         .normalize()
     }
@@ -172,16 +109,10 @@ impl DNA {
         let content = std::fs::read_to_string(path)?;
         let weights: Vec<f64> = content
             .lines()
-            .map(|line| {
-                line.split_whitespace()
-                    .last()
-                    .unwrap()
-                    .parse()
-                    .unwrap()
-            })
+            .map(|line| line.split_whitespace().last().unwrap().parse().unwrap())
             .collect();
         assert_eq!(weights.len(), genes.len(), "Weight count mismatch");
-        Ok(DNA { weights, genes, score_gap: 0 })
+        Ok(DNA { weights, genes })
     }
 
     pub fn load_weights_from_bytes(bytes: &[u8], genes: Arc<Vec<GeneFn>>) -> Self {
@@ -191,7 +122,7 @@ impl DNA {
             .map(|line| line.split_whitespace().last().unwrap().parse().unwrap())
             .collect();
         assert_eq!(weights.len(), genes.len(), "Weight count mismatch");
-        DNA { weights, genes, score_gap: 0 }
+        DNA { weights, genes }
     }
 
     pub fn instinct(&self, state: &State) -> f64 {
@@ -243,6 +174,7 @@ impl Population {
     }
 
     fn rank_generation(dna: &[DNA], seed: u64) -> Vec<f32> {
+        use crate::strategy::Strategy;
         let mut rng = SmallRng::seed_from_u64(seed);
         let mut indices: Vec<usize> = (0..dna.len()).collect();
         indices.shuffle(&mut rng);
@@ -268,11 +200,7 @@ impl Population {
             let mut game = Game::new(players);
             game.play();
 
-            let points: Vec<isize> = game
-                .players
-                .into_iter()
-                .map(|p| p.state.count_points())
-                .collect();
+            let points: Vec<isize> = game.players.into_iter().map(|p| p.state.count_points()).collect();
             let max_points = *points.iter().max().unwrap();
 
             for (j, &di) in group.iter().enumerate() {
@@ -293,33 +221,28 @@ impl Population {
         const NUMBER_OF_SIMULATIONS: usize = 20_000;
 
         // Pre-generate seeds
-        let seeds: Vec<u64> = (0..NUMBER_OF_SIMULATIONS)
-            .map(|_| self.rng.gen())
-            .collect();
+        let seeds: Vec<u64> = (0..NUMBER_OF_SIMULATIONS).map(|_| self.rng.gen()).collect();
 
         // Run simulations (parallel when available)
         let dna = &self.dna;
 
         #[cfg(feature = "parallel")]
-        let global_rank = seeds
-            .par_iter()
-            .map(|&seed| Self::rank_generation(dna, seed))
-            .reduce(
-                || vec![0.0f32; dna.len()],
-                |mut acc, rank| {
-                    acc.iter_mut().zip(rank.iter()).for_each(|(a, b)| *a += b);
-                    acc
-                },
-            );
-
-        #[cfg(not(feature = "parallel"))]
-        let global_rank = seeds
-            .iter()
-            .map(|&seed| Self::rank_generation(dna, seed))
-            .fold(vec![0.0f32; dna.len()], |mut acc, rank| {
+        let global_rank = seeds.par_iter().map(|&seed| Self::rank_generation(dna, seed)).reduce(
+            || vec![0.0f32; dna.len()],
+            |mut acc, rank| {
                 acc.iter_mut().zip(rank.iter()).for_each(|(a, b)| *a += b);
                 acc
-            });
+            },
+        );
+
+        #[cfg(not(feature = "parallel"))]
+        let global_rank = seeds.iter().map(|&seed| Self::rank_generation(dna, seed)).fold(
+            vec![0.0f32; dna.len()],
+            |mut acc, rank| {
+                acc.iter_mut().zip(rank.iter()).for_each(|(a, b)| *a += b);
+                acc
+            },
+        );
 
         let dist = WeightedIndex::new(&global_rank).expect("All weights are zero");
 

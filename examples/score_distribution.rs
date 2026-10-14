@@ -9,13 +9,13 @@
 //! Run:    cargo run --release --example score_distribution
 //! Output: /tmp/score_distribution.csv  (one column: final_score)
 
-use qwixxer::bot::{self, DNA};
-use qwixxer::dqn::{MyBackend, QwixxModel, QwixxModelConfig, DqnStrategy};
-use qwixxer::game::{Game, Player};
-use qwixxer::state::State;
-use qwixxer::strategy::Strategy;
 use burn::module::Module;
 use burn::record::CompactRecorder;
+use qwixxer::bot::{self, DNA};
+use qwixxer::dqn::{DqnStrategy, MyBackend, QwixxModel, QwixxModelConfig};
+use qwixxer::game::{Game, Player};
+use qwixxer::state::{Mark, State};
+use qwixxer::strategy::Strategy;
 use rand::rngs::SmallRng;
 use rand::SeedableRng;
 use rayon::prelude::*;
@@ -37,8 +37,6 @@ struct Snapshotter {
     snapshot: Rc<RefCell<Option<(State, State, u32)>>>, // (our, opp, turn)
     target_turn: u32,
     turn: u32,
-    /// Most recent opponent state observed via `observe_opponents`.
-    last_opp: Option<State>,
 }
 
 impl std::fmt::Debug for Snapshotter {
@@ -48,29 +46,29 @@ impl std::fmt::Debug for Snapshotter {
 }
 
 impl Strategy for Snapshotter {
-    fn your_move(&mut self, state: &State, dice: [u8; 6]) -> qwixxer::state::Move {
+    fn active_phase1(&mut self, state: &State, opp_states: &[State], dice: [u8; 6]) -> Option<Mark> {
         if self.turn == self.target_turn && self.snapshot.borrow().is_none() {
-            if let Some(opp) = self.last_opp {
-                *self.snapshot.borrow_mut() = Some((*state, opp, self.turn));
+            if let Some(opp) = opp_states.first() {
+                *self.snapshot.borrow_mut() = Some((*state, *opp, self.turn));
             }
         }
-        let mov = self.inner.your_move(state, dice);
+        let mark = self.inner.active_phase1(state, opp_states, dice);
         self.turn += 1;
-        mov
+        mark
     }
 
-    fn opponents_move(
+    fn active_phase2(&mut self, state: &State, opp_states: &[State], dice: [u8; 6], has_marked: bool) -> Option<Mark> {
+        self.inner.active_phase2(state, opp_states, dice, has_marked)
+    }
+
+    fn passive_phase1(
         &mut self,
         state: &State,
-        number: u8,
-        locked: [bool; 4],
-    ) -> Option<qwixxer::state::Move> {
-        self.inner.opponents_move(state, number, locked)
-    }
-
-    fn observe_opponents(&mut self, our_score: isize, opponents: &[State]) {
-        self.inner.observe_opponents(our_score, opponents);
-        self.last_opp = opponents.first().copied();
+        opp_states: &[State],
+        dice: [u8; 6],
+        active_player: usize,
+    ) -> Option<Mark> {
+        self.inner.passive_phase1(state, opp_states, dice, active_player)
     }
 }
 
@@ -92,14 +90,10 @@ fn main() {
         snapshot: Rc::clone(&snapshot_cell),
         target_turn: SNAPSHOT_AT_TURN,
         turn: 0,
-        last_opp: None,
     };
     let players = vec![
         Player::new(Box::new(snap), Box::new(SmallRng::seed_from_u64(42))),
-        Player::new(
-            Box::new(champion.clone()),
-            Box::new(SmallRng::seed_from_u64(43)),
-        ),
+        Player::new(Box::new(champion.clone()), Box::new(SmallRng::seed_from_u64(43))),
     ];
     let mut game = Game::new(players);
     game.play();
@@ -113,9 +107,7 @@ fn main() {
         our_start.count_points(),
         opp_start.count_points()
     );
-    eprintln!(
-        "Running {N_ROLLOUTS} rollouts from this state (DQN as player 0 vs GA)..."
-    );
+    eprintln!("Running {N_ROLLOUTS} rollouts from this state (DQN as player 0 vs GA)...");
 
     // Parallel rollouts: clone model+champion+device per worker (Tensor !Sync).
     let workers: Vec<_> = (0..N_ROLLOUTS)
@@ -138,7 +130,7 @@ fn main() {
                     opp_start,
                 ),
             ];
-            // Snapshot was taken just before our `your_move` executed — so the
+            // Snapshot was taken just before our `active_phase1` executed — so the
             // active player's state is still `our_start` pre-move, but we've
             // already rolled dice. For a clean rollout, start with opponent's
             // turn (start_turn = 1) so the game continues with fresh dice.
@@ -159,14 +151,7 @@ fn main() {
     // Quick stats.
     let n = scores.len() as f64;
     let mean = scores.iter().sum::<isize>() as f64 / n;
-    let var = scores
-        .iter()
-        .map(|&s| (s as f64 - mean).powi(2))
-        .sum::<f64>()
-        / (n - 1.0);
+    let var = scores.iter().map(|&s| (s as f64 - mean).powi(2)).sum::<f64>() / (n - 1.0);
     let std = var.sqrt();
-    eprintln!(
-        "wrote {output_path} — mean={mean:.2}, std={std:.2}, n={}",
-        scores.len()
-    );
+    eprintln!("wrote {output_path} — mean={mean:.2}, std={std:.2}, n={}", scores.len());
 }

@@ -1,4 +1,5 @@
 use itertools::Itertools;
+use std::cmp::Ordering;
 use std::fmt;
 
 #[derive(Debug, Clone, Copy)]
@@ -7,7 +8,7 @@ pub struct State {
     rows: [Row; 4],
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
 struct Row {
     ascending: bool,
     total: u8,
@@ -31,6 +32,17 @@ impl Default for State {
             strikes: 0,
             rows: [ascending, ascending, descending, descending],
         }
+    }
+}
+
+/// Only for the purpose of state domination - do not use for regular comparison
+impl PartialEq for State {
+    fn eq(&self, other: &Self) -> bool {
+        let asc = self.rows[0] == other.rows[0] && self.rows[1] == other.rows[1]
+            || self.rows[0] == other.rows[1] && self.rows[1] == other.rows[0];
+        let desc = self.rows[2] == other.rows[2] && self.rows[3] == other.rows[3]
+            || self.rows[2] == other.rows[3] && self.rows[3] == other.rows[2];
+        asc && desc && self.strikes == other.strikes
     }
 }
 
@@ -123,19 +135,33 @@ impl State {
                 }
             } else {
                 // No marks: default free pointer
-                if ascending { Some(2) } else { Some(12) }
+                if ascending {
+                    Some(2)
+                } else {
+                    Some(12)
+                }
             };
 
             // If locked, add 1 to total for the lock bonus (the lock symbol)
             let total = if is_locked { total + 1 } else { total };
 
-            rows[i] = Row {
-                ascending,
-                total,
-                free,
-            };
+            rows[i] = Row { ascending, total, free };
         }
         State { strikes, rows }
+    }
+
+    /// Reconstruct a State from its observable parts: per-row `(total, free)`
+    /// — `free == None` means locked, `total` includes the lock bonus — plus
+    /// strikes. Rows 0,1 are ascending, 2,3 descending, as in `default`.
+    /// Analysis/test helper: `(total, free)` fully determines row behavior.
+    pub fn from_parts(strikes: u8, parts: [(u8, Option<u8>); 4]) -> State {
+        let mut s = State::default();
+        s.strikes = strikes;
+        for (i, &(total, free)) in parts.iter().enumerate() {
+            s.rows[i].total = total;
+            s.rows[i].free = free;
+        }
+        s
     }
 
     pub fn count_points(&self) -> isize {
@@ -180,8 +206,7 @@ impl State {
                 let mut state_after = self.clone();
                 state_after.apply_move(white_mov);
 
-                on_color(i, state_after.rows[i])
-                    .for_each(|color_mov| double_moves.push((white_mov, color_mov)));
+                on_color(i, state_after.rows[i]).for_each(|color_mov| double_moves.push((white_mov, color_mov)));
             }
             on_color(i, row).for_each(|color_mov| color_moves.push(color_mov));
         }
@@ -203,83 +228,6 @@ impl State {
             .unique()
             .map(Move::from)
             .chain(double_moves)
-            .collect()
-    }
-
-    /// Prune dominated single moves. Doubles and Strike pass through unchanged.
-    ///
-    /// Dominance rules for singles:
-    /// 1. Same row: keep only the mark closest to free pointer (fewer blanks, more options).
-    /// 2. Cross-row: if two singles create equal blanks and equal resulting progress
-    ///    (direction-adjusted), prefer the row with higher total marks (more marginal score).
-    pub fn prune_dominated(&self, moves: &[Move]) -> Vec<Move> {
-        // Strike always passes through; prune the rest by post-state dominance.
-        let (strikes, markers): (Vec<_>, Vec<_>) = moves
-            .iter()
-            .copied()
-            .partition(|m| matches!(m, Move::Strike));
-
-        let post_states: Vec<State> = markers
-            .iter()
-            .map(|&m| {
-                let mut s = *self;
-                s.apply_move(m);
-                s
-            })
-            .collect();
-
-        // Rule 1: strict post-state dominance (applies to singles and doubles uniformly)
-        let mut surviving: Vec<Move> = markers
-            .iter()
-            .enumerate()
-            .filter(|(i, _)| {
-                !(0..markers.len())
-                    .any(|j| j != *i && post_state_dominates(&post_states[j], &post_states[*i]))
-            })
-            .map(|(_, m)| *m)
-            .collect();
-
-        // Rule 2: cross-row single heuristic — prefer higher pre-move total when blanks+progress match
-        surviving = self.apply_single_marginal_dominance(&surviving);
-
-        let mut result = surviving;
-        result.extend(strikes);
-        result
-    }
-
-    /// Rule 2 — among singles, prune if another single with same blanks and progress
-    /// is on a row with higher current total (higher marginal value from triangular scoring).
-    fn apply_single_marginal_dominance(&self, moves: &[Move]) -> Vec<Move> {
-        let info: Vec<(Move, Option<(usize, u8, u8)>)> = moves
-            .iter()
-            .map(|&m| {
-                let tag = match m {
-                    Move::Single(mark) => {
-                        let free = self.rows[mark.row].free.unwrap();
-                        let blanks = if mark.row < 2 { mark.number - free } else { free - mark.number };
-                        let progress = if mark.row < 2 { mark.number - 1 } else { 13 - mark.number };
-                        Some((mark.row, blanks, progress))
-                    }
-                    _ => None,
-                };
-                (m, tag)
-            })
-            .collect();
-
-        info.iter()
-            .filter(|(_, tag)| match tag {
-                None => true, // non-singles pass through
-                Some((row, blanks, progress)) => !info.iter().any(|(_, other)| match other {
-                    Some((other_row, b, p)) => {
-                        other_row != row
-                            && b == blanks
-                            && p == progress
-                            && self.rows[*other_row].total > self.rows[*row].total
-                    }
-                    None => false,
-                }),
-            })
-            .map(|(m, _)| *m)
             .collect()
     }
 
@@ -321,6 +269,105 @@ impl State {
         let p = self.probability();
         1.0 - (1.0 - p).powi(n as i32)
     }
+
+    /// Returns true if `number` can be marked in `row`.
+    pub fn can_mark(&self, row: usize, number: u8) -> bool {
+        self.rows[row].can_mark(number)
+    }
+
+    /// Applies a single mark directly (equivalent to `apply_move(Move::Single(mark))`).
+    pub fn apply_mark(&mut self, mark: Mark) {
+        self.rows[mark.row].mark(mark.number);
+    }
+
+    /// Increments the strike counter (panics if already at 4).
+    pub fn apply_strike(&mut self) {
+        assert!(self.strikes < 4);
+        self.strikes += 1;
+    }
+
+    /// Returns all marks available using the white dice sum (one per eligible row).
+    pub fn generate_white_moves(&self, white_sum: u8) -> Vec<Mark> {
+        self.rows
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| row.can_mark(white_sum))
+            .map(|(i, _)| Mark {
+                row: i,
+                number: white_sum,
+            })
+            .collect()
+    }
+
+    /// Returns all marks available using white_die + color_die for each row.
+    /// Dice layout: `[W1, W2, R, Y, G, B]`. For each row `i` (0..4), checks
+    /// `dice[j] + dice[i+2]` for `j in {0, 1}`. Deduplicates by `(row, number)`.
+    pub fn generate_color_moves(&self, dice: [u8; 6]) -> Vec<Mark> {
+        let mut marks: Vec<Mark> = Vec::new();
+        for i in 0..4 {
+            for j in 0..2 {
+                let number = dice[j] + dice[i + 2];
+                if self.rows[i].can_mark(number) {
+                    let mark = Mark { row: i, number };
+                    if !marks.iter().any(|m| m.row == mark.row && m.number == mark.number) {
+                        marks.push(mark);
+                    }
+                }
+            }
+        }
+        marks
+    }
+
+    /// Returns true if applying `mark` would lock its row.
+    pub fn would_lock_row(&self, mark: Mark) -> bool {
+        let before = self.count_locked();
+        let mut copy = *self;
+        copy.apply_mark(mark);
+        copy.count_locked() > before
+    }
+
+    /// Returns the terminal number for a row: 12 for ascending rows (0, 1), 2 for descending rows (2, 3).
+    pub fn row_terminal(row: usize) -> u8 {
+        if row < 2 {
+            12
+        } else {
+            2
+        }
+    }
+
+    pub fn would_end_game(&self) -> bool {
+        self.count_locked() >= 2 || self.strikes == 4
+    }
+}
+
+fn partial_cmp_two(a: Option<Ordering>, b: Option<Ordering>) -> Option<Ordering> {
+    if a.is_none() || b.is_none() {
+        return None;
+    }
+
+    match (a.unwrap(), b.unwrap()) {
+        (Ordering::Greater, Ordering::Greater) => Some(Ordering::Greater),
+        (Ordering::Greater, Ordering::Equal) => Some(Ordering::Greater),
+        (Ordering::Equal, Ordering::Greater) => Some(Ordering::Greater),
+
+        (Ordering::Less, Ordering::Less) => Some(Ordering::Less),
+        (Ordering::Less, Ordering::Equal) => Some(Ordering::Less),
+        (Ordering::Equal, Ordering::Less) => Some(Ordering::Less),
+
+        (Ordering::Equal, Ordering::Equal) => Some(Ordering::Equal),
+        _ => None,
+    }
+}
+
+impl PartialOrd for State {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        let asc = partial_cmp_row_pair((&self.rows[0], &self.rows[1]), (&other.rows[0], &other.rows[1]));
+        let desc = partial_cmp_row_pair((&self.rows[2], &self.rows[3]), (&other.rows[2], &other.rows[3]));
+
+        let rows = partial_cmp_two(asc, desc);
+        let strikes = self.strikes.cmp(&other.strikes).reverse();
+        partial_cmp_two(rows, Some(strikes))
+    }
 }
 
 impl Row {
@@ -354,6 +401,51 @@ impl Row {
     }
 }
 
+impl PartialOrd for Row {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        // cannot compare locked to unlocked, or different directions
+        if self.free.is_some() != other.free.is_some() || self.ascending != other.ascending {
+            return None;
+        }
+
+        if self.free.is_none() && other.free.is_none() {
+            Some(self.total.cmp(&other.total))
+        } else {
+            // normalize free pointer: for descending rows, reverse it
+            let self_free = if self.ascending {
+                self.free.unwrap() - 2
+            } else {
+                12 - self.free.unwrap()
+            };
+            let other_free = if other.ascending {
+                other.free.unwrap() - 2
+            } else {
+                12 - other.free.unwrap()
+            };
+            let totals = self.total.cmp(&other.total);
+            let pointers = self_free.cmp(&other_free).reverse(); // earlier is better, hence reverse
+            partial_cmp_two(Some(totals), Some(pointers))
+        }
+    }
+}
+
+fn partial_cmp_row_pair(this: (&Row, &Row), other: (&Row, &Row)) -> Option<Ordering> {
+    let (a, b) = this;
+    let (x, y) = other;
+
+    let domination = |a: &Row, b: &Row, x: &Row, y: &Row| {
+        let ax = a.partial_cmp(x);
+        let by = b.partial_cmp(y);
+        partial_cmp_two(ax, by)
+    };
+
+    // Try both assignments of same-direction rows. If one is None (incomparable),
+    // try the other. It's mathematically impossible for both to be Some and
+    // disagree: e.g. (a≥x, b≥y) strict + (a≤y, b≤x) strict implies
+    // y≥a≥x≥b≥y → all equal, contradicting both strict inequalities.
+    domination(a, b, x, y).or_else(|| domination(a, b, y, x))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Mark {
     pub row: usize,
@@ -379,77 +471,11 @@ pub enum MetaDecision {
 /// True if state `better` strictly dominates `worse`: no worse on any row and strictly better on one.
 /// Per row: higher total is better; among unlocked rows, free closer to start (asc) / end (desc) is better.
 /// Locked vs unlocked is incomparable (locked gains mark bonus but loses all future options).
-fn post_state_dominates(better: &State, worse: &State) -> bool {
-    let mut any_strict = false;
-    for row in 0..4 {
-        let t1 = better.rows[row].total;
-        let t2 = worse.rows[row].total;
-        if t1 < t2 { return false; }
-
-        let f1 = better.rows[row].free;
-        let f2 = worse.rows[row].free;
-        let ascending = row < 2;
-
-        let free_cmp = match (f1, f2) {
-            (None, None) => std::cmp::Ordering::Equal,
-            (None, Some(_)) | (Some(_), None) => return false,
-            (Some(a), Some(b)) => {
-                if ascending { b.cmp(&a) } else { a.cmp(&b) }
-            }
-        };
-        if free_cmp == std::cmp::Ordering::Less { return false; }
-        if free_cmp == std::cmp::Ordering::Greater || t1 > t2 {
-            any_strict = true;
-        }
-    }
-    any_strict
+pub fn post_state_dominates(better: &State, worse: &State) -> bool {
+    better > worse
 }
 
 impl State {
-    /// Apply meta-rules: smart lock, smart strike, don't-strike-into-loss, prune dominated.
-    /// `score_gap` is our_score - max_opponent_score.
-    pub fn apply_meta_rules(&self, dice: [u8; 6], score_gap: isize) -> MetaDecision {
-        let mut moves = self.generate_moves(dice);
-        moves.push(Move::Strike);
-
-        let opp_score = self.count_points() - score_gap;
-
-        // Smart strike: end the game if ahead with 3 strikes
-        if self.strikes == 3 {
-            if self.count_points() - 5 > opp_score {
-                return MetaDecision::Forced(Move::Strike);
-            }
-            // Don't strike into a loss (unless forced)
-            if moves.len() > 1 {
-                moves.retain(|m| !matches!(m, Move::Strike));
-            }
-        }
-
-        // Smart lock: lock if possible, but not into a loss
-        if let Some(mov) = self.find_smart_lock(&moves, score_gap) {
-            return MetaDecision::Forced(mov);
-        }
-
-        // Filter out moves that lock into a game-ending loss (the model mustn't pick them).
-        // Ties are allowed — neither player wins in a tie, so it's not a loss.
-        let current_locked = self.count_locked();
-        moves.retain(|&mov| {
-            let mut s = *self;
-            s.apply_move(mov);
-            !(s.count_locked() > current_locked
-                && s.count_locked() >= 2
-                && s.count_points() < opp_score)
-        });
-
-        // Prune dominated moves
-        let moves = self.prune_dominated(&moves);
-        if moves.is_empty() {
-            return MetaDecision::Forced(Move::Strike);
-        }
-
-        MetaDecision::Choices(moves)
-    }
-
     /// Check if any move in the list is a smart lock (locks a row beneficially).
     /// Returns the locking move if found.
     pub fn find_smart_lock(&self, moves: &[Move], score_gap: isize) -> Option<Move> {
@@ -461,7 +487,9 @@ impl State {
             .filter(|&mov| {
                 let mut s = *self;
                 s.apply_move(mov);
-                if s.count_locked() <= current_locked { return false; }
+                if s.count_locked() <= current_locked {
+                    return false;
+                }
                 if s.count_locked() >= 2 {
                     return s.count_points() > opp_score;
                 }
@@ -611,7 +639,11 @@ mod tests {
 
     #[test]
     fn ascending_row_marks_in_order() {
-        let mut row = Row { ascending: true, total: 0, free: Some(2) };
+        let mut row = Row {
+            ascending: true,
+            total: 0,
+            free: Some(2),
+        };
         assert!(row.can_mark(2));
         assert!(row.can_mark(7));
         assert!(row.can_mark(12) == false); // need 5 marks first
@@ -624,7 +656,11 @@ mod tests {
 
     #[test]
     fn descending_row_marks_in_order() {
-        let mut row = Row { ascending: false, total: 0, free: Some(12) };
+        let mut row = Row {
+            ascending: false,
+            total: 0,
+            free: Some(12),
+        };
         assert!(row.can_mark(12));
         assert!(row.can_mark(5));
         assert!(!row.can_mark(2)); // need 5 marks first
@@ -637,7 +673,11 @@ mod tests {
 
     #[test]
     fn cannot_mark_out_of_range() {
-        let row = Row { ascending: true, total: 0, free: Some(2) };
+        let row = Row {
+            ascending: true,
+            total: 0,
+            free: Some(2),
+        };
         assert!(!row.can_mark(0));
         assert!(!row.can_mark(1));
         assert!(!row.can_mark(13));
@@ -645,13 +685,21 @@ mod tests {
 
     #[test]
     fn cannot_mark_locked_row() {
-        let row = Row { ascending: true, total: 6, free: None };
+        let row = Row {
+            ascending: true,
+            total: 6,
+            free: None,
+        };
         assert!(!row.can_mark(7));
     }
 
     #[test]
     fn locking_ascending_row() {
-        let mut row = Row { ascending: true, total: 5, free: Some(11) };
+        let mut row = Row {
+            ascending: true,
+            total: 5,
+            free: Some(11),
+        };
         assert!(row.can_mark(12));
         row.mark(12);
         assert_eq!(row.free, None); // locked
@@ -660,7 +708,11 @@ mod tests {
 
     #[test]
     fn locking_descending_row() {
-        let mut row = Row { ascending: false, total: 5, free: Some(3) };
+        let mut row = Row {
+            ascending: false,
+            total: 5,
+            free: Some(3),
+        };
         assert!(row.can_mark(2));
         row.mark(2);
         assert_eq!(row.free, None);
@@ -669,10 +721,18 @@ mod tests {
 
     #[test]
     fn cannot_lock_with_fewer_than_5_marks() {
-        let row = Row { ascending: true, total: 4, free: Some(11) };
+        let row = Row {
+            ascending: true,
+            total: 4,
+            free: Some(11),
+        };
         assert!(!row.can_mark(12));
 
-        let row = Row { ascending: false, total: 4, free: Some(3) };
+        let row = Row {
+            ascending: false,
+            total: 4,
+            free: Some(3),
+        };
         assert!(!row.can_mark(2));
     }
 
@@ -772,12 +832,15 @@ mod tests {
         state.apply_move((0usize, 5u8));
         // 4 is no longer markable in red, but still in yellow
         let moves = state.generate_opponent_moves(4);
-        let rows: Vec<usize> = moves.iter().map(|m| match m {
-            Move::Single(mark) => mark.row,
-            _ => panic!("expected single"),
-        }).collect();
+        let rows: Vec<usize> = moves
+            .iter()
+            .map(|m| match m {
+                Move::Single(mark) => mark.row,
+                _ => panic!("expected single"),
+            })
+            .collect();
         assert!(!rows.contains(&0)); // red excluded
-        assert!(rows.contains(&1));  // yellow still open
+        assert!(rows.contains(&1)); // yellow still open
     }
 
     #[test]
@@ -785,10 +848,13 @@ mod tests {
         let mut state = State::default();
         state.lock([true, false, false, false]);
         let moves = state.generate_opponent_moves(7);
-        let rows: Vec<usize> = moves.iter().map(|m| match m {
-            Move::Single(mark) => mark.row,
-            _ => panic!("expected single"),
-        }).collect();
+        let rows: Vec<usize> = moves
+            .iter()
+            .map(|m| match m {
+                Move::Single(mark) => mark.row,
+                _ => panic!("expected single"),
+            })
+            .collect();
         assert!(!rows.contains(&0));
         assert_eq!(moves.len(), 3);
     }
@@ -852,7 +918,11 @@ mod tests {
     fn make_state(rows: [(bool, u8, Option<u8>); 4], strikes: u8) -> State {
         let mut r = [Row::default(); 4];
         for (i, (asc, total, free)) in rows.iter().enumerate() {
-            r[i] = Row { ascending: *asc, total: *total, free: *free };
+            r[i] = Row {
+                ascending: *asc,
+                total: *total,
+                free: *free,
+            };
         }
         State { strikes, rows: r }
     }
@@ -871,7 +941,12 @@ mod tests {
     fn find_smart_lock_returns_first_lock() {
         // Red has 5 marks, free=11, can mark 12 to lock (first lock of game)
         let state = make_state(
-            [(true, 5, Some(11)), (true, 0, Some(2)), (false, 0, Some(12)), (false, 0, Some(12))],
+            [
+                (true, 5, Some(11)),
+                (true, 0, Some(2)),
+                (false, 0, Some(12)),
+                (false, 0, Some(12)),
+            ],
             0,
         );
         let moves = vec![single(0, 12), single(1, 5)];
@@ -883,7 +958,12 @@ mod tests {
     fn find_smart_lock_forces_winning_game_ending_lock() {
         // Already 1 row locked. Another lock ends the game. We're winning.
         let state = make_state(
-            [(true, 5, Some(11)), (true, 7, None), (false, 0, Some(12)), (false, 0, Some(12))],
+            [
+                (true, 5, Some(11)),
+                (true, 7, None),
+                (false, 0, Some(12)),
+                (false, 0, Some(12)),
+            ],
             0,
         );
         // points = 15 + 28 + 0 + 0 = 43. After lock Red (total becomes 7): 28 + 28 = 56.
@@ -896,7 +976,12 @@ mod tests {
     #[test]
     fn find_smart_lock_blocks_losing_game_ending_lock() {
         let state = make_state(
-            [(true, 5, Some(11)), (true, 7, None), (false, 0, Some(12)), (false, 0, Some(12))],
+            [
+                (true, 5, Some(11)),
+                (true, 7, None),
+                (false, 0, Some(12)),
+                (false, 0, Some(12)),
+            ],
             0,
         );
         // points = 43. After lock: 56. If opp_score = 100, we'd lose.
@@ -913,7 +998,12 @@ mod tests {
         // Blue (total=8) locking 2: total becomes 10 → 55 points on that row.
         // Blue lock scores higher, should be picked.
         let state = make_state(
-            [(true, 5, Some(11)), (true, 0, Some(2)), (false, 0, Some(12)), (false, 8, Some(3))],
+            [
+                (true, 5, Some(11)),
+                (true, 0, Some(2)),
+                (false, 0, Some(12)),
+                (false, 8, Some(3)),
+            ],
             0,
         );
         let moves = vec![single(0, 12), single(3, 2)];
@@ -928,179 +1018,245 @@ mod tests {
         assert_eq!(state.find_smart_lock(&moves, 0), None);
     }
 
-    // ---- prune_dominated: singles on same row ----
+    // ---- state dominance (PartialOrd) ----
 
     #[test]
-    fn prune_keeps_closer_single_on_same_row() {
-        // Red free=5. Both moves are singles on Red.
-        // Red 5 (0 blanks) dominates Red 7 (2 blanks).
-        let state = make_state(
-            [(true, 0, Some(5)), (true, 0, Some(2)), (false, 0, Some(12)), (false, 0, Some(12))],
+    fn dominance_same_row_closer_free_wins() {
+        // Same state but Red marked at 5 (free=6) vs 7 (free=8).
+        // free=6 is earlier → dominates.
+        let base = make_state(
+            [
+                (true, 0, Some(5)),
+                (true, 0, Some(2)),
+                (false, 0, Some(12)),
+                (false, 0, Some(12)),
+            ],
             0,
         );
-        let moves = vec![single(0, 5), single(0, 7)];
-        let pruned = state.prune_dominated(&moves);
-        assert_eq!(pruned, vec![single(0, 5)]);
+        let mut a = base;
+        a.apply_mark(Mark { row: 0, number: 5 }); // free→6
+        let mut b = base;
+        b.apply_mark(Mark { row: 0, number: 7 }); // free→8
+        assert!(post_state_dominates(&a, &b));
+        assert!(!post_state_dominates(&b, &a));
     }
 
     #[test]
-    fn prune_keeps_same_row_strike_passes_through() {
-        let state = make_state(
-            [(true, 0, Some(5)), (true, 0, Some(2)), (false, 0, Some(12)), (false, 0, Some(12))],
+    fn dominance_higher_total_same_progress_wins() {
+        // Red total=5 free=6 vs Red total=3 free=6. Same free, higher total dominates.
+        let a = make_state(
+            [
+                (true, 5, Some(6)),
+                (true, 0, Some(2)),
+                (false, 0, Some(12)),
+                (false, 0, Some(12)),
+            ],
             0,
         );
-        let moves = vec![single(0, 5), Move::Strike];
-        let pruned = state.prune_dominated(&moves);
-        // Strike passes through, single is kept
-        assert!(pruned.contains(&Move::Strike));
-        assert!(pruned.contains(&single(0, 5)));
-    }
-
-    // ---- prune_dominated: cross-row singles (Rule 2) ----
-
-    #[test]
-    fn prune_prefers_higher_total_row_equal_blanks_and_progress() {
-        // Red (asc, total=5) free=5: mark 5 → 0 blanks, progress=4 (5-1)
-        // Green (desc, total=2) free=9: mark 9 → 0 blanks, progress=4 (13-9)
-        // Equal blanks and progress. Red has higher total, should be kept.
-        let state = make_state(
-            [(true, 5, Some(5)), (true, 0, Some(2)), (false, 2, Some(9)), (false, 0, Some(12))],
+        let b = make_state(
+            [
+                (true, 3, Some(6)),
+                (true, 0, Some(2)),
+                (false, 0, Some(12)),
+                (false, 0, Some(12)),
+            ],
             0,
         );
-        let moves = vec![single(0, 5), single(2, 9)];
-        let pruned = state.prune_dominated(&moves);
-        assert_eq!(pruned, vec![single(0, 5)]);
-    }
-
-    // ---- prune_dominated: doubles ----
-
-    #[test]
-    fn prune_keeps_double_closer_to_free() {
-        // Red free=5, Green free=9
-        // Double(Red 5, Green 9): post-Red free=6, post-Green free=8. 0 blanks total.
-        // Double(Red 7, Green 9): post-Red free=8, post-Green free=8. 2 blanks on Red.
-        // First dominates (same Green result, better Red free).
-        let state = make_state(
-            [(true, 0, Some(5)), (true, 0, Some(2)), (false, 0, Some(9)), (false, 0, Some(12))],
-            0,
-        );
-        let moves = vec![double(0, 5, 2, 9), double(0, 7, 2, 9)];
-        let pruned = state.prune_dominated(&moves);
-        assert_eq!(pruned, vec![double(0, 5, 2, 9)]);
+        assert!(post_state_dominates(&a, &b));
+        assert!(!post_state_dominates(&b, &a));
     }
 
     #[test]
-    fn prune_keeps_both_doubles_if_different_row_pairs() {
-        // Double on (Red, Green) and (Yellow, Blue) don't compare
-        let state = make_state(
-            [(true, 0, Some(5)), (true, 0, Some(5)), (false, 0, Some(9)), (false, 0, Some(9))],
+    fn dominance_locked_vs_unlocked_incomparable() {
+        // Red locked (total=8) vs Red unlocked (total=6, free=12).
+        // Locked has more marks but no future options — incomparable.
+        let a = make_state(
+            [
+                (true, 8, None),
+                (true, 0, Some(2)),
+                (false, 0, Some(12)),
+                (false, 0, Some(12)),
+            ],
             0,
         );
-        let moves = vec![double(0, 5, 2, 9), double(1, 5, 3, 9)];
-        let pruned = state.prune_dominated(&moves);
-        // Neither dominates — different rows affected
-        assert_eq!(pruned.len(), 2);
+        let b = make_state(
+            [
+                (true, 6, Some(12)),
+                (true, 0, Some(2)),
+                (false, 0, Some(12)),
+                (false, 0, Some(12)),
+            ],
+            0,
+        );
+        assert!(!post_state_dominates(&a, &b));
+        assert!(!post_state_dominates(&b, &a));
     }
 
     #[test]
-    fn prune_locked_vs_unlocked_incomparable() {
-        // Red.total=5, can lock via 12. Two options:
-        //   Double(Red 11, Red 12): final total=8 (5+1+2 lock bonus), locked.
-        //   Double(Red 11, Green 9): final Red total=6, free=12 (not locked).
-        // Locked Red has more marks but no future options — neither dominates.
-        let state = make_state(
-            [(true, 5, Some(11)), (true, 0, Some(2)), (false, 0, Some(9)), (false, 0, Some(12))],
+    fn dominance_symmetric_rows_are_interchangeable() {
+        // Red=good Yellow=bad vs Red=bad Yellow=good.
+        // Same-direction rows are interchangeable, so these are equal.
+        let a = make_state(
+            [
+                (true, 3, Some(6)),
+                (true, 0, Some(2)),
+                (false, 0, Some(12)),
+                (false, 0, Some(12)),
+            ],
             0,
         );
-        let moves = vec![double(0, 11, 0, 12), double(0, 11, 2, 9)];
-        let pruned = state.prune_dominated(&moves);
-        // Neither should be pruned — both kept
-        assert_eq!(pruned.len(), 2);
+        let b = make_state(
+            [
+                (true, 0, Some(2)),
+                (true, 3, Some(6)),
+                (false, 0, Some(12)),
+                (false, 0, Some(12)),
+            ],
+            0,
+        );
+        assert!(!post_state_dominates(&a, &b)); // equal, not strictly greater
+        assert!(!post_state_dominates(&b, &a));
+        assert_eq!(a.partial_cmp(&b), Some(std::cmp::Ordering::Equal));
     }
 
-    // ---- apply_meta_rules ----
+    #[test]
+    fn dominance_cross_direction_different_rows_affected() {
+        // Marking Red 5 vs marking Green 9 — different directions.
+        // Neither dominates (one improved ascending, other improved descending).
+        let base = State::default();
+        let mut a = base;
+        a.apply_mark(Mark { row: 0, number: 5 });
+        let mut b = base;
+        b.apply_mark(Mark { row: 2, number: 9 });
+        assert!(!post_state_dominates(&a, &b));
+        assert!(!post_state_dominates(&b, &a));
+    }
 
     #[test]
-    fn apply_meta_rules_forces_strike_when_winning_with_3_strikes() {
-        // strikes=3, winning. Should force strike.
-        let state = make_state(
-            [(true, 5, Some(11)), (true, 3, Some(5)), (false, 2, Some(10)), (false, 0, Some(12))],
-            3,
+    fn dominance_fewer_strikes_wins() {
+        let a = make_state(
+            [
+                (true, 0, Some(2)),
+                (true, 0, Some(2)),
+                (false, 0, Some(12)),
+                (false, 0, Some(12)),
+            ],
+            0,
         );
-        // points = 15 + 6 + 3 + 0 - 15 = 9. After strike: 9 - 5 = 4.
-        // We want score_gap high enough that opp_score < 4. score_gap=10 → opp=-1.
-        let dice = [1, 1, 1, 1, 1, 1]; // white sum = 2
-        match state.apply_meta_rules(dice, 10) {
-            MetaDecision::Forced(Move::Strike) => {}
-            other => panic!("expected Forced(Strike), got {:?}", other),
+        let b = make_state(
+            [
+                (true, 0, Some(2)),
+                (true, 0, Some(2)),
+                (false, 0, Some(12)),
+                (false, 0, Some(12)),
+            ],
+            1,
+        );
+        assert!(post_state_dominates(&a, &b));
+        assert!(!post_state_dominates(&b, &a));
+    }
+
+    #[test]
+    fn dominance_symmetry_enables_pruning() {
+        // State A: Red(total=5,free=6) Yellow(total=0,free=2)
+        // State B: Red(total=3,free=6) Yellow(total=0,free=2)
+        // A > B because Red is better, Yellow is equal.
+        // Now swap: B': Red(total=0,free=2) Yellow(total=3,free=6)
+        // A still > B' because via assignment Red↔Yellow, Yellow↔Red:
+        // A.Yellow(0,2) vs B'.Red(0,2) = Equal, A.Red(5,6) vs B'.Yellow(3,6) = Greater
+        let a = make_state(
+            [
+                (true, 5, Some(6)),
+                (true, 0, Some(2)),
+                (false, 0, Some(12)),
+                (false, 0, Some(12)),
+            ],
+            0,
+        );
+        let b_swapped = make_state(
+            [
+                (true, 0, Some(2)),
+                (true, 3, Some(6)),
+                (false, 0, Some(12)),
+                (false, 0, Some(12)),
+            ],
+            0,
+        );
+        assert!(post_state_dominates(&a, &b_swapped));
+    }
+
+    // ---- helper methods ----
+
+    #[test]
+    fn can_mark_fresh_state() {
+        let s = State::default();
+        assert!(s.can_mark(0, 2)); // red, ascending, free=2
+        assert!(!s.can_mark(0, 12)); // need 5+ marks to mark terminal
+        assert!(s.can_mark(2, 12)); // green, descending, free=12
+    }
+
+    #[test]
+    fn apply_mark_updates_state() {
+        let mut s = State::default();
+        s.apply_mark(Mark { row: 0, number: 5 });
+        assert_eq!(s.row_totals()[0], 1);
+        assert_eq!(s.row_free_values()[0], Some(6));
+    }
+
+    #[test]
+    fn generate_white_moves_fresh() {
+        let s = State::default();
+        let moves = s.generate_white_moves(7);
+        assert_eq!(moves.len(), 4); // all 4 rows can mark 7
+    }
+
+    #[test]
+    fn generate_color_moves_basic() {
+        let s = State::default();
+        let dice = [3, 4, 2, 3, 5, 1]; // W1=3 W2=4 R=2 Y=3 G=5 B=1
+        let moves = s.generate_color_moves(dice);
+        // Row 0 (red,asc): 3+2=5 ✓, 4+2=6 ✓
+        // Row 1 (yel,asc): 3+3=6 ✓, 4+3=7 ✓
+        // Row 2 (grn,desc): 3+5=8 ✓, 4+5=9 ✓
+        // Row 3 (blu,desc): 3+1=4 ✓, 4+1=5 ✓
+        assert_eq!(moves.len(), 8);
+    }
+
+    #[test]
+    fn would_lock_row_detects_lock() {
+        let mut s = State::default();
+        for n in 2..=6 {
+            s.apply_mark(Mark { row: 0, number: n });
         }
+        assert!(s.would_lock_row(Mark { row: 0, number: 12 }));
+        assert!(!s.would_lock_row(Mark { row: 0, number: 7 }));
     }
 
     #[test]
-    fn apply_meta_rules_forces_first_lock() {
-        let state = make_state(
-            [(true, 5, Some(11)), (true, 0, Some(2)), (false, 0, Some(12)), (false, 0, Some(12))],
-            0,
-        );
-        // Dice that allow marking Red 12: white=W1+W2, and we need to reach 12 on Red.
-        // Simplest: white sum = 12 (6+6). Or W1+Red = 12.
-        let dice = [6, 6, 6, 1, 1, 1];
-        match state.apply_meta_rules(dice, 0) {
-            MetaDecision::Forced(mov) => {
-                // Should force marking Red 12 (locks Red)
-                let mut s = state;
-                s.apply_move(mov);
-                assert_eq!(s.count_locked(), 1);
-            }
-            other => panic!("expected Forced(lock), got {:?}", other),
+    fn from_parts_roundtrip() {
+        // Mid-game state with marks in two rows and a strike.
+        let mut mid = State::default();
+        for n in [2u8, 3, 5, 7, 10] {
+            mid.apply_mark(Mark { row: 0, number: n });
         }
-    }
-
-    #[test]
-    fn apply_meta_rules_filters_losing_lock_from_choices() {
-        // 1 row already locked. Red can be locked via 12 (would end game).
-        // We're losing — losing lock should be filtered.
-        let state = make_state(
-            [(true, 5, Some(11)), (true, 7, None), (false, 0, Some(12)), (false, 0, Some(12))],
-            0,
-        );
-        // points = 15 + 28 = 43. After lock Red: 28 + 28 = 56.
-        // opp_score = 100 → we'd lose. score_gap = 43 - 100 = -57.
-        let dice = [6, 6, 6, 1, 1, 1]; // white=12 and W1+Red=12
-        let decision = state.apply_meta_rules(dice, -57);
-        match decision {
-            MetaDecision::Choices(moves) => {
-                // Red 12 would lock → should be filtered out
-                let has_red_12 = moves.iter().any(|m| {
-                    matches!(m, Move::Single(mark) if mark.row == 0 && mark.number == 12)
-                });
-                assert!(!has_red_12, "losing lock should be filtered: {:?}", moves);
-            }
-            other => panic!("expected Choices, got {:?}", other),
+        for n in [12u8, 9] {
+            mid.apply_mark(Mark { row: 3, number: n });
         }
-    }
-
-    #[test]
-    fn apply_meta_rules_allows_tying_lock() {
-        // All rows except Red are locked. Red lock would end the game with exactly a tie.
-        // find_smart_lock requires strict win (>), so the lock must not be forced,
-        // and the lock-into-loss filter uses strict < so a tying lock stays in Choices.
-        let state = make_state(
-            [(true, 5, Some(11)), (true, 7, None), (false, 0, None), (false, 0, None)],
-            0,
-        );
-        // points = 15 + 28 = 43. After Red lock: 28 + 28 = 56. Tie when opp_score = 56.
-        // score_gap = 43 - 56 = -13.
-        // Dice [6,6,1,1,1,1]: white=12 → only Red 12 markable (others locked).
-        let dice = [6, 6, 1, 1, 1, 1];
-        match state.apply_meta_rules(dice, -13) {
-            MetaDecision::Forced(m) => panic!("tie shouldn't force lock, got {:?}", m),
-            MetaDecision::Choices(moves) => {
-                let has_red_12 = moves.iter().any(|m| {
-                    matches!(m, Move::Single(mark) if mark.row == 0 && mark.number == 12)
-                });
-                assert!(has_red_12, "tying lock should be available in choices: {:?}", moves);
-            }
+        mid.apply_strike();
+        // State with a locked row (5 marks then the terminal).
+        let mut locked = State::default();
+        for n in [2u8, 3, 4, 5, 6, 12] {
+            locked.apply_mark(Mark { row: 1, number: n });
+        }
+        for orig in [State::default(), mid, locked] {
+            let totals = orig.row_totals();
+            let frees = orig.row_free_values();
+            let rebuilt = State::from_parts(orig.strikes, core::array::from_fn(|i| (totals[i], frees[i])));
+            assert_eq!(rebuilt.row_totals(), orig.row_totals());
+            assert_eq!(rebuilt.row_free_values(), orig.row_free_values());
+            assert_eq!(rebuilt.locked(), orig.locked());
+            assert_eq!(rebuilt.strikes, orig.strikes);
+            assert_eq!(rebuilt.count_points(), orig.count_points());
         }
     }
 }

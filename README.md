@@ -26,6 +26,11 @@ cargo run --release -- evolve
 # Train DQN
 cargo run --release -- dqn-train          # MC-supervised pretraining
 cargo run --release -- dqn-selfplay -i 40 -b 100000  # Self-play RL (40 iters, 100k bench/iter)
+
+# Train the pair network (experimental)
+cargo run --release -- pair-train -i 40 -b 100000 -c   # Train the pair network
+cargo run --release -- pair-train --search -g 5000 -e 5 -b 500000 -c --start-iteration 20   # Expert iteration
+cargo run --release -- bench pair dqn -n 100000        # Head-to-head vs old DQN
 ```
 
 Model artifacts:
@@ -37,6 +42,8 @@ Model artifacts:
 | Strategy | Description | vs GA (1v1) |
 |---|---|---|
 | **DQN** | TD(λ) value network + Gaussian P(win) ranking + shared meta-rules | **~60.3%** |
+| **Pair** | Joint two-board net ranking by score-differential P(win) | ~59.2% |
+| **Pair-Search** | Pair net + gated truncated rollouts at active decisions | **~60.1%** |
 | **GA Champion** | Genetically-evolved 4-weight heuristic + meta-rules | baseline |
 | **MCTS** | Monte Carlo tree search with GA rollouts | ~GA-level |
 | **Opportunist** | Max weighted probability, blank caps, always-lock | ~30% |

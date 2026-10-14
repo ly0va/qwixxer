@@ -1,11 +1,11 @@
 {
-  "name": "Qwixx",
-  "short_name": "Qwixx",
+  "name": "Qwixxer",
+  "short_name": "Qwixxer",
   "description": "Play Qwixx against AI bots",
   "start_url": "/qwixxer/",
   "display": "standalone",
-  "background_color": "#f5f0e8",
-  "theme_color": "#e74c3c",
+  "background_color": "#F3EDE1",
+  "theme_color": "#F3EDE1",
   "icons": [
     {
       "src": "/qwixxer/icon-192.png",

@@ -6,7 +6,7 @@ Qwixxer is a Rust workspace with a native binary/library crate and a WASM web cr
 
 ```
 qwixxer/
-  Cargo.toml          -- lib + bin crate, feature flags: dqn, burn, parallel
+  Cargo.toml          -- lib + bin crate, feature flags: dqn, parallel
   src/
     lib.rs             -- Public module re-exports
     main.rs            -- CLI entry point (clap subcommands: play, bench, solo, evolve, dqn-train, dqn-selfplay)
@@ -19,20 +19,32 @@ qwixxer/
       train.rs         -- TD(lambda) targets, decoupled mu/sigma losses, self-play loop
     mcts.rs            -- Monte Carlo tree search with pluggable rollout policy
   web/
-    Cargo.toml         -- WASM crate (qwixxer-web), depends on qwixxer with burn feature only
+    Cargo.toml         -- WASM crate (qwixxer-web), depends on qwixxer with default-features = false
+    build.sh           -- wasm-pack + wasm-opt -Oz into web/pkg/
     src/
-      lib.rs           -- WebGame state machine, StateExplorer, wasm-bindgen exports
-      ts/
-        main.ts        -- Game entry point, render loop, event wiring
-        board.ts       -- Scoresheet renderer (colored rows, marks, strikes, totals)
-        dice.ts        -- Dice display with colored faces
-        moves.ts       -- Move parsing, cell click handling, selection state machine
-        types.ts       -- TypeScript interfaces (GameView, StateView, RowView, MoveView, etc.)
-        explorer.ts    -- State Explorer page: interactive board + live GA/DQN evaluation
-        style.css      -- Dark theme with Qwixx color palette
-    index.html         -- Play page
-    explorer.html      -- State Explorer page
-    vite.config.ts     -- Multi-page Vite build, base path /qwixxer/ for GitHub Pages
+      lib.rs           -- wasm-bindgen exports: WasmGame (one game, JSON in/out)
+      session.rs       -- Session: one human-vs-bot game, turn flow, snapshots, views
+      selection.rs     -- The human's legal selections (passive white sum, active options)
+      bots.rs          -- Master+ / Master / Student / Newbie, embedded champion + pair net
+      bench.rs         -- bench(bot, games, seed): bot decision latency
+      main.ts          -- Mounts App.svelte
+      engine/
+        protocol.ts    -- TS mirror of the session's JSON types, Engine interface
+        client.ts      -- WorkerEngine: promise RPC over postMessage
+        engine.worker.ts -- Web Worker entry: wires the wasm pkg into serve.ts
+        serve.ts       -- Worker message handler: wasm load (with retry), one WasmGame
+      game/
+        rules.ts       -- Pure sheet/confirm/log model (lookups over engine data only)
+        controller.svelte.ts -- GameController: turn sequencing, pacing, tips, persistence
+        keys.ts        -- keyAction: pure page-wide keyboard decisions
+        layout.ts      -- phoneLayout / deskScale: pure layout sizing
+        *.test.ts      -- Vitest unit tests
+      test/client-env.ts -- Vitest environment compiling runes for the client
+      ui/              -- Svelte 5 components (App, Desktop, Phone, sheets, dice, log, ...)
+      styles/theme.css -- Light/dark tokens, self-hosted Barlow fonts
+    scripts/bench.mjs  -- Node runner for the latency bench
+    index.html         -- Single page
+    vite.config.ts     -- Svelte plugin, ES-module worker, base path /qwixxer/, Vitest config
 ```
 
 ### Feature Flags
@@ -40,10 +52,9 @@ qwixxer/
 | Feature | Description |
 |---------|-------------|
 | `dqn` | Full DQN training (burn with train support, serde, rayon) |
-| `burn` | Burn inference only (model definition + forward pass, no training) |
 | `parallel` | Rayon parallelism for benchmarks and GA training |
 
-Default features are `dqn` + `parallel` for the native binary. The web crate uses only `burn` (no rayon, no training code) to keep the WASM binary small (~1 MB with wasm-opt).
+Default features are `dqn` + `parallel` for the native binary. Burn (ndarray backend) is always available for inference. The web crate depends on the root crate with `default-features = false` (no rayon, no training code) to keep the WASM binary small (~1 MB with wasm-opt). `mimalloc`, the native binary's global allocator, is a target dependency for non-wasm32 only (its C build fails on wasm32).
 
 ---
 
@@ -218,6 +229,86 @@ These meta-rules are shared by DQN, GA, and training code via `State::apply_meta
 
 Features 20-24 are game-end-proximity signals: they let the network predict how much of the game remains, which is the dominant driver of remaining-score variance.
 
+### Pair Network (`dqn/pair.rs`, `dqn/pair_train.rs`)
+
+Experimental successor to the DQN: a joint two-board MLP (45 -> 128 -> 64 -> 2)
+that predicts the distribution of the *future score differential*
+`final_diff - current_diff` as `(mu, log sigma^2)`. Inputs are two 20-feature
+board blocks (per-row progress/marks/locked/weighted-prob with the lock-rule
+fix, strikes, blanks, aggregate wprob, lockable rows) plus 5 pair-level
+features (current diff, opponent count, all-opponent summaries). Candidates
+are ranked by `(current_diff + mu) / sigma` against the leading opponent.
+Training is pure self-play with per-opponent TD(lambda=0.8) chains; every
+sample is also emitted board-swapped with negated targets (pairwise
+consistency); color permutations are applied in the batcher to both blocks.
+Passive skips are recorded (the old recorder dropped them). Model dir:
+`pair_model/`. Design doc: `docs/superpowers/specs/2026-06-10-pair-network-design.md`.
+
+### Pair-Search (`strategy/search.rs`, `strategy/sim.rs`)
+
+Decision-time search on top of the pair network. At gated active decisions
+(top-2 static gap below GATE_MARGIN, or endgame proximity: any locked row, 3
+strikes, or a locking candidate), the top-2 candidates are re-ranked by
+truncated rollouts: complete the current turn deterministically, simulate one
+full round with every player played greedily by the value net
+(lockstep-batched through `Bot::evaluate_batch_multi`), then score each
+sampled future as the exact outcome if the game ended or the net's win
+probability (`WinProb` trait) at the horizon. 64 samples per candidate with
+common-random-number dice derived by hashing the decision context, so the bot
+is stateless-deterministic and benches are byte-reproducible. Meta-rules stay
+single-source: the shared bot_impl pipelines expose pure-logic `*_choices()`
+consumed by both the blanket `Bot -> Strategy` impl and the search bot. The
+simulator is pinned to `Game::play` by an equivalence test covering both
+strike- and lock-terminated games. Calibration diagnostic:
+`cargo run --release --example search_calibration -- 300`.
+
+Measured (50k-game paired benches): 59.8% vs GA (static pair bot: 59.2%);
+head-to-head vs the static pair bot +1.6-1.7% win margin, replicated on two
+seeds. Cost: ~100x the static bot (~27 games/s on 8 cores); optimization
+deferred until needed (see EXPERIMENTS.md Phase 13).
+
+**Expert iteration** (`pair-train --search`): training games are generated with
+the search bot as every player's policy (the e-coin fires before search, so
+exploring moves skip it); recording, TD targets, and losses are unchanged — the
+net distills search-improved trajectories. Recommended run (executed on a
+dedicated machine): 5k games/iter, 5 epochs, 500k-game per-iteration static
+benchmark (the primary metric; paired SE ~0.05%). Design doc:
+docs/superpowers/specs/2026-06-11-expert-iteration-design.md.
+
+**SearchConfig** (`strategy/search.rs`): `k_samples` (truncated-search
+samples), `search_passive` (also search gated passive decisions via
+`passive_entry`), `lock_k` (adjudicate forced safe locks against the best
+non-lock alternative and runner-up lock by full-game rollouts), `stratify`
+(stratified first-roll white dice; did not help), `blend` (pick by
+`(1 − λ)·Φ(static z) + λ·rollout mean` instead of the rollout mean alone;
+spec `blend=λ` / `noblend`, 0.7 in production since Phase 25), `seq` /
+`stop` (sequential sampling: start at `seq` samples per candidate and double
+up to `k_samples` until every blended score difference to the static pick
+exceeds `stop` × λ·SE of the CRN-paired mean difference; spec `seq=N` /
+`noseq`, `stop=C`; production 32 → 512 with stop 2 since Phase 26; with
+more than two candidates it is successive elimination: each round, every
+candidate the leader beats by `stop` SEs stops sampling), `cands`
+(candidates searched, spec `cands=N`, production 3 since Phase 27, always
+printed in the spec; `K_CANDIDATES` = 2 stays for `legacy()` and the
+endgame gate's lock check) and `gate` (close-gate margin, spec
+`gate=G`, default `GATE_MARGIN` = 0.15; distillation keeps the constant).
+Rollout sample `k`'s dice depend only on (decision seed, k, player), so
+sequential batches compose into exactly the fixed-k sample set.
+`Default` = production
+= `k=512,passive,lock=256,blend=0.7,seq=32,cands=3` since Phase 27
+(Phase 26 was the same with 2 candidates, printed without `cands`; Phase 21 was
+`k=128,passive,lock=256` with fixed k and no blend; a spec that sets `k`
+stays sequential unless it adds `noseq`); `SearchConfig::legacy()` =
+`k=128,nopassive,nolock,noblend,noseq,cands=2`, the
+Phase 13–20 search (active-only, forced locks), still used by the
+`pair-train --search` expert and the divergence harness.
+Bench bots `pair-search-exp` / `pair-search-exp-b` read a spec such as
+`nopassive,nolock` from `QWIXXER_SEARCH` / `QWIXXER_SEARCH_B`. Measured:
+production reaches 62.8% vs GA (100k games, seed 42; Phase 26), Phase 21
+production 62.4% (legacy 60.7%).
+Static pair: 60.1% vs GA on the Phase 22 checkpoint. Checkpoint comparisons
+use `pair-alt` / `pair-search-alt`, which load `QWIXXER_ALT_MODEL`.
+
 ### Monte Carlo Tree Search (`mcts.rs`)
 
 **`MonteCarlo`** runs `N` rollout simulations per candidate move (default 500). For each move:
@@ -288,41 +379,139 @@ The rollout policy is pluggable via `RolloutFactory = Arc<dyn Fn() -> Box<dyn St
 
 ## Web UI Architecture
 
-### WASM Crate (`web/src/lib.rs`)
+Browser Qwixx against one bot, specified in
+`docs/superpowers/specs/2026-10-13-web-turn-flow-design.md` (turn flow, legal
+squares, pacing, visual design). The Rust side owns every rule; the Svelte 5 +
+TypeScript frontend (Vite) only looks up what the engine reports. The old
+`WebGame` (Move-index API) and the State Explorer page were removed; an
+explorer is deferred.
 
-**`WebGame`** is a `#[wasm_bindgen]` struct that manages a 2-player game (human vs bot) as a state machine with phases:
+### WASM Crate (`web/src/`)
+
+**`Session`** (`session.rs`) is one human-vs-bot game. The human is player 0,
+the bot player 1, and the bot starts every game. It follows the turn order of
+`src/game.rs` (both phase-1 marks decided on the pre-roll boards and applied
+together, locks propagate, the game may end, then the active player's phase 2).
+Phases:
 
 ```
-BotActive -> PlayerPassive -> PlayerActive -> BotPassive -> (BotActive or GameOver)
+bot_to_roll -> passive -> you_to_roll -> active -> bot_to_roll -> ...   (any step may end in over)
 ```
 
-- `BotActive`: Bot rolls dice, picks a move. Transitions to `PlayerPassive`.
-- `PlayerPassive`: Player may mark the white sum (or skip). Transitions to `PlayerActive`.
-- `PlayerActive`: Player rolls dice, picks from full move set. Bot then takes its passive turn. Transitions back to `BotActive`.
-- `GameOver`: Final scores displayed.
+- `bot_to_roll`: `bot_roll()` rolls and decides the bot's white sum, kept hidden.
+- `passive`: `submit_passive(pick | null)` applies your white sum (or pass) and
+  the bot's phase 1, then the bot's colour mark or strike. Returns a `RollRecord`.
+- `you_to_roll`: `you_roll()` rolls and decides the bot's white sum, which is
+  revealed (`view.bot_white`) because your legal set depends on it.
+- `active`: `submit_active(picks, strike)` applies one of the engine's legal
+  selections (`view.options.selections`) or a strike. Returns a `RollRecord`.
+- `over`: with a reason (`locks`, `you_strikes`, `bot_strikes`).
 
-The struct tracks per-cell marks (`player_marks` and `bot_marks` as `[[bool; 11]; 4]`) separately from the `State` free pointer, so the UI can distinguish marked cells from skipped cells.
+Per-cell display marks (`[[bool; 11]; 4]` per player) are the source of truth;
+`State` is derived from them, so marked and skipped cells stay distinguishable.
+`selection.rs` computes the human's legal selections (spec "Which squares are
+legal"): phase-1 marks judged on the pre-roll boards, phase 2 after both
+phase-1 marks and lock propagation, no colour mark or strike once two rows are
+locked. The session serialises to a `Snapshot`, so a game survives a reload.
 
-**Exported methods**: `new(bot_type)`, `view() -> JSON`, `make_move(index)`, `skip()`, `new_game(bot_type)`.
+**Bots** (`bots.rs`, engine ids in brackets): **Master+** (`master_plus`,
+default) = pair-search over the pair net with `SearchConfig::parse(MASTER_PLUS_SPEC)`,
+where `MASTER_PLUS_SPEC = ""` is the native production config (see the latency
+table below); **Master** (`master`) = the static pair net; **Student**
+(`student`) = the GA champion; **Newbie** (`newbie`) = the hand-written
+Opportunist. The header's "⋯" menu (`Menu.svelte`, both layouts) holds New
+game (two clicks mid-game) and the dark-mode switch. `champion.txt` and `pair_model/model.mpk` are
+embedded at compile time via `include_bytes!`, so rebuild after changing them.
 
-**Model embedding**: The GA champion weights (`champion.txt`) and DQN model (`dqn_model/model.mpk`) are embedded at compile time via `include_bytes!`. The DQN model loads via `NamedMpkBytesRecorder` with half-precision settings.
+**`WasmGame`** (`lib.rs`) wraps a `Session` for wasm-bindgen with JSON in/out:
+`new(bot, seed)`, `restore(bot, snapshot, seed)`, `view()`, `snapshot()`,
+`bot_roll()`, `submit_passive(pick_json)`, `you_roll()`,
+`submit_active(picks_json, strike)`. `bench.rs` exports `bench(bot, games, seed)`.
 
-**`StateExplorer`** is a second `#[wasm_bindgen]` struct for the explorer page. It holds both a GA champion and a DQN model, and evaluates arbitrary board states constructed from a JSON-serialized marks array. Returns GA value, DQN value, score, blanks, probability, weighted probability, and per-gene breakdowns.
+### Web bot latency
 
-### TypeScript Frontend
+Measured 2026-10-14 with `./web/build.sh && node web/scripts/bench.mjs <bot> 10`
+(Node 22, single thread, `opt-level = 'z'` + `wasm-opt -Oz`, `.wasm` 1.0 MB).
+The bench (`web/src/bench.rs`, exported as `bench(bot, games, seed)`) plays
+games against random legal human choices and times every call into the bot
+(all three decision phases, including trivial ones), seed 1:
 
-Built with Vite (vanilla TypeScript, no framework). Multi-page configuration serves both `index.html` (game) and `explorer.html` (explorer).
+| Bot | Games | Decisions | mean ms | p50 ms | p95 ms | max ms |
+|---|---|---|---|---|---|---|
+| Master+ (pair-search, `MASTER_PLUS_SPEC = ""`) | 10 | 291 | 20.80 | 0.17 | 121.92 | 308.33 |
+| Master (pair net) | 10 | 297 | 0.06 | 0.03 | 0.15 | 1.61 |
+| Student (GA champion) | 10 | 297 | 0.01 | 0.00 | 0.03 | 0.77 |
 
-**Board rendering** (`board.ts`): Programmatically constructs DOM elements for each row and cell. Cells are classified as `marked` (X overlay), `skipped` (dimmed), `available` (colored), or `lock-unavailable` (lock number without 5 marks). Footer shows clickable strike boxes and a detailed scoring breakdown.
+Master+ passes the bar (p95 ≤ 400 ms, max ≤ 2500 ms) at the native production
+search config (`SearchConfig::default()`), so the web build keeps
+`MASTER_PLUS_SPEC = ""` and the size-optimised `opt-level = 'z'` / `-Oz`.
 
-**Move interaction** (`moves.ts`): Players click directly on scoresheet cells. The system:
-1. Parses move descriptions (e.g., "RED 7 + GRN 10") into `MoveTarget` arrays
-2. Highlights all cells that appear in any legal move
-3. As cells are clicked, narrows compatible moves and updates highlights
-4. Requires explicit Confirm button press (no auto-confirm)
-5. Supports toggle deselection (click a selected cell to unselect)
+### Frontend (`web/src/`)
 
-**State Explorer** (`explorer.ts`): A standalone page where users can click any cell to toggle marks, click strike boxes, and adjust sliders for opponent count / max opponent strikes / score gap. Evaluations update live, showing both GA instinct value and DQN predicted value with a full gene-by-gene breakdown table.
+**Worker engine.** The worker (`engine.worker.ts`, logic in `serve.ts`) holds one `WasmGame`, so bot
+decisions (Master+ can take hundreds of ms) never stall animations.
+`WorkerEngine` (`client.ts`) implements the `Engine` interface of
+`protocol.ts` as promise RPC over `postMessage` (`start`, `restore`,
+`snapshot`, `botRoll`, `submitPassive`, `youRoll`, `submitActive`);
+`protocol.ts` mirrors the session's serde JSON types. Arguments are deep-copied
+to plain JSON data before `postMessage`, since callers pass Svelte `$state`
+Proxies, which cannot be structured-cloned. Failures reject with an
+`EngineError` whose `kind` is `snapshot` (the worker loaded and `restore`
+rejected the snapshot itself; `Session::restore` validates it) or `engine`
+(anything else, e.g. the wasm failed to load). A failed wasm load is retried
+on the next call; calls to a dead worker reject until `reset()` terminates it
+and spawns a new one.
+
+**`GameController`** (`game/controller.svelte.ts`) is the Svelte 5 rune state
+for one page: it sequences turns against the `Engine`, enforces the pacing
+minimums (`PACE`: tumble 600 ms with faces every 75 ms, bot think 500 ms,
+colour-mark stagger 450 ms, hand-over 900 ms; beats overlap the engine call
+and stretch if the bot is slower), stages the bot's marks (pencil, then ink),
+keeps the selection, tips and log, and surfaces engine errors. After your
+roll, `pendingDice` shows the rolled dice during the bot's think, before the
+view (with the bot's revealed white sum) lands. The log resets per game.
+`game/rules.ts` is the pure sheet / confirm-button / log model; it only looks
+up the engine's lists and never re-derives legality.
+
+**Persistence** (`localStorage`): `qwixxer.save.v1` holds the snapshot, log,
+roll count, current and next bot; it is written after each resolved step and
+restored on load (a game waiting on the bot's roll resumes its turn). Your
+roll is saved as soon as the engine has rolled, before the tumble and think
+finish, so a reload cannot re-roll. If the engine rejects a saved snapshot
+(`kind: 'snapshot'`), the save is discarded and a new game starts; if the
+engine fails to load, the controller retries once on a fresh worker, then
+keeps the save and shows the error. After any engine failure, New game
+recreates the worker. The stored preference for the next bot wins over the
+one in the save.
+`qwixxer.prefs.v1` holds the theme and the bot for the next game (changing the
+bot applies from the next game).
+
+**Layouts.** `App.svelte` picks `Desktop.svelte` (paper sheet, targets
+1280×800) or `Phone.svelte` (sheet turned sideways, portrait 390×844) by the
+media query `(max-width: 1099px), (orientation: portrait)`. Windows smaller
+than 1280×800 (laptops at 1366×768, landscape tablets) get the desktop scaled
+down by `deskScale` = min(1, width / 1280, height / 800) with a CSS transform,
+inside a box of the scaled size, so the page never scrolls. On the phone the
+bot's sheet, the bot picker and the log live in a modal drawer.
+`game/layout.ts` (`phoneLayout`) sizes the phone: 48 px squares shrinking to a
+28 px floor; if even that does not fit, the page scrolls vertically rather
+than clipping. `game/keys.ts` (`keyAction`) decides page-wide keys: Enter
+confirms, Space rolls, Escape clears; keyboard-focused controls and form
+fields keep their native keys; while the drawer is open Escape closes it and
+Enter/Space never act on the game.
+
+**Look.** Light/dark tokens in `styles/theme.css`, self-hosted Barlow and
+Barlow Condensed (`@fontsource/*`). Squares, strike boxes and actions are real
+`<button>`s with descriptive labels and `aria-pressed` / `aria-disabled`
+(never `disabled`, so pressing an inactive control can show a tip).
+
+**Tests.** Rust: `cd web && cargo test --release` (session and selection edge
+cases). TypeScript: `npm test` (Vitest: rules, controller with a fake engine,
+worker RPC and handler, keys, layout) and `npm run check` (svelte-check).
+Vitest runs in a custom environment (`src/test/client-env.ts`) that compiles
+runes for the client, so `$state` values are Proxies as in the browser; the
+fake engine `structuredClone`s its arguments like `postMessage`. CI
+(`.github/workflows/test.yml`) runs both the Rust and the Vitest suites.
 
 ---
 
@@ -331,6 +520,12 @@ Built with Vite (vanilla TypeScript, no framework). Multi-page configuration ser
 The `bench` subcommand runs N games between 2+ bot types with seat rotation to cancel position bias.
 
 **Seat rotation**: Game `i` rotates seats by `i % num_players`, so each bot plays from every position equally across the benchmark run.
+
+**Paired dice (common random numbers)**: Dice streams are a deterministic function of `(--seed, pair, seat)`, where a "pair" is the block of `num_players` consecutive games covering all rotations. Within a pair, each seat replays the same dice stream, so luck attaches to the seat and cancels across the rotations. Consequences:
+- The same `--seed` (default 42) replays the identical game set — reruns are byte-identical for deterministic bots, and two models can be compared on exactly the same games (no dice variance between experiments).
+- Different `--seed` values give independent samples (the base seed is hashed with SplitMix64 so stream sets of nearby seeds are disjoint).
+- The 99% CI is computed over per-pair means (the pair is the independent sampling unit), which both stays honest under within-pair correlation and captures the pairing gain. Measured: ~1.3x efficiency in 1v1; ~0.8x in 2v2 (with 4 rotations the seat luck already cancels, while pair-shared luck correlates the games — the paired CI accounts for it).
+- The per-iteration training benchmark (`benchmark_vs_ga`) uses a fixed base seed, so winrate differences between iterations are purely model-driven.
 
 **Parallelism**: When the `parallel` feature is enabled, games run on a rayon thread pool. Each game constructs its own strategies and RNG (no shared mutable state). Results are collected into a `Vec` and aggregated serially.
 

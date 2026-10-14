@@ -609,3 +609,1413 @@ Qwixx's structural ceiling against a well-tuned GA is probably in the 60-62% ran
 - `examples/sigma_validation.rs` — batched MC rollouts from real-game decisions, compares DQN (μ, σ) to empirical (μ, σ); writes CSV.
 - `examples/score_distribution.rs` — dumps the final-score distribution from a fixed snapshot.
 - `scripts/sigma_validation_plots.py` — produces μ/σ scatter and σ-vs-turn plots from the CSV.
+
+---
+
+## Phase 12: Pairwise Differential Network ("pair" bot)
+
+All numbers below are under the corrected two-phase rules and paired-seed
+benchmarking (the pre-refactor numbers above are not comparable; the old DQN's
+baseline under the new regime is **59.10%** vs GA on the seed-42 set).
+
+### Design
+
+Replaced the single-board value net + hand-built `OpponentContext` with a joint
+two-board MLP (45 → 128 → 64 → 2) predicting the **future score differential**
+`final_diff − current_diff` as `(μ, log σ²)`. Motivation: row-level opponent
+visibility (lock races) and implicit covariance handling — `σ_diff` is the
+calibrated quantity, no independence assumption. Training: pure self-play
+(1v1/3p/4p thirds), per-opponent TD(λ=0.8) chains, board-swap sample doubling
+with exactly-recomputed pair-level features, passive skips recorded, color
+permutation on both blocks in the batcher. Ranking: `(current_diff + μ)/σ` vs
+the leading opponent. Spec: `docs/superpowers/specs/2026-06-10-pair-network-design.md`.
+
+### Epochs finding: 10 epochs/iteration overfits
+
+The pair pipeline generates ~6.2M samples/iteration (~3.4× the old pipeline:
+per-opponent chains × swap doubling × skip recording), so 10 epochs over the
+3-iteration replay buffer was ~10× the old gradient work. At 10 epochs the
+winrate plateaued at **56.5%** (iters 4–10). Switching to **3 epochs** at
+iteration 11 broke the plateau: winrate climbed to a peak of **59.02%** at
+iteration 19, converging to ~58.0–58.4% by iteration 31, while avg score rose
+to ~65. Fewer epochs per buffer snapshot = less overfitting to recent
+self-play, plus ~2.4× faster iterations.
+
+### Results (iter-19 checkpoint, 100k games each)
+
+| Matchup | seed 42 | seed 7 |
+|---------|---------|--------|
+| PAIR vs GA | **59.22%** (CI 58.86–59.58) | **59.26%** (CI 58.90–59.62) |
+| PAIR vs old DQN | 49.56% vs 48.89% (1.6% ties) | 49.35% vs 49.06% (1.6% ties) |
+
+- vs GA: statistical **parity with the old DQN** (59.10%), confirmed on an
+  independent seed.
+- Head-to-head: **dead even** — PAIR takes ~50.1–50.3% of decisive games, not
+  significant. PAIR scores slightly higher on average (76.0 vs 75.7).
+
+### Conclusion
+
+Joint two-board evaluation reaches parity with compressed-context evaluation,
+not superiority. This is strong evidence for the structural-ceiling
+hypothesis: at ~59–60% vs GA, the binding constraint is not the evaluation
+function's opponent information — both representations extract essentially all
+the available signal. What the pair net does buy: ~2× cheaper inference per
+decision (N feature rows instead of 2N interleaved), much simpler context
+handling (no per-candidate `OpponentContext` rebuild), and a cleaner platform
+for decision-time search — which is the next lever that can plausibly move the
+number.
+
+## Phase 13: Decision-Time Search (pair-search)
+
+All numbers below are under the corrected two-phase rules and paired-seed
+benchmarking, building directly on the Phase 12 pair net.
+
+### Design
+
+Decision-time search layered on the pair network, gated so it only runs where
+it can matter. At each active decision we score the top-2 static candidates by
+**truncated rollouts**: complete the current turn deterministically, simulate
+one full round with every player played greedily by the value net
+(lockstep-batched through `Bot::evaluate_batch_multi`), then take the leaf
+value as the exact game outcome if the round ended the game, otherwise the
+net's win probability (`WinProb` trait) at the horizon. 64 samples per
+candidate with **common-random-number** dice derived by hashing the decision
+context, so the same decision always draws the same dice across candidates and
+runs — the bot is stateless-deterministic and benches are byte-reproducible.
+The per-player greedy sim policy uses the Lite pipeline (`*_choices()` pure
+logic shared with the production bot, no allocation-heavy ranking machinery).
+Meta-rules stay single-source: the shared bot_impl `*_choices()` are consumed
+by both the blanket `Bot -> Strategy` impl and the search bot, and the
+simulator is pinned to `Game::play` by an equivalence test covering both
+strike- and lock-terminated games.
+
+### Calibration and the GATE_MARGIN decision
+
+`cargo run --release --example search_calibration -- 50` with search forced
+everywhere over the paired-seed game set:
+
+- 1260 active decisions, 1019 eligible; the close gate (top-2 static gap below
+  GATE_MARGIN) fires on 51.3% of eligible decisions, the endgame gate (any
+  locked row, 3 strikes, or a locking candidate) on 19.9%.
+- Disagreements (search picked a different move than the static net): 6.6% of
+  searched decisions. **100% of those disagreements occurred at decisions where
+  a gate had already fired** — gating loses no realized search value.
+- Top-2 static gap percentiles: p10 0.015, p25 0.053, p50 0.147, p75 0.281,
+  p90 0.500.
+
+Since every disagreement fell inside a fired gate, **GATE_MARGIN stays at
+0.15** — no constant change. Cost: ~0.17 s/game with search forced everywhere;
+gated benches run ~27 games/s wall on 8 cores, ~100× the static pair bot.
+Optimization is deferred; the identified levers are profiling, allocation reuse
+in the rollout driver, cached opponent feature blocks, and a lighter sim
+policy.
+
+### Acceptance results (50k games each, paired dice)
+
+| Matchup | Result | Margin |
+|---------|--------|--------|
+| pair-search vs pair, seed 42 | 24939 vs 24083 (978 ties) — 49.88% / 48.17% | **+856 (+1.71%)**, paired SE 0.155% |
+| pair-search vs pair, seed 7 | 24924 vs 24137 (939 ties) | **+787 (+1.57%)**, replicates on independent seed |
+| pair-search vs GA, seed 42 | **59.83%** (99% CI 59.32–60.34) | static pair bot 59.2% — strongest bot under the corrected rules |
+| pair-search vs DQN (old), seed 42 | 50.26% vs 48.25% (1.5% ties) | — |
+
+### Verdict
+
+Decision-time search produces the **first measurable strength gain since the
+two-phase rules fix**: +0.6% vs GA and a +1.6–1.7% head-to-head win margin over
+the static pair bot, statistically solid and replicated across two independent
+seeds. The size is small and consistent with the structural-ceiling hypothesis
+from Phase 12. Criterion caveat: with ~2% ties no bot's raw win rate exceeds
+50% head-to-head, so the meaningful statistic is the **win margin**, not a
+">50%" threshold. Cost is ~100× the static bot (~27 games/s on 8 cores), with
+optimization deferred until it is needed.
+
+The decisive takeaway: search now **demonstrably beats static play**, which
+justifies the next escalation — **expert iteration**, training the net on
+search-improved play.
+
+### Search-budget scan (post-perf-pass)
+
+After the 2.6x perf pass (single-threaded matmul + mimalloc; see the perf
+commit), a budget scan over the search constants, 50k-game margins vs the
+static pair bot on seed 42 (seed 7 confirmations in parentheses):
+
+| Config | Margin | Verdict |
+|--------|--------|---------|
+| K_SAMPLES=64, 1 round, 2 cands (baseline) | +1.71% (+1.57%) | — |
+| HORIZON_ROUNDS=2 | +1.33% | worse — greedy-rollout noise compounds faster than the bootstrap improves |
+| K_CANDIDATES=3 | +1.67% | neutral — there are rarely more than 2 good moves |
+| **K_SAMPLES=128** | **+2.50% (+2.16%)** | **adopted** |
+| K_SAMPLES=256 | +2.79% | past the knee — +0.3% for 2x cost |
+
+Search quality is sample-noise-bound, not depth- or width-bound: gates fire at
+close decisions where candidate values differ by a hair, so resolution is what
+pays. With K_SAMPLES=128, **pair-search vs GA reaches 60.09% (99% CI
+59.58–60.60)** — the first bot over 60% under the corrected rules, entering
+the hypothesized 60–62% structural-ceiling zone. Head-to-head cost ~41 games/s
+on 8 cores.
+
+---
+
+## Phase 14: Expert Iteration
+
+Closed the loop on Phase 13: `pair-train --search` generates self-play training
+games with the K=128 search bot as every player's policy (ε-coin fires before
+search, so exploration skips it; recording, TD(λ) targets, replay, and losses
+unchanged — pure trajectory-level distillation). Run configuration: 5k
+games/iteration, 5 epochs (gradient-passes band reasoning), 500k-game
+per-iteration static benchmark (paired SE ≈ 0.05%) as the primary metric, warm
+start from the Phase 12 model at the ε floor.
+
+### Result: small, real, and short of the bar
+
+Over 11–12 iterations the static-V winrate climbed **58.3% → 58.7%** on the
+fixed 500k bench — ≈ +0.04%/iteration, ~8σ in total, so the distillation signal
+is genuinely there — but it plateaued below the pre-registered adoption bar
+(+0.5% over the re-baseline). The checkpoint was not adopted:
+`pair_model/model.mpk` remains the Phase 12 net and the pair-search headline
+remains **60.1% vs GA**.
+
+### Interpretation
+
+The dilution mechanism flagged at design time is quantitatively consistent with
+the observed rate: the expert corrects ~1.3 decisions/game (6.6% of searched
+decisions), so ~93% of TD targets are statistically indistinguishable from what
+the net already fits, and the candidate *ranking* — the only thing that affects
+play — shifts even less than the values. Trajectory-level expert iteration
+works, but at this expert-student gap the per-iteration gain is a few
+hundredths of a percent and saturates.
+
+Ladder amendment: the "disagreement-weighted trajectory sampling" escalation is
+struck — at 1.3 disagreements/game nearly every trajectory contains one, so
+trajectory-level weighting is a no-op. The remaining untried rung is
+**search-value distillation**: emit extra training samples at searched
+decisions regressing V toward the rollouts' mean outcome in diff units (the
+sims carry actual final diffs, so no unit mismatch with μ). Estimated odds
+~30–40% of +0.3–0.5%; design questions around σ-target semantics and mixing
+weight. Not pursued in this campaign.
+
+### Campaign conclusion
+
+Every attack on the ~60% ceiling vs GA under the corrected rules has now been
+mounted and measured: joint two-board representation (parity with compressed
+context), decision-time search (+0.9% total, sample-noise-bound), and expert
+iteration (+0.4% static-V, below adoption). The structural-ceiling hypothesis
+— shared-dice luck dominating beyond ~60–62% — survived all of them. Final
+leaderboard vs GA (50k+ paired games, seed 42):
+
+| Bot | vs GA |
+|-----|-------|
+| **pair-search (K=128)** | **60.1%** |
+| pair-search (K=64) | 59.8% |
+| pair (static) | 59.2% |
+| old DQN | 59.1% |
+
+## Phase 15: Search-Divergence Analysis (when and why search overrides static)
+
+Phase 13 established that decision-time search beats static pair play by
++2.3–2.5% head-to-head, but left open *which* decisions search rescues. If the
+override pattern reduced to a crisp board feature, the static net could be
+taught part of search's edge at static speed (no rollouts). This phase mines
+that question and returns a verdict on encoding a meta-rule.
+
+### Setup and data
+
+Shadow collection: 10,000 games of static-PAIR vs GA, rotating seats, paired
+dice, seed 0. At every eligible decision on the static bot's own trajectory,
+search was run with `force=true` (gate ignored) and the static-vs-search
+comparison logged — one JSONL event per eligible decision. Output
+`divergence-10k.jsonl` is ~96 MB / 201,749 lines (191,749 decision events +
+10,000 game records), collected in ~6 min wall. Every disagreement plus a 10%
+sample of agreements was then **relabeled** at K=2048 rollouts per candidate
+with CRN-paired stats (seed 1, 10m23s wall / 82m user, zero drift-guard panics),
+attaching `hk_gap_mean`/`hk_gap_se`/`verdict` to 35,927 events. A verdict of
+**flip** means cands[1] is confidently better than cands[0] (|z|>2), **keep**
+the reverse, **coinflip** otherwise. `search_right` = a disagreement whose
+high-K verdict confirms search's pick.
+
+Recomputed headline rates (from the file, the original run summary was lost):
+
+- **191,749 eligible decisions.** Close gate (top-2 static gap below
+  GATE_MARGIN) fires on **53.7%**, endgame gate on **23.3%**, any gate on
+  **70.1%** (134,350 decisions).
+- **Disagreements: 18,644 = 9.72% of eligible / 13.82% of gate-fired.** Only 72
+  of 18,644 (0.4%) fell outside a fired gate — gating still loses essentially no
+  realized search value, consistent with Phase 13's 100%.
+- **Pair (static) win rate vs GA: 58.95%** over the 10,000 games — in line with
+  the 59.2% leaderboard figure.
+
+These track the 500-game seed-7 validation (9.79% of eligible / 14.15% of
+gate-fired, 57.6% pair wins) closely.
+
+### Disagreement survival at high K: search is a tie-breaker, not a fixer
+
+Among the 18,644 disagreements, the K=2048 verdict split is **flip 39.3%
+(7,325) / keep 10.7% (2,001) / coinflip 50.0% (9,318)**. Search's pick is
+confirmed (`search_right`) on **7,326 = 39.3%** of disagreements (the 7,325
+flips plus one keep-verdict event where search had picked cands[0]), refuted
+on 10.7%, and **half are statistical ties even at 16× the search budget.**
+
+Agreement-control noise floor (verdict present, `disagree==False`, n=17,283):
+**keep 96.3% / coinflip 3.2% / flip 0.6%.** Here "keep" is the expected null
+(both candidates were the same static pick), so the floor of "the high-K
+estimate would have changed something" is flip+coinflip ≈ 3.8% — matching the
+500-game floor (0.5% + 3.5%). The disagreement coinflip rate (50%) sits far
+above this floor, so coinflips at disagreements are real near-ties, not
+relabel noise — but they carry no decidable signal.
+
+The headline: **search's edge is overwhelmingly a diffuse sampling-advantage,
+not the correction of identifiable static blunders.** Quantitatively, 26.4% of
+disagreements (4,918) have `hk_gap_se==0`, and **every one of them is a
+coinflip** — these are decisions where both rollout branches already terminate
+the game deterministically, so the K=2048 estimate is exact and the two
+candidates are genuinely equal-valued (an unbreakable tie, not a
+high-confidence stochastic call).
+
+### Transition matrices: no directional move-kind pattern
+
+Among confirmed disagreements (search_right, n=7,326), move-kind transitions are
+near-symmetric: **mark→mark 47% (3,453), skip→mark 27% (1,959), mark→skip 22%
+(1,592), mark→strike 2% (134).** Search marks slightly more than static skips
+(search marks 5,600 vs static 5,179; search skips 1,592 vs static 1,959), but
+there is no clean "search is bolder/more conservative" axis. Within confirmed
+mark→mark, the row-transition matrix is essentially uniform off-diagonal (every
+row pair ~260–360 events) and the **jump-size shift is symmetric: mean +0.005,
+median 0, std 0.80, |shift|>0 only 31% of the time.** Search is not
+systematically taking shorter or longer jumps — it is re-picking among nearly
+equivalent marks.
+
+### Decision tree and importances: it's all `static_gap`
+
+A depth-3 balanced tree predicting `search_right` over all relabeled events
+scores 0.685 held-out (base rate 0.796 — barely above majority-class). The only
+feature with meaningful permutation importance is **`static_gap` (0.162)**;
+everything else is ≤0.012 (`cdiff` 0.012, `static_jump` 0.010, all board/move
+features 0.000). `export_text` rounds the splits; the true thresholds are
+`static_gap <= 0.0741` (root), then `<= 0.0000` and `<= 0.0348`. The tree says
+`search_right` is most likely in a **low-but-nonzero static_gap band
+(0 < gap ≲ 0.074)** — i.e. exactly where the static net is nearly indifferent
+between its top two candidates. That is the diffuse-tie-breaking story restated,
+not a board feature. (`our_locked` and `opp_locked` are byte-identical in this
+data too — confirmed equal on all 191,749 rows — so they are one feature, not
+two, and neither carries signal.)
+
+### Candidate rule, tuned held-in (games < 5000) and reported held-out (≥ 5000)
+
+The only rule the data suggests is "trust search when the static top-2 gap is
+small." Best variant, **`0 < static_gap ≤ 0.074`**, held-out:
+
+- **Coverage** (of confirmed disagreements matched): 86.5%
+- **Precision** (rule-matched disagreements where search is confirmed): **53.8%**
+- **False-fire** (rule-matched relabeled agreements that aren't "keep"): 12.4%
+- **Estimated value** (Σ|hk_gap_mean| over rule-matched confirmed disagreements
+  / 5,000 held-out games): **+0.0072 win-prob points/game**
+
+Tightening to `≤ 0.035` lifts precision only to 55.3% while coverage drops to
+70% and false-fire climbs to 21.4%. Even **"adopt search on every
+disagreement"** has precision just 39.5% and a net realized value of **+0.0072
+wpp/game** (sign-checked: Σ of signed hk_gap over held-out disagreements,
+oriented to search's pick / 5,000). The upper bound — Σ|hk| over confirmed only — is
+**+0.0085 wpp/game**.
+
+### Two estimator caveats
+
+(a) The K=2048 relabel reuses CRN samples 0..128 — the very draws that
+determined the original static-vs-search pick — inside the K=2048 estimate.
+Conditioning on the selection boundary biases the estimate toward the
+originally-chosen side: **conservative for "flip" verdicts** (a confirmed flip
+had to overcome its own initial-sample headwind, so the true flip rate is if
+anything higher) and **mildly anti-conservative for "keep"** (keeps are partly
+self-fulfilling). (b) `hk_gap_se==0` rows are **deterministic** outcomes — both
+rollout entries are already game-over, so the gap is exact-zero, not a
+high-confidence stochastic near-zero. All 4,918 such disagreements are
+coinflips and should be read as true ties, not confident calls.
+
+### Example positions (abridged, top |z|)
+
+The highest-|z| disagreements illustrate the tie-breaking character:
+
+- **game 8738 t5** (flip, z=+420): static skips (v=−0.205); search marks **R11**
+  (v=−0.217). Two essentially co-valued options; rollouts confirm the mark by a
+  hair (hk_gap +0.176).
+- **game 84 t8** (flip, z=+65): static marks R11 (v=+3.43), search marks **Y11**
+  (v=+2.69) — both strong marks one number apart; search prefers the lower-row
+  number. A within-mark re-pick, not a skip-vs-mark blunder.
+- **game 161 t8** (flip, z=+90): static marks R12 to lock-pace (v=+0.293),
+  search **skips** (v=−0.066) with a row already locked and the opponent far
+  ahead on R — the rare endgame case with a coherent "don't commit" story, but
+  it is one position among ~7,300 confirmed and does not generalize into the
+  stats.
+
+The top examples are dominated by low-gap re-picks between adjacent or
+co-valued marks, matching the `static_gap` tree split and the symmetric
+transition/jump statistics — there is no recurring human-legible board motif.
+
+### Verdict: NO-GO on encoding a meta-rule
+
+The numbers do not support a static-speed meta-rule:
+
+1. **Half of all disagreements are coinflips even at K=2048** (and 26.4% are
+   provably exact ties), so search's measured +2.3–2.5% cannot be a handful of
+   board-pattern fixes — it is a diffuse reduction of decision-sampling noise
+   spread across thousands of near-ties.
+2. **The only predictive feature is `static_gap`** — a statement about the net's
+   own indifference, not an encodable board condition. A `static_gap` threshold
+   *is* what the close gate already implements; there is nothing new to teach.
+3. **The best held-out rule peaks at 53.8% precision** (barely above a coin) with
+   a net value ceiling of **~+0.007–0.009 win-prob points/game**. Even adopting
+   search on every disagreement nets only +0.0072 wpp/game of the +2.3–2.5%
+   head-to-head edge — confirming the bulk of search's advantage lives in the
+   coinflip mass that no rule can adjudicate, and is consistent with Phase 13's
+   "sample-noise-bound" conclusion and Phase 14's dilution finding.
+
+A humanly-encodable rule that hands the static bot part of search's edge does
+not exist in this data. The realized override value is symmetric, gap-driven,
+and concentrated in genuine ties.
+
+**Next steps.** No Rust meta-rule. The remaining lever consistent with the
+diffuse-tie picture is the unstruck Phase 14 rung — **search-value
+distillation** (regress V toward rollout-mean outcomes at searched decisions),
+which targets the *value calibration* that produces these near-ties rather than
+trying to name them. The structural-ceiling hypothesis (shared-dice luck
+dominating beyond ~60–62%) again survives: search wins by sampling, not by
+knowing something nameable that the net doesn't.
+
+## Phase 16: Safe-Lock Adjudication (when is the "always force a safe lock" meta-rule wrong?)
+
+The `find_safe_lock` meta-rule forces a non-game-ending lock whenever one is
+available — a hard, unconditional override sitting in front of the value net.
+Phase 15 showed search's edge is diffuse and unnameable; this phase asks the
+inverse for an *existing* named rule: on production trajectories, how often does
+forcing the safe lock cost win-probability, and is the failure mode crisp enough
+to gate the rule on a board feature?
+
+### Setup
+
+Shadow collection on **10,000 games of static-PAIR vs GA**, rotating seats,
+paired dice, seed 0, **rule ON** (the bot plays exactly as in production). On
+the static bot's own trajectory, every time `find_safe_lock` fired we logged the
+forced lock, the full candidate list with static `v`, and the picked
+alternative/runner-up indices (force detection + value-equivalence guards decide
+whether the rule actually changed the move; equivalence-tie firings are kept).
+Each event was then **rebuilt rule-free** and adjudicated with **K=2048
+FULL-GAME CRN-paired rollouts** (no truncation, no win-prob bootstrap — terminal
+outcomes only) comparing the forced lock against the best non-lock alternative
+(and, when present, the runner-up lock as `alt2`). The reported quantity is
+**gap = alternative − lock in win-probability units** (positive ⇒ the rule is
+wrong); verdicts at |z|>2. Files (git-ignored): `lock-events.jsonl` 3.0 MB /
+15,472 lines (5,472 events + 10,000 game records), collected in **0.7 s**;
+`lock-events.adj.jsonl` adjudicated in **3 m 20 s** wall / 25 m user, **zero
+drift-guard panics**.
+
+### Firing statistics
+
+`find_safe_lock` fired on **5,535 total decisions; 63 (1.1%) were skipped**
+(lock_pruned 58, forced_lock_itself 3, lt2_cands 2), leaving **5,472 adjudicated
+events = 0.55/game**. Context split: **ap2 3,180 / pp1 1,205 / ap1 1,087**
+(ap = our active-player mark, pp = passive/white-die mark). Multi-lock states
+(a runner-up lock present): **365**. `rule_free_forced` (the rule-free rebuild
+still independently picks the lock): only **4** — i.e. the rule is genuinely
+overriding the net almost every time.
+
+**Structural fact: `locks_on_board == 0` for all 5,472 events.** Safe locks are
+by construction the *first* lock of the game — any *second* lock would end the
+game and so is never a "safe" (non-terminal) lock. This means the whole dataset
+is "first lock now vs. don't," never "stack a second lock."
+
+### Verdict split
+
+Best-non-lock alternative (alternative − lock):
+
+| verdict | n | share |
+|---|---|---|
+| lock_right | 4,683 | 85.6% |
+| coinflip | 305 | 5.6% |
+| **lock_wrong** | **484** | **8.8%** |
+
+Effect-size-floored (|gap| ≥ 0.02 wp): **lock_wrong 438** (46 negligible-gap
+events dropped). Per context the wrong rate is wildly uneven: **ap1 231/1,087 =
+21.3%**, **pp1 169/1,205 = 14.0%**, **ap2 84/3,180 = 2.6%** — ap2 (the larger,
+"mark the active-roll number" context) is where the rule is almost always right.
+
+Gap-magnitude distributions (|gap| wp): lock_wrong (n=484) median **0.102**, p90
+0.41, p99 0.63, max 0.81; lock_right (n=4,683) median **0.157**, p90 0.39, p99
+0.77, max 1.0. **Both directions carry large gaps** — when the rule is right it
+is often very right, and when wrong it is sometimes catastrophically wrong, so
+this is not a "tiny-margin" rule like Phase 15's coinflips.
+
+Determinism diagnostics: 96 events have `alt_gap_se == 0` (both arms terminate
+deterministically — exact outcomes); 91 lock_wrong events have se < 0.005. These
+low-variance wrongs are treated separately and are not z-inflation artifacts.
+
+Runner-up lock (`alt2`, the "did the rule pick the *wrong lock*?" check, 365
+multi-lock events): **lock_right 169 / coinflip 119 / lock_wrong 77** — so even
+when forcing a lock is correct, the rule picks a sub-optimal lock about 1 time in
+5 among multi-lock states.
+
+### The signal: game-shortening when behind
+
+The wrong-verdict rate is governed almost entirely by the score margin
+`cdiff = our_points − opp_points` at the decision:
+
+| cdiff bin | n | lock_right | coinflip | **lock_wrong** |
+|---|---|---|---|---|
+| ≤ −10 (far behind) | 913 | 71.3% | 7.4% | **21.2%** |
+| −9 .. −1 (behind) | 1,498 | 77.2% | 6.9% | **16.0%** |
+| 0 (tied) | 219 | 84.0% | 9.6% | **6.4%** |
+| 1 .. 9 (ahead) | 1,620 | 94.0% | 3.9% | **2.2%** |
+| ≥ +10 (far ahead) | 1,222 | 95.7% | 4.1% | **0.16%** |
+
+The knee is at **cdiff = 0**: behind (cdiff<0) the wrong rate is **18.0%**
+(433/2,411, mean positive gap +0.152 wp); ahead-or-tied it is **1.7%** (51/3,061,
+mean positive gap +0.070 wp). The mechanism is **game-shortening**: a lock
+removes a whole row from play and accelerates the end of the game; when you are
+behind you *want* more turns to catch up, so forcing the lock locks in your
+deficit. Of the 484 wrong events, **323 (66.7%)** have the better alternative
+being **skip/defer** (don't lock, keep the row alive), and **28** are static
+near-ties (|v_lock − v_alt| < 0.02) where the net itself was indifferent and the
+rule broke the tie the wrong way — the exact pattern flagged in the rehearsal.
+
+Secondary conditioners are weak by comparison: `alt_is_defer` True 10.4% vs
+False 6.8%; `lock_row` 0 (red) 10.9% highest / row 1 (yellow) 7.2% lowest; stage
+(turn) shows no clean cut independent of cdiff. **cdiff is the rule.**
+
+### Candidate rule variant, held out
+
+Candidate: **suppress the forced lock when `cdiff < threshold` and let the value
+net decide.** Split games <5000 (train) / ≥5000 (test). Sweeping the threshold
+on train, the natural operating point is **cdiff < 0 (suppress when behind)**.
+Held-out (test, 2,757 events, base lock_wrong rate 7.94%):
+
+| threshold | fired | true wrong | precision | lift | coverage | UB wp/game |
+|---|---|---|---|---|---|---|
+| cdiff < 0 | 1,244 | 199 | 16.0% | 2.0× | **90.9%** | 0.00693 |
+| cdiff < −5 | 774 | 141 | 18.2% | 2.3× | 64.4% | 0.00398 |
+| cdiff < −10 | 415 | 75 | 18.1% | 2.3× | 34.2% | 0.00156 |
+
+The cdiff<0 cut **generalizes cleanly** to the held-out split (test bin rates:
+≥+10 → **0.0%** wrong, 1..9 → 2.1%, behind → 14.7–18.2%), capturing **91%** of
+all wrong verdicts. But precision peaks at ~18%: because lock_wrong is rare,
+even the best cut still suppresses ~4–5 *correct* locks for every wrong one it
+catches. The **wp/game upper bound** from acting on this rule is the sum of
+positive gaps over rule-matched lock_wrong events ÷ games: **≈0.0069 wp/game**
+at cdiff<0 (vs a full removable ceiling of ~0.0074 wp/game if *all* wrongs were
+fixed). **This is explicitly an upper bound under perfect substitution** — it
+assumes suppression always lands on the adjudicated alternative, which is not
+measurable here: suppressing the rule hands the decision back to the value net,
+which (per `rule_free_forced` being tiny) usually still avoids the lock but is
+not guaranteed to pick the *best* alternative.
+
+### Rendered examples (abridged)
+
+- **game 9221, turn 7, ap1, cdiff −1, gap +0.79 wp (z=89):** behind by 1, forced
+  G2 terminal lock (v=+0.42); the net's own runner-up was **skip** (v=+0.61).
+  Rollouts favor skip by 0.79 wp — locking the green row away when nearly even
+  throws the game.
+- **game 9423, turn 9, pp1, cdiff −5, gap +0.60 wp (z=56):** forced R12 lock
+  (static v=+2.35, the net *loves* it) over skip (v=+1.07); rollouts say skip is
+  +0.60 wp better. A textbook static-value-vs-rollout disagreement where
+  game-shortening while behind is the hidden cost the net underweights.
+- **game 1768, turn 10, pp1, cdiff 0 (tied), gap +0.61 wp (z=57):** dead-even,
+  forced R12 (v=+1.43) vs skip (v=+0.91); rollouts prefer skip — even at a tie
+  the lock prematurely ends a winnable game.
+
+### Estimator caveats
+
+- **(a) Rollout-policy circularity.** The pair value net (trained rule-ON) drives
+  every rollout move *and* models the GA opponent inside entries/rollouts. This
+  almost certainly **flatters the rule** (the rollout policy shares the net's
+  blind spots), so the true cost of the rule is plausibly larger than measured.
+  It cannot be removed without an independent rollout policy.
+- **(b) pp1 sequential-completion approximation.** On passive (white-die) marks
+  the opponent completes its turn after seeing our mark; this is identical across
+  candidates, so CRN-paired *gaps* remain valid even though the absolute states
+  are an approximation.
+- **(c) No CRN-selection bias.** Unlike Phase 15, the rule is **unconditional** —
+  no K=128 pre-pick selected which events to adjudicate, so there is no
+  winner's-curse inflation in the estimator. The estimator is clean in that
+  respect.
+- **(d) z>2 alone fires on negligible gaps** (46 of the 484 wrongs are <0.02 wp);
+  hence the 0.02 wp effect-size floor on all headline magnitude claims.
+- **(e) Deterministic-arm events (se==0)** are exact terminal outcomes, not
+  stochastic estimates, and are reported separately (96 events / 91 low-var
+  wrongs).
+
+### Verdict and recommendation
+
+`find_safe_lock` is **net-positive but miscalibrated when behind**: right 85.6%
+of the time and very right in ap2, but wrong ~18% of the time once cdiff<0, where
+the game-shortening cost of locking dominates. The failure mode is **crisp**
+(cdiff<0, alt usually = skip) — crisper than anything Phase 15 found — and
+generalizes out-of-sample. The realized headline cost is modest (the 484 wrongs
+sum to **0.0080 wp/game** over all 10k games; the removable upper bound is
+~0.0074 wp/game), but it is concentrated exactly where games are close, i.e. the
+games most likely to be decided by it.
+
+**Recommendation: A/B a conditional variant**, not a keep-as-is and not a
+src rewrite. Per the adjudication spec §5, implement the gate **example-side**
+(a `Strategy` that suppresses the forced lock when `cdiff < 0` and defers to the
+value net, with **zero `src/` contamination**) and evaluate head-to-head: the
+conditional bot vs the untouched rule-ON bot, **and** both vs the untouched GA,
+paired dice. The held-out numbers justify the test (91% wrong-coverage at the
+cdiff<0 cut, clean generalization, the close-game concentration) while the
+~18% precision and the perfect-substitution caveat (b/a) mean the *measured*
+upper bound (~0.007 wp/game) is small and possibly optimistic — so the A/B, not
+the analysis, must decide. If the A/B is flat or negative (plausible, given the
+circularity caveat flatters the current rule), **keep the rule as-is**; the
+multi-lock `alt2` finding (sub-optimal lock chosen 21% of the time) is a separate,
+smaller lever not addressed by this gate.
+
+## Phase 17: Safe-Lock Suppression A/B (does gating the rule on cdiff actually pay?)
+
+Phase 16's adjudication recommended an **A/B**, not a rewrite: implement the
+`cdiff`-gated suppression of `find_safe_lock` **example-side** (zero `src/`
+contamination) and measure head-to-head against the untouched rule-ON bot, plus
+both vs GA. This phase runs that A/B at 1M games/arm.
+
+### Suppression semantics
+
+`VariantPair(suppress_below = t)` is the baseline static-PAIR bot with one
+change: when `find_safe_lock` would fire and the score margin
+`cdiff = our_points − opp_points` satisfies `cdiff < t`, the forced lock is
+**suppressed** — the safe lock is demoted from a hard override to an ordinary
+value candidate and competes in the normal value-net argmax (it may still be
+picked if the net actually prefers it). Arms: `t=0` (suppress when strictly
+behind, `cdiff<0`), `t=1` (suppress when behind-or-tied, `cdiff<=0`), `t=-5`
+(suppress only when far behind, `cdiff<-5`). `suppress_below = None` is the
+untouched production bot. Reported metric is **tie-inclusive score**
+(win=1, tie=0.5, loss=0) with paired SE and z vs an exact 50% null; ties are
+explicitly scored 0.5 so the null is exact, not approximate.
+
+### Setup and gates
+
+Equivalence gate (cheap insurance, seed 3, 1000 games): `VariantPair(None)`
+replays the baseline move-for-move — **holds**. All benches 1M games, rotating
+seats, paired dice, seed 0. Reference 10k smokes (seed 1) put arm 0 essentially
+flat head-to-head (49.94%, z −0.94) and 59.90% vs GA. The suppression branch's
+correctness is fenced by the Phase-16 mirror guards (force detection +
+value-equivalence) plus this `VariantPair(None)` equivalence gate.
+
+### Head-to-head: VariantPair(t) vs untouched rule-ON pair (1M, seed 0)
+
+| arm | score | strict wins | ties | paired SE | z vs 50% |
+|---|---|---|---|---|---|
+| cdiff<0   (t=0)  | 50.06% | 49.10% | 1.93% | 0.007pp | **+9.70** |
+| cdiff<=0  (t=1)  | 50.06% | 49.11% | 1.91% | 0.007pp | **+9.18** |
+| cdiff<-5  (t=-5) | 50.03% | 49.06% | 1.93% | 0.005pp | **+5.08** |
+
+All three arms are **statistically, decisively positive** (z +5.08 to +9.70 at
+1M) — this is **not** a flat result in the spec's sense. The effect is real but
+**tiny: +0.03..+0.06pp**, about 0.7% of the bot's 9.1pp edge over GA and ~1/10
+of Phase 16's +0.7pp perfect-substitution ceiling. The seed-1 10k smoke (arm 0
+at −0.06pp, z −0.94) does **not** contradict this: its SE (~0.064pp) makes it
+fully consistent with a true +0.06pp at <1 SE — a 10k sample simply cannot
+resolve a sub-0.1pp effect, and carries no weight against the 1M measurement.
+Cross-arm ordering (t=0 ≈ t=1 > t=-5) tracks Phase 16's wrong-verdict coverage
+(cdiff<0 = 90.9% vs cdiff<-5 = 64.4%): wider suppression recovers marginally
+more, as expected. (The tiny SEs are a structural feature, not an anomaly:
+rotation-pairs where suppression never fires play bit-identically to baseline
+and contribute exactly 0.5 to the paired statistic, so all variance comes from
+suppression-affected pairs. The harness does not report the realized per-game
+suppression fire rate; Phase 16's firing stats imply ~0.24/game for t=0.)
+
+### vs GA, per arm (1M, seed 0) — against the baseline yardstick
+
+Baseline untouched pair vs GA, 1M, seed 42 (`bench ga pair`): **PAIR 59.1%
+strict wins** (avg 74.6 vs 66.5 pts), 99% paired CI **58.97%–59.20%**, paired SE
+0.044pp.
+
+| arm | score (tie-incl.) | strict wins | paired SE | z vs 50% |
+|---|---|---|---|---|
+| cdiff<0   (t=0)  | 60.13% | 59.25% | 0.044pp | +231.64 |
+| cdiff<=0  (t=1)  | 60.13% | 59.26% | 0.044pp | +231.71 |
+| cdiff<-5  (t=-5) | 60.05% | 59.17% | 0.044pp | +229.81 |
+
+On the comparable strict-win basis the arms (59.17–59.26%) sit on top of the
+baseline yardstick (59.1%, CI upper 59.20%) — **no regression vs GA**; arm 0/1
+are marginally at/above the CI top, arm t=-5 is squarely inside it.
+
+### Verdict
+
+Decision rule (spec `docs/superpowers/specs/2026-06-12-lock-ab-design.md`):
+adopt requires head-to-head z>2 above 50% **and** no regression vs GA; a flat
+result keeps the unconditional rule. **The pre-registered criteria for adoption
+were met:** every arm clears z>2 (min +5.08) and none regresses vs GA (strict
+59.17–59.26% vs the 59.1% baseline yardstick, CI 58.97–59.20% — arms 0/1 sit
+at/just above the CI top, though that comparison is **unpaired** and on a
+different seed/run than the head-to-head, so the apparent edge over baseline is
+not itself decisive). **The recommendation is nonetheless to keep the
+unconditional `find_safe_lock` rule as-is, overriding the registered
+adopt-trigger on effect-size grounds:** the head-to-head win is only
++0.03..+0.06pp — ~0.7% of the bot's edge vs GA and ~1/10 of Phase 16's ceiling
+— far too small to justify shipping a conditional gate and maintaining the
+behavioral divergence it introduces. The cdiff<0 and cdiff<=0 arms are
+statistically indistinguishable from each other, and widening to cdiff<-5 only
+shrinks the edge, consistent with its lower wrong-verdict coverage (64.4% vs
+90.9%, Phase 16). This is an **explicit override of a met criterion, not a
+"flat" result** — the distinction matters for anyone re-reading the
+pre-registration. Adoption remains the user's call with these numbers in hand.
+
+### Interpretation — consistent with Phase 16, not a contradiction
+
+The tiny realized effect does **not** refute Phase 16. The rule's measured ~0.0080 wp/game
+cost is real, but Phase 16 already flagged that figure as an *upper bound under
+perfect substitution* (≈0.0069–0.0074 wp/game removable). The realized A/B
+recovers essentially none of it because the precision gap Phase 16 measured is
+the binding constraint: at the cdiff<0 cut precision peaks at ~16–18%, i.e. for
+every genuinely-wrong lock the rule catches, suppression also hands ~4–5
+correct locks back to the value net — and the net, freed of the override, does
+**not** re-pick the good locks reliably enough (the 84%-precision gap, `lock_right`
+85.6%) to net any gain. Suppressing trades the rule's wrong locks for the net's
+own mistakes on the locks the rule was right about, and the two *nearly*
+cancel — the residual is the measured +0.03..+0.06pp. The circularity caveat
+(Phase 16 §a) — the rollout policy shares the net's blind spots and flatters
+the rule — called a near-null A/B the plausible outcome, and a small positive
+residual an order of magnitude under the ceiling is what landed.
+
+---
+
+## Phase 18: Search-Value Distillation (rollout targets at gated & lock-forced decisions)
+
+**Status: run complete, checkpoint ADOPTED.** The user executed the recipe
+(40 iterations, separate machine); iteration 35 was selected and passed the
+pre-registered +0.5% bar on the independent acceptance bench. Results at the
+end of this section.
+
+### Setup
+
+Phases 13–17 established that decision-time search beats static pair play but
+its edge is diffuse and that hand-named rule fixes (safe-lock suppression)
+recover almost none of it. This phase takes the opposite tack: instead of
+naming the fix, distill search's *value judgements* directly into the static
+net's training signal. `pair-train --distill` emits extra `PairSample`s whose
+targets are **full-game CRN rollout future-diffs**, computed at exactly the
+decisions where search disagrees with static play:
+
+- **Gated decisions** (close/endgame, active phase 1 and phase 2): the top-2
+  static candidates are each completed deterministically and rolled out; both
+  candidates are emitted, so the net learns the *relative* value of the
+  decision tail, not just the chosen branch.
+- **Safe-lock firings** (active p1/p2 and passive p1): the forced lock, the
+  best non-lock alternative, and the runner-up safe lock (a trio) are each
+  rolled out and emitted — this is the Phase 16 adjudication signal turned into
+  a supervised target rather than a runtime gate.
+
+Targets flow through the **unchanged decoupled loss** (μ-MSE / σ-NLL, μ
+detached) in diff-space: `value` = mean rollout future-diff over K rollouts,
+`final_diff` = an individual rollout's future-diff; each sample is swap-doubled
+with negated targets exactly as `build_pair_samples` does. Generation also adds
+**targeted ε-decline of forced safe locks** (`--epsilon-lock`, player-0 only,
+firing at every safe-lock decision incl. passive p1) so the buffer is not
+starved of the alternative-to-lock branch that the net otherwise never sees.
+
+Generation is **static-policy** (no `--search`; the flags are independent and
+the recipe omits `--search`) — the rollout *targets* carry the search signal,
+while move selection during generation stays cheap.
+
+**K=32, m=2 rationale.** K=32 full-game rollouts per candidate balances target
+variance against generation cost. m=2 (samples per candidate×opponent pairing)
+was chosen over the plan's default m=4 after measuring concentration: at m=4 the
+distill samples are ~40% of the buffer (≈217 distill vs 325 TD per game) — too
+aggressive given Phase 14's dilution/saturation history, where over-weighting a
+narrow signal stalled the curve. m=2 lands distill at ~25% of the buffer
+(measured below: ~106/game distill), the first-run setting; m=4 is the
+escalation lever if the curve is healthy and not over-fitting the decision tail.
+
+### Smoke (local, m=2)
+
+`cargo run --release -- pair-train -i 2 -g 300 -e 2 -b 20000 --distill --distill-m 2 --epsilon-lock 0.05`
+
+- Distill counts: iter 1 = 31,824 distill of 126,990 total (~106/game, ~25% of
+  buffer); iter 2 = 32,094 distill of 125,344 total (~107/game). Plausible and
+  on target for m=2.
+- Both iterations completed; no NaN, no panic.
+- Bench (20k buffer, noisy): iter 1 = 57.6%, iter 2 = 58.2% — sane (56–60%).
+- Train loss: iter 1 min 76.95, iter 2 min 76.78 (valid 67–70, noisy across
+  buffer growth) — still descending at iter 2.
+- Generation wall time ~6s/iter for 300 games (~50 games/s) ⇒ 5000 games ≈
+  ~100s/iter, consistent with the ~2 min/5k extrapolation.
+
+**K diagnostic note.** The per-iteration output does **not** split TD-MSE vs
+distill-MSE; the proper K diagnostic (loss split) was **not instrumented** (this
+task stayed doc-only after the param-comment cleanup). The cheap proxy —
+aggregate burn train-loss trend — is readable and still declining at iter 2.
+The run-watcher should escalate `--distill-k` to 64 **only if** the curve
+flatlines from iteration ~3 while Phase 14's curve at the same point was still
+climbing.
+
+**Rayon count-variance note.** Enabled-loop per-iteration sample counts vary
+slightly run-to-run (pre-existing rayon reduction nondeterminism, also present
+with distill off) — not a regression signal.
+
+### Run recipe (pending user run)
+
+```bash
+rm -f pair_model/iter-*.mpk
+cargo run --release -- pair-train --distill --distill-m 2 --epsilon-lock 0.05 -g 5000 -e 5 -b 500000 -c --start-iteration 20
+```
+
+(`--start-iteration 20` keeps ε at its floor and the checkpoint numbering
+distinct, as in Phase 14.)
+
+**What to watch.** The winrate-vs-GA curve against the **+0.5% bar over the
+re-baseline** (re-bench the starting checkpoint, don't compare to a stale
+headline). Escalation levers if the curve underperforms: `--distill-k 64`
+(only on a iter-~3 flatline per the diagnostic above) and `--distill-m 4` (the
+concentration escalation, only if healthy and not over-fitting the tail).
+Expect the rayon count-variance noted above; it is not signal.
+
+### Post-run acceptance (run on the selected checkpoint; results pending)
+
+```bash
+# Static headline vs GA
+cargo run --release -- bench ga pair -n 1000000
+# Search-on
+cargo run --release -- bench ga pair-search -n 200000
+# Lock-wrong rate vs Phase 16's 8.8% (18.0% behind)
+./target/release/examples/divergence lock-run -n 10000 --seed 0 --out lock-retrained.jsonl \
+  && ./target/release/examples/divergence lock-adjudicate --input lock-retrained.jsonl --out lock-retrained.adj.jsonl -k 2048 \
+  && analysis/.venv/bin/python analysis/lock_analysis.py lock-retrained.adj.jsonl 10
+# Suppression edge vs Phase 17's +0.06pp
+./target/release/examples/divergence lock-ab --equivalence-check 2000 \
+  && ./target/release/examples/divergence lock-ab -n 1000000 --seed 0 --suppress-below=0
+```
+
+### Results
+
+**Run** (user-executed, 40 iterations at the recipe settings): the fixed-set
+curve climbed from the 58.3% re-baseline to **~59.6% by iteration ~20** and
+**59.7% at iteration 35** (the selected checkpoint) — +1.4% on the
+per-iteration bench, vs Phase 14's +0.4% plateau on the same set. (The
+`training_scores.csv` was lost to a resume-path bug — header only written at
+`start_iteration == 0` and appends lacked `.create(true)` — fixed in
+`9930f0a`; curve numbers above are from the run log.)
+
+**Acceptance on the selected checkpoint (iteration 35):**
+
+| test | old net (Phases 14–17) | retrained | verdict |
+|---|---|---|---|
+| static 1M vs GA, seed 42 | 59.1% (CI 58.97–59.20) | **59.6% (CI 59.53–59.76)** | **+0.5pp, CIs separated — bar met** |
+| search-on 50k vs GA, seed 42 | 60.1% | **60.4% (CI 59.85–60.86)** | no regression (+0.3pp, ~1σ) |
+| lock-adjudicate: lock_wrong | 8.8% (484/5,472) | **8.8%** (480/5,459; ap1 20.5% / pp1 14.5% / ap2 2.5%) | unchanged |
+| lock-ab suppression edge (t=0, 1M) | +0.06pp (z 9.7) | **+0.04pp (z 5.0)** | unchanged |
+
+**The checkpoint is adopted** (`pair_model/model.mpk` updated): the
+pre-registered +0.5% static-V bar is met on the independent seed-42 set, with
+no search-on regression. New headline numbers: **pair (static) 59.6%,
+pair-search 60.4% vs GA.** The static-vs-search gap narrowed 1.0pp → 0.8pp —
+consistent with distillation moving part of search's knowledge into the
+static net.
+
+**Lock secondaries: the lock-pool mechanism did NOT land.** Two corrections
+to the pre-registration first: (a) `lock-adjudicate`'s lock_wrong rate
+measures the *rule* against rollouts, and the rule didn't change — an
+unchanged 8.8% was the expected outcome, not a failure signal; the spec
+should not have listed it as "expect a drop". (b) The spec's lock-ab
+direction was **backwards**: a net that had truly learned lock valuation
+would make the suppression edge *grow* toward the ~0.7pp ceiling (the freed
+net finally chooses well), not shrink. With the corrected reading, both
+secondaries agree: the edge stayed at +0.04pp (vs +0.06pp), so when freed
+from the rule the retrained net still cannot choose better at lock firings.
+The +0.5pp came from the **diffuse gated pool**; the lock blind spot is
+intact.
+
+**Why the lock targets likely failed: volume.** Lock firings are
+~0.55/game vs ~8 gated decisions/game; at the shared m=2 the lock trio was
+~1% of the buffer, against 1.5M TD samples whose values all embed
+"the lock always happens" (declined-lock continuations exist only in the ~3%
+of games where ε-decline fired). The direct supervision was present but
+outvoted.
+
+**Follow-up (pre-scoped, not run):** a second distillation leg from the
+adopted checkpoint with **per-pool emission weights** (e.g. `m_gated=2`,
+`m_lock=16` — lock samples to ~10–15% of buffer; small `DistillCfg` change)
+and `--epsilon-lock 0.10–0.15`, pre-registering the **lock-ab edge with the
+corrected direction** as the primary lock metric (success = edge grows toward
+~0.7pp, then the conditional-rule adoption decision converts it to win rate
+via the Phase 17 harness). If 10× lock-sample weight doesn't move the
+lock-ab needle, the lock pool should be declared closed (representation
+limit, not data) and the campaign banked.
+
+## Phase 19: Distillation leg 2 — lock-pool weighting
+
+**Status: run pending user execution.**
+
+The Phase 18 follow-up, implemented as pre-scoped: `DistillCfg` gained
+per-pool emission weights (`--distill-m` for gated decisions, new
+`--distill-m-lock` for lock firings, defaults 2/16), and the per-iteration
+summary now reports the lock-pool sample count. Mechanism otherwise unchanged
+(commit `999c666`; new test `lock_ctx_uses_m_lock_and_is_counted`).
+
+**Hypothesis under test:** Phase 18's lock-target failure was a volume
+problem — the lock trio was ~1% of the buffer at the shared m, outvoted by
+1.5M TD samples whose values embed "the lock always happens." Leg 2 raises
+the lock pool to **~9% of the buffer** (measured in a 300-game smoke:
+43,398 distill of 136,294 total, 12,446 lock-pool) and doubles ε-decline so
+declined-lock continuations appear in ~5–10% of games.
+
+### Run recipe
+
+```bash
+rm -f pair_model/iter-*.mpk
+cargo run --release -- pair-train --distill --epsilon-lock 0.10 -g 5000 -e 5 -b 500000 -c --start-iteration 20
+```
+
+(m defaults are already the leg-2 values: m_gated=2, m_lock=16. Warm start =
+the adopted Phase 18 checkpoint already in `pair_model/`.)
+
+### Pre-registration (corrected directions, learned from Phase 18)
+
+- **Primary lock metric: the lock-ab suppression edge** (t=0, 1M, seed 0) on
+  the selected checkpoint. Status quo +0.04pp; ceiling ≈ +0.7pp.
+  **Success: edge ≥ +0.3pp** (the freed net demonstrably chooses better at
+  firings — then the conditional-rule adoption decision via the Phase 17
+  harness converts it into realized win rate). **Kill: edge < +0.15pp** ⇒
+  the lock pool is representation-limited, not data-limited; declare it
+  closed and bank the campaign. Between: judgment call, lean kill.
+- **Guard: static 1M vs GA** (seed 42) must not regress from 59.6%
+  (CI overlap acceptable). Checkpoint selection stays on the per-iteration
+  static curve as before.
+- `lock-adjudicate` is NOT an acceptance metric (it measures the unchanged
+  rule; expected to stay ~8.8% regardless — Phase 18's correction).
+- Curve expectation: the gated pool is already partially harvested, so the
+  static curve may rise less than leg 1 (or plateau immediately); that alone
+  is not failure — the lock-ab edge is the point of this leg.
+
+### Post-run acceptance
+
+```bash
+cargo run --release -- bench ga pair -n 1000000
+./target/release/examples/divergence lock-ab --equivalence-check 2000 \
+  && ./target/release/examples/divergence lock-ab -n 1000000 --seed 0 --suppress-below=0
+```
+
+### Results
+
+**Run** (user-executed, 40 iterations, global 21–60): fixed-set curve hovered
+59.5–59.9%, **max 59.88% at iterations 57 and 39** (vs leg 1's 59.7 peak).
+The user benched iterations 35/55/57 independently; **iteration 57 selected:
+59.85% vs GA confirmed at 1M, and 50.14% head-to-head vs the old DQN bot.**
+`training_scores.csv` logged correctly this time (the `9930f0a` fix).
+
+**Acceptance:**
+
+| metric | pre-registered | measured | verdict |
+|---|---|---|---|
+| static guard (1M vs GA) | hold 59.6% | **59.85%** | passed — improved |
+| lock-ab suppression edge (t=0, 1M) | success ≥ +0.3pp; kill < +0.15pp | **+0.01pp (z +0.78)** | **KILL** |
+
+(Equivalence gate held over 2,000 games before the edge bench.)
+
+**Verdict: the lock pool is CLOSED — representation-limited, not
+data-limited.** At ~9% of the buffer (10× leg 1) plus doubled ε-decline, the
+freed net still cannot distinguish good locks from bad at firing states: the
+suppression edge is statistically zero (it *fell* from +0.04pp — if anything
+the heavier lock training taught the net the value *under the rule* even more
+faithfully). Per the pre-registration, no further lock-targeted training is
+warranted; the residual ~0.7pp lock ceiling would require a representation
+change (e.g. explicit features for lock-while-behind interactions) or a
+policy head — both out of scope. The Phase 17 decision stands: keep the
+unconditional `find_safe_lock` rule.
+
+**Checkpoint iteration 57 is ADOPTED** (`pair_model/model.mpk` updated, real
+file): the static guard improved, so leg 2's gated-pool refinement banked
+another ~+0.25pp. **Final campaign headline: pair (static) 59.85% vs GA,
+pair-search 60.7%** (user bench on iter-57; from 59.1%/60.1%
+pre-distillation). 60.7 is the first move past the 60.1% line that stood
+through Phases 13–14 and motivated the structural-ceiling hypothesis — the
+ceiling, if it exists, is higher than where we'd drawn it.
+
+### Campaign conclusion (Phases 15–19)
+
+The arc that began with "when does search disagree with the static net"
+ends here: the diffuse calibration pool was real and distillable (+0.75pp
+static across two legs — the first material gain since Phase 12, achieved
+after Phase 14's expert iteration plateaued); the lock blind spot was real,
+measurable, and ultimately **not fixable by data alone** under the current
+representation. Every claim along the way was adjudicated by harnesses that
+remain in the tree (divergence, lock-adjudicate, lock-ab) and were reused
+across phases as regression guards — including catching nothing-burgers
+(unchanged production behavior through two production refactors) and real
+bugs (CSV resume, tie-null bias). Remaining ideas, none pre-committed:
+representation work for lock/endgame interactions, a third distillation leg
+on fresh rollouts (flywheel), or accepting the ~60% structural ceiling.
+
+## Phase 21: Search Improvements — Passive Search, Lock Adjudication, Stratified Dice
+
+**Status: complete — ADOPTED. Passive search + lock adjudication (62.4% vs GA, +1.65pp) is now the production `pair-search` default; stratification dropped.**
+
+Three changes to pair-search, each behind a `SearchConfig` flag (default =
+production, bench output verified byte-identical after every commit):
+
+1. **Passive search** (`passive`). Pair-search never searched passive
+   (white-sum) decisions — about half of all 1v1 decisions, and ~90% of the
+   residual endgame regret in Phase 20. Gated passive decisions now get the
+   same truncated search: each shortlisted mark is completed through the rest
+   of the turn by `passive_entry` (moved from `pair_train::pp1_entry`, now
+   shared with distillation), and rollouts start at the seat after the active
+   player.
+2. **Lock adjudication** (`lock=N`). At every forced safe lock (active p1/p2,
+   passive) the lock is compared with the best rule-free non-lock alternative
+   and the runner-up safe lock by N full-game CRN rollouts each — the Phase 16
+   adjudication method, now at play time. Ties keep the lock. Targets the
+   largest measured pool (Phase 16: ~0.0074 wp/game removable), which Phase 17
+   could not recover by handing the decision back to the static net.
+3. **Stratified rollout dice** (`strat`). Each player's first rollout roll gets
+   a fixed ordered white-pair stratum per sample (per-player permuted
+   schedule, deterministic seed search); with K a multiple of 36 the
+   first-roll white dice are exactly balanced. Targets Phase 13's finding that
+   search is sample-noise-bound.
+
+Bench support: `pair-search-exp` / `pair-search-exp-b` read a config spec
+from `QWIXXER_SEARCH` / `QWIXXER_SEARCH_B` (e.g. `passive,lock=256`).
+
+### Pre-registration
+
+- **Screen** (20k games, seed 42, head-to-head): passive vs production;
+  `lock=256` vs production; `k=144,strat` vs `k=144` (isolates
+  stratification from the sample increase); combined
+  `k=144,passive,lock=252,strat` vs production. Metric: win margin
+  (A wins − B wins)/N with the bench's paired SE. **Pass: margin > 0 at
+  z ≥ 2.**
+- **Confirm** (arms that pass): 50k head-to-head on seed 7, plus 50k vs GA
+  (seed 42) — no regression from 60.7%, aiming for ≥ +0.1pp.
+- Pre-run estimates (pp vs GA): lock +0.2–0.4, passive +0.1–0.3,
+  stratification +0.1–0.2. Cost is reported per arm (games/s).
+
+### Screens (20k games, seed 42, head-to-head)
+
+Margin = (A wins − B wins)/N; z = margin / (2 × the bench's paired SE on A's
+win rate).
+
+| arm | A wins | B wins | ties | margin | z | verdict | games/s |
+|---|---|---|---|---|---|---|---|
+| `passive` vs production | 10,079 | 9,517 | 404 | **+2.81%** | **+6.2** | pass | 9 |
+| `lock=256` vs production | 9,916 | 9,685 | 399 | **+1.16%** | **+5.9** | pass | 11 |
+| `k=144,strat` vs `k=144` | 9,756 | 9,829 | 415 | −0.37% | −0.9 | **fail** | 10 |
+| `k=144,passive,lock=252,strat` vs production | 10,160 | 9,427 | 413 | **+3.67%** | **+7.2** | pass | 9 |
+
+- **Passive search is the biggest single gain since the search bot itself.**
+  Its +2.8% margin exceeds search's entire edge over the static bot (+2.5%,
+  Phase 13). Phase 15's diffuse tie-breaking applies to passive decisions just
+  as much — they were simply never searched.
+- **Lock adjudication recovers what Phase 17 could not.** Rollouts decide
+  better than the freed static net did (+0.06pp there). The adjudicated bot
+  scores *fewer* points (75.7 vs 76.5) but wins more — consistent with Phase
+  16's mechanism (declining game-shortening locks when behind). Only 1.9% of
+  dice pairings differ from production, hence the very small paired SE.
+- **Stratification does not help** (z −0.9). Balancing only the first rolled
+  turn's white dice removes too little of the rollout variance; CRN already
+  cancels the luck shared between candidates. Dropped.
+- The combined arm (+3.67%) is close to the sum of the parts
+  (2.81 + 1.16 − 0.37 ≈ 3.6), i.e. the two gains are roughly additive.
+
+Deviation from the pre-registration: to save compute, confirmation runs on
+the **combined passive + lock** bot (`passive,lock=256`, no stratification)
+rather than on each arm separately.
+
+### Confirmation (50k games each)
+
+| test | result |
+|---|---|
+| production pair-search vs GA, seed 42 | 60.72% (CI 60.21–61.23) — reproduces the Phase 19 headline |
+| **`passive,lock=256` vs GA, seed 42 (same game set)** | **62.37% (CI 61.87–62.87), +1.65pp**; avg 75.9 vs GA 66.7 |
+| `passive,lock=256` vs production, seed 7 | 25,466 vs 23,591 (943 ties): **margin +3.75%, z ≈ 12.9** — replicates the +3.67% screen on an independent seed |
+| cost | 17 games/s vs GA (production 28): ~1.65× production |
+
+The two vs-GA runs share the dice set but are separate runs, so the
+difference is not paired; with per-run SE ≈ 0.2pp it is still ≈ 6σ and the
+99% CIs do not overlap.
+
+**Verdict: both pre-registered bars met** (head-to-head replicates at z ≫ 2;
+vs GA improves by +1.65pp, far above the +0.1pp aim). New strongest bot:
+**pair-search with passive search + lock adjudication, 62.4% vs GA** — the
+largest single step since Phase 12, and 1.65pp beyond the 60.7% that had been
+read as the edge of a structural ceiling. Note the two components were
+estimated at +0.1–0.3 and +0.2–0.4pp; the realized combined gain is about 3×
+the upper end, so the earlier "ceiling" reflected unsearched decisions, not
+dice luck.
+
+### Adoption
+
+`SearchConfig::default()` is now `k=128,passive,lock=256` (`LOCK_K = 256`).
+Verified after the switch: `SearchConfig::legacy()` (`nopassive,nolock`)
+reproduces the old production bench byte-for-byte, and production vs
+`pair-search-exp` with `passive,lock=256` mirrors move-for-move.
+
+Pinned to `legacy()` so recorded results stay reproducible: the `pair-train
+--search` expert (Phase 14 recipe) and `examples/divergence.rs`'s shadow
+search (Phase 15). The web build does not use search, so it is unaffected.
+
+Follow-ups, not started: a distillation leg with the new search as the source
+of targets (searched passive decisions and adjudicated locks); tuning `lock_k`
+and the passive gate margin (reused from the active gate); 3–4 player benches,
+where passive decisions are an even larger share.
+
+## Phase 22: Distillation leg 3 — passive targets
+
+**Status: complete — checkpoint ADOPTED (m = 2 rerun, global iteration 90), overriding the pre-registered primary criterion; see Results.**
+
+Phase 21's gain came from searching passive decisions, but distillation legs
+1–2 only emitted gated targets at *active* decisions (plus lock firings at
+all sites). Leg 3 adds the passive pool: `pair-train --distill-passive`
+captures gated passive decisions with the same gates as passive search and
+emits full-game rollout targets for the top-2 candidates through the shared
+`passive_entry` (commit `d2ee056`; tests
+`passive_gated_ctx_emits_via_passive_entry`,
+`passive_gated_capture_only_when_enabled`). Everything else is the leg-2
+pipeline, warm-started from the adopted iteration-57 checkpoint.
+
+**Concentration.** Smoke, 400 games: passive adds ~146 targets/game (active
+gated ~126). At the leg-2 `m_gated = 2` the distill share would be 51%; at
+`--distill-m 1` it is **37%** (lock 10%, active gated 13%, passive 15%),
+in line with leg 2's ~32–36%. The recipe uses m = 1; escalation to m = 2
+only if the curve is healthy and plateaus early.
+
+### Run recipe
+
+```bash
+# 0. Baseline on the current (iter-57) model BEFORE training overwrites it.
+cargo build --release
+./target/release/qwixxer bench pair-search ga -n 200000 -s 42 | tee leg3_baseline_search.txt
+
+# 1. Train (40 iterations, global 61–100).
+rm -f pair_model/iter-*.mpk
+./target/release/qwixxer pair-train --distill --distill-passive --distill-m 1 --epsilon-lock 0.10 \
+  -g 5000 -e 5 -b 500000 -c --start-iteration 60 | tee leg3_train.log
+```
+
+Generation is ~2× the leg-2 cost per game (35 s vs 19 s per 400 games on 12
+threads here).
+
+### Pre-registration
+
+- **Checkpoint selection:** best iteration on the per-iteration static
+  curve (as legs 1–2); confirm the top 2–3 candidates at 1M static vs GA
+  before choosing.
+- **Primary metric: production pair-search vs GA**, 200k games, seed 42,
+  selected checkpoint vs the step-0 baseline (paired SE ≈ 0.1pp).
+  **Adopt if ≥ +0.3pp** with non-overlapping 99% CIs.
+- **Guard:** static pair 1M vs GA (seed 42) must not regress below 59.85%
+  beyond CI overlap.
+- Expectation: legs 1–2 gave +0.5pp then +0.25pp static. The passive pool is
+  new and as large as the active pool was in leg 1, so the static gain could
+  look like leg 1's; how much of that survives under search, which already
+  searches those decisions, is the open question.
+
+### Post-run acceptance
+
+```bash
+cp pair_model/iter-N.mpk pair_model/model.mpk   # N = selected iteration
+./target/release/qwixxer bench ga pair -n 1000000 -s 42
+./target/release/qwixxer bench pair-search ga -n 200000 -s 42
+```
+
+### Results
+
+**Run 1 — the pre-registered recipe (`--distill-m 1`).** Flat: by global
+iteration 82 (22 iterations in) the per-iteration static curve had not
+climbed past 59.8%, i.e. within noise of the 59.85% start with no drift.
+Stopped; no checkpoint taken.
+
+**Run 2 — rerun at `--distill-m 2`** (deviation from the recipe: m = 2 was
+pre-registered as an escalation for a healthy-but-plateauing curve; it was
+run after m = 1 came out flat). Same warm start (iter-57) and
+`--start-iteration 60`; 30 iterations (global 61–90); distill share ~51% of
+the buffer per the smoke. The per-iteration static curve was mostly flat,
+moving ±0.2–0.3pp between iterations. **The final iteration (90) was
+adopted** — not a curve pick; the acceptance benches below carry the
+decision. Raw training logs were not retained.
+
+**Acceptance (seed 42 unless noted).** Pair-search rows are the user's
+benches (outputs not retained); static rows were re-run when the logs were
+written, new vs the iter-57 checkpoint via `pair-alt` with
+`QWIXXER_ALT_MODEL`. "Δ" compares two runs on the same dice set (not
+game-paired), so its SE is ≈ √2 × the per-run paired SE.
+
+| test | iter-57 | leg-3 (iter 90) | Δ |
+|---|---|---|---|
+| static vs GA | 59.85% (1M) | **60.1%** (1M, user); 60.13%, CI 59.87–60.38 (200k re-check) | +0.25pp |
+| static head-to-head, new vs old, 100k | — | 49,537 vs 48,485, 1,978 ties: **margin +1.05%, z ≈ 4.7** | — |
+| static vs DQN, 200k | 50.07% | 50.38% | **+0.31pp** (z ≈ 2.4) |
+| static vs Opportunist, 200k | 83.03% | 83.17% | +0.14pp (z ≈ 1.2) |
+| static vs Conservative, 200k | 79.59% | 79.61% | +0.02pp |
+| 3p: new + old + GA in the same games, 60k | 35.2% (old seat) | **37.2%** (new seat) | +2.0pp |
+| 3p vs two GAs, 60k | 42.1% | 43.0% | **+0.9pp** (z ≈ 3) |
+| 4p vs GA, DQN, Opportunist, 40k | 34.4% | 35.0% | +0.6pp (z ≈ 1.8) |
+| **production pair-search vs GA** | 62.37% (50k, Phase 21) | **62.4%** (user) | **±0 — primary bar (+0.3pp) NOT met** |
+| pair-search head-to-head, new vs old | — | ≈49.5% vs 48.5%, advantage to the new checkpoint (user, from memory; output not retained — the same split as the static head-to-head above, so unverified) | ≈ +1% margin |
+
+No regression anywhere. Gains are clear against strong opponents and in
+multiplayer, and flat against the hand-crafted bots the net already beats
+~80% of the time.
+
+**Verdict: ADOPTED, explicitly overriding the pre-registered primary
+criterion** (as Phase 17 recorded its override). The primary metric
+— pair-search vs GA — was flat; every other comparison improved or held,
+including both head-to-heads against the previous checkpoint.
+
+**Interpretation.**
+
+1. The passive targets taught the static net what passive search already
+   computes at decision time, so the static bot moved toward search (+0.25pp
+   vs GA, +1.05% head-to-head, +2pp in a shared 3p game).
+2. The weight mattered. m = 1 (passive pool ~15% of the buffer) did nothing;
+   m = 2 moved the net. Leg 1's lock pool failed the same way (outvoted at ~1%
+   of the buffer).
+3. Pair-search vs GA did not move while pair-search head-to-head against the
+   previous checkpoint improved. At ~62% vs GA, GA is too weak an opponent to
+   resolve gains at the top: improvements that matter between strong bots
+   barely change results against it.
+4. The per-iteration curve (static vs GA, 500k) stayed within ±0.3pp, yet the
+   final checkpoint is measurably better head-to-head — further evidence that
+   the vs-GA curve under-resolves these gains.
+
+**Change of primary metric going forward:** adoption decisions use
+**head-to-head against the current production checkpoint** (same bot type,
+paired dice, `pair-alt` / `pair-search-alt` with `QWIXXER_ALT_MODEL`) as the
+primary metric, with vs-GA benches as a regression guard only. Training-time
+checkpoint selection should move off the vs-GA curve for the same reason.
+
+**Headline after Phase 22:** static pair 60.1% vs GA; production pair-search
+62.4% vs GA (unchanged), stronger head-to-head than the iter-57 pair-search.
+
+## Phase 25: Feature Screen — which inputs could fix static decisions?
+
+**Background (Phases 23–24, on unmerged branches `leaf-calibration` and
+`pair-inputs`).** Phase 23 measured leaf miscalibration (side-to-move offset
+b ≈ ±0.06; a ≈ 0.75 with a locked row); recalibrating search leaves was flat.
+Phase 24 added 14 pair-net inputs (turn position, colour phase pending,
+P(forced strike), per-row lock threats), migrated losslessly and retrained
+30 iterations: the best iteration scored 49.8% tie-inclusive (48.8% wins)
+head-to-head against the reference — **no-go, not merged**. In hindsight the
+turn inputs are identical for every candidate within a decision, and a
+recalibration that is the same for all candidates never changes an argmax.
+In 1v1 the 45 inputs already describe the full state (per row: next markable
+number, mark count, locked; plus strikes), so a new input can only supply a
+function the net approximates badly, not new information.
+
+**Question.** Before paying for another training run: does any candidate
+feature explain the static net's errors *on the differences between the
+candidates it chooses among*?
+
+### Method (`examples/feature_screen/`)
+
+Static pair self-play, 1v1, production pipeline, 1,000 games (seed 0). At
+every value-picked decision with ≥ 2 candidates (57,174 decisions), the net's
+top 4 candidates complete the turn (the search/distillation entry helpers)
+and get two independent batches of K = 256 full-game CRN rollouts under the
+rollout policy: batch A labels W_A (P(win)), batch B gives an independent W_B
+and the oracle game length. Per non-pick candidate c (128,293 pairs), the
+net's error on the difference is y = ΔW_A − ΔP (P = Φ(z), Δ relative to the
+pick). Each feature group is fitted y ~ Δf on half the games; reported on the
+other half: R² and the realised win-probability gain per player-game of
+re-picking with P + β·Δf (scored on W_A). Three splits (first/second half,
+reversed, even/odd); `analyze.py` re-runs the analysis from the CSV.
+
+Rollout noise is 38% of var(y) at K = 256; the remaining 62% is the net's real
+decision error.
+
+### Results
+
+| feature group | R² (3 splits) | held-out gain / player-game |
+|---|---|---|
+| ceiling: independent estimate ΔW_B − ΔP | 0.39–0.41 | **+0.016 to +0.020** |
+| game length (oracle E[turns], P(end ≤ 2, 4 turns)) | 0.011–0.016 | +0.0004 to +0.0021 (n.s.) |
+| game length × tanh(cdiff/10) | 0.017–0.023 | ≈ 0 |
+| dice mass left per row (2d6-weighted) | **0.071–0.075** | +0.0012 to +0.0038 (each 1–2σ) |
+| lock-aware recalibration (a = 0.75) | 0.040–0.045 | ≈ 0 |
+| Phase 24 threats (negative control) | 0.003 | ≈ 0 |
+
+- **The screen is valid:** the negative control is ≈ 0, as Phase 24's training
+  run found, and the ceiling shows the error is real and worth ≈ +1.6–2.0pp
+  score per player-game.
+- **Game length is ruled out**, as an input and as an auxiliary training
+  target: even the exact expected game length explains < 3% of the
+  explainable error and buys nothing measurable.
+- **Dice mass is the only stable signal** (same coefficient, −0.036, in every
+  split): the net overvalues keeping markable space, i.e. is slightly too
+  reluctant to skip — consistent with Phase 15's "search marks more". It is a
+  function of existing inputs (a value bias, not missing information) and
+  worth ≲ +0.2pp score: too small for a training run on its own.
+- **Lock-aware recalibration** explains calibration error but changes no picks.
+- The rest of the error is diffuse, as in Phase 15.
+
+### Side finding: shrink rollouts toward the static value
+
+Same data, picks by batch B scored on batch A (gain / player-game, 1,000 games):
+
+| pick rule | gain |
+|---|---|
+| argmax W_B (raw rollouts) | −0.0049 ± 0.0021 |
+| argmax W_B only when top-2 z gap < 0.15 (production gate), else static | −0.0025 ± 0.0019 |
+| argmax (1 − λ)·P + λ·W_B, λ = 0.3 / 0.5 | **+0.0182 ± 0.0015 / +0.0185 ± 0.0017** |
+| same, λ = 0.63 / 0.8 | +0.0160 / +0.0095 |
+
+Raw rollout picks chase noise; shrinkage toward the net wins and a hard gate
+captures little of it. Production search differs (top-2 only, one-round
+truncated rollouts with a leaf value, so less noise; its best λ should be
+higher), so these numbers do not transfer directly. This motivated the
+`blend=λ` and `gate=G` search options (`SearchConfig`), benched below.
+
+### Blend bench
+
+Head-to-head vs production pair-search, 10,000 games each, seed 42
+(`QWIXXER_SEARCH=<arm> bench pair-search-exp pair-search`):
+
+
+| Arm | Wins (exp) | Wins (prod) | Ties | Margin | Speed |
+|---|---:|---:|---:|---:|---:|
+| `blend=0.5` | 4903 | 4886 | 211 | +0.17% | 8 g/s |
+| `blend=0.7` | 4908 | 4878 | 214 | +0.30% | 8 g/s |
+| `blend=0.85` | 4902 | 4875 | 223 | +0.27% | 8 g/s |
+| `blend=0.5,gate=100` | 4904 | 4885 | 211 | +0.19% | 6 g/s |
+
+All four arms are inside noise: each 99% paired CI on the exp share
+straddles the production share, and the margin SE at 10k games is about
+0.6pp. Searching every decision (`gate=100`) with λ=0.5 is
+indistinguishable from the gated arm and 25% slower, so outside the gate
+the blend almost never overrules the net.
+
+The offline +0.018/player-game shrinkage gain was measured against a raw,
+ungated argmax of single 256-sample batches. Production already has the
+0.15 gate, 128 CRN samples on only two candidates, and a static tie-break,
+so most of that headroom was already taken.
+
+**Verdict: no-go.** Neither game-length features nor rollout shrinkage
+moves the production bot. `blend` and `gate` stay as `SearchConfig`
+options (default off / 0.15, so production is unchanged). No 50k
+confirmation was run: the best arm, +0.30%, is half an SE.
+
+**100k follow-up.** `blend=0.7` vs production, 100,000 games, seed 7:
+49,105 vs 48,871 wins, 2,024 ties, avg 76.3 vs 76.1 points, 99% paired CI
+on the exp share 48.89%–49.32%, 226 min. Margin +0.23% (SE ≈ 0.17pp,
+z ≈ 1.4). Pooled with the 10k seed-42 run: +0.24% over 110k games,
+z ≈ 1.5. Every arm has leaned positive, so the effect is plausibly real,
+but it is under 2 SE and smaller than the +0.3% that more rollout samples
+buy. It does not justify changing the production config.
+
+**Adopted anyway** (user call): `blend=0.7` costs nothing and every arm
+leaned positive, so it is the production default from Phase 26 on
+(`SearchConfig::default()` = `k=128,passive,lock=256,blend=0.7`; `noblend`
+restores the Phase 21 search; `legacy()` stays unblended for the
+expert-iteration recipe).
+
+## Phase 26: Search follow-ups — adaptive blend and sequential sampling
+
+Branch `search-followups` (from `feature-screen`). Two follow-ups from
+Phase 25: a per-decision blend weight λ = τ²/(τ²+SE²) from the paired
+rollout standard error, and sequential sampling.
+
+### Adaptive λ: ruled out on paper
+
+Logging the paired (CRN) rollout difference at 3,704 production searches
+(200 games vs GA): SE of the mean difference is small at k=128 — median
+0.005, 10/90th percentiles 0.001/0.012 — against a static-error spread of
+τ ≈ 0.024 (Phase 25 CSV, top-2 pairs with gap < 0.15, τ² = cov of the two
+independent batches' residuals) or 0.029 (implied here: var(Δmean − ΔΦ)
+− mean SE²). A noise-only λ would sit at ≈ 0.96 almost everywhere, i.e.
+the unblended search Phase 25 already beat. What the fixed 0.7 corrects
+must be leaf bias, which more samples do not reduce (Phase 23 measured the
+leaf miscalibration directly). Adding a bias term σ_b ≈ 0.019 (the value
+that makes λ = 0.7 at median SE) leaves λ between 0.64 and 0.70 across
+decisions: practically the fixed blend. Not implemented beyond the probe.
+
+The same log shows 80% of searched decisions are already decided by more
+than 2 SE at 128 samples, which is what sequential sampling exploits.
+
+### Sequential sampling
+
+`seq=N`: run N samples per candidate, then double up to `k` until every
+candidate's blended score difference to the static pick is at least
+`stop` × λ·SE (default `stop=2`). Since sample k's dice depend only on
+(decision seed, k, player), the batches compose into exactly the fixed-k
+sample set; with `stop=inf` the picks match fixed k (tested).
+
+Timing smoke, 1,000 games vs GA, seed 9 (searcher's own cost dominates).
+The win column is not a strength measurement: SE ≈ 1.5pp at 1k games, so
+64.1% is consistent with the recorded 62.4% (Phase 21, unblended).
+
+| Arm | Wins vs GA | Games/s | Relative cost |
+|---|---:|---:|---:|
+| production (k=128, blend 0.7) | 64.1% | 16 | 1× |
+| `seq=32` | 63.7% | 27 | 0.6× |
+| `seq=16` | 63.6% | 35 | 0.45× |
+| `seq=32,stop=1` | 63.4% | 41 | 0.4× |
+| `k=256,seq=32` | 64.2% | 20 | 0.8× |
+| `k=512,seq=32` | 64.1% | 15 | ≈1× |
+
+### Head-to-head vs production (seed 11)
+
+| Arm | Games | Wins (exp) | Wins (prod) | Ties | Margin | 99% paired CI (share) | Speed (big machine) |
+|---|---:|---:|---:|---:|---:|---|---:|
+| `seq=32` | 50,000 | 24,485 | 24,493 | 1,022 | −0.02% | 48.84–49.13% | 52 g/s |
+| `k=512,seq=32` | 100,000 | 49,123 | 48,778 | 2,099 | +0.35% | 48.89–49.36% | 40 g/s |
+
+`seq=32` ties production at ~0.6× its search cost. The paired CI is tight
+because the two searchers make the same choice at most decisions, so most
+paired games are identical; it bounds a loss to about 0.3pp.
+
+`k=512,seq=32` (≈ production cost) gains +0.35%. The bench CI is on the
+exp share alone; the margin's SE is about twice the share's (the two
+shares are anti-correlated), ≈ 0.18pp, so z ≈ 1.9. This is the size the
+sample-count curve predicts (Phase 13: k 128→256 +0.3%): sequential
+sampling turns that gain into one at no extra cost, on top of Phase 25's
+blend (+0.23%, z ≈ 1.4).
+
+**Adopted.** Production = `k=512,passive,lock=256,blend=0.7,seq=32`
+(`SearchConfig::default()`; `legacy()` stays at fixed k=128 with `noseq`).
+vs GA, 20,000 games, seed 42 (big machine): 12,517 vs 7,137 wins, 346 ties,
+62.6% (99% paired CI 61.80–63.37%), 85 games/s. GA cannot resolve the
+gain (Phase 22); the head-to-heads above are the evidence. Cumulative over
+the Phase 21 search: blend +0.23% and sequential k=512 +0.35%, measured
+separately.
+
+Larger vs-GA run, 100,000 games, seed 42 (user, big machine): 62,794 vs
+35,421 wins, 1,785 ties, **62.79%** (99% paired CI 62.44–63.15%, paired SE
+0.136pp). Phase 21 production measured 62.37% (50k, SE ≈ 0.19pp), so +0.42pp,
+z ≈ 1.8 unpaired (both runs start from seed 42, so the overlapping 50k games
+share dice and the true SE is somewhat smaller). This is the first vs-GA
+gain since Phase 21 and clears Phase 22's +0.3pp primary bar.
+
+## Phase 27: More candidates under sequential sampling
+
+Branch `search-candidates` (from `distillation`). Phase 13 found 3
+candidates neutral at fixed k=64 (+1.67% vs +1.71% over static): a third
+candidate split a small budget. Under sequential sampling it can be cheap,
+so `cands=N` searches the top N static candidates with successive
+elimination: each round, the leader is the best paired blended score and
+every candidate it beats by `stop` SEs (λ·SE of the CRN-paired mean
+difference) stops sampling; search ends when one is left or at k. With two
+candidates this is exactly the Phase 26 rule (production picks unchanged,
+checked bit-for-bit on a 400-game bench vs GA). The gates are unchanged:
+search still fires on the top-2 gap or the endgame conditions. A
+two-round horizon was not retried: the user judged its rollout noise would
+outweigh the larger sample budget.
+
+Timing smoke, 1,000 games vs GA, seed 9 (local, 12 cores): production
+16 games/s, `cands=3` 14 g/s (+16% time), `cands=4` 13 g/s (+23%).
+
+### Head-to-head vs production
+
+100,000 games each, seed 13 (user, big machine):
+
+| Arm | Wins (exp) | Wins (prod) | Ties | Margin | 99% paired CI (share) | z | Speed |
+|---|---:|---:|---:|---:|---|---:|---:|
+| `cands=3` | 49,148 | 48,880 | 1,972 | +0.27% | 49.02–49.27% | ≈ 2.8 | 38 g/s |
+| `cands=4` | 49,164 | 48,869 | 1,967 | +0.30% | 49.04–49.29% | ≈ 3.0 | 36 g/s |
+
+Margin SE ≈ 2 × the share SE ≈ 0.10pp: tighter than Phase 26's runs
+because the extra candidate rarely changes the pick, so most paired games
+are identical. Both arms clear z = 2, contradicting the expectation from
+Phase 15 that disagreements live between the top two: under sequential
+sampling the third and fourth candidates are cheap and occasionally right.
+4 vs 3 (+0.03%) is not resolved.
+
+**Adopted: `cands=3`** (user call: +0.27% at z ≈ 2.8 for ~16% more search
+time locally, ~5% less than `cands=4`, whose extra +0.03% is unresolved).
+Production = `k=512,passive,lock=256,blend=0.7,seq=32,cands=3`; the spec
+now always prints `cands`, since Phase 26 logs show the 2-candidate
+production as `k=512,passive,lock=256,blend=0.7,seq=32`. `legacy()` keeps
+2 candidates. Checked: production and `QWIXXER_SEARCH=cands=3` give
+identical 200-game benches vs GA.

@@ -1,6 +1,13 @@
 use clap::{Parser, Subcommand, ValueEnum};
-use qwixxer::*;
 use game::Player;
+use qwixxer::*;
+
+/// Pools freed memory instead of returning it to the OS: the search bot's
+/// rollout driver and burn's per-forward buffers otherwise cause constant
+/// cross-thread munmap/TLB-shootdown churn (~17% of cycles in
+/// smp_call_function_many_cond before this).
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 use rand::rngs::SmallRng;
 use rand::SeedableRng;
 use std::sync::Arc;
@@ -9,6 +16,19 @@ use std::sync::Arc;
 enum BotType {
     Ga,
     Dqn,
+    Pair,
+    PairSearch,
+    /// Pair-search with an experimental `SearchConfig` read from the
+    /// `QWIXXER_SEARCH` env var (e.g. `passive,lock=256,strat,k=144`).
+    PairSearchExp,
+    /// Second experimental pair-search, configured by `QWIXXER_SEARCH_B`
+    /// (for A/B benches between two non-production configs).
+    PairSearchExpB,
+    /// Static pair bot with the model from the `QWIXXER_ALT_MODEL` directory
+    /// (for head-to-head checkpoint comparisons).
+    PairAlt,
+    /// Production pair-search on the `QWIXXER_ALT_MODEL` checkpoint.
+    PairSearchAlt,
     Mcts,
     Opportunist,
     Conservative,
@@ -20,6 +40,12 @@ impl std::fmt::Display for BotType {
         match self {
             BotType::Ga => write!(f, "GA"),
             BotType::Dqn => write!(f, "DQN"),
+            BotType::Pair => write!(f, "PAIR"),
+            BotType::PairSearch => write!(f, "PAIR-SEARCH"),
+            BotType::PairSearchExp => write!(f, "PAIR-SEARCH[{}]", exp_search_config("QWIXXER_SEARCH")),
+            BotType::PairSearchExpB => write!(f, "PAIR-SEARCH-B[{}]", exp_search_config("QWIXXER_SEARCH_B")),
+            BotType::PairAlt => write!(f, "PAIR({})", alt_model_dir()),
+            BotType::PairSearchAlt => write!(f, "PAIR-SEARCH({})", alt_model_dir()),
             BotType::Mcts => write!(f, "MCTS"),
             BotType::Opportunist => write!(f, "Opportunist"),
             BotType::Conservative => write!(f, "Conservative"),
@@ -32,19 +58,141 @@ fn make_strategy(bot: &BotType) -> Box<dyn strategy::Strategy> {
     let genes = Arc::new(bot::default_genes());
     match bot {
         BotType::Ga => {
-            let champion = bot::DNA::load_weights("champion.txt", genes)
-                .expect("No champion.txt found. Run `train ga` first.");
+            let champion =
+                bot::DNA::load_weights("champion.txt", genes).expect("No champion.txt found. Run `train ga` first.");
             Box::new(champion)
         }
         BotType::Dqn => Box::new(dqn::DqnStrategy::load("dqn_model")),
+        BotType::Pair => Box::new(dqn::pair::PairStrategy::load("pair_model")),
+        BotType::PairSearch => Box::new(strategy::search::SearchBot::new(dqn::pair::PairStrategy::load(
+            "pair_model",
+        ))),
+        BotType::PairAlt => Box::new(dqn::pair::PairStrategy::load(&alt_model_dir())),
+        BotType::PairSearchAlt => Box::new(strategy::search::SearchBot::new(dqn::pair::PairStrategy::load(
+            &alt_model_dir(),
+        ))),
+        BotType::PairSearchExp | BotType::PairSearchExpB => Box::new(strategy::search::SearchBot::with_config(
+            dqn::pair::PairStrategy::load("pair_model"),
+            exp_search_config(exp_env(bot)),
+        )),
         BotType::Mcts => {
-            let champion = bot::DNA::load_weights("champion.txt", genes)
-                .expect("No champion.txt found. Run `train ga` first.");
+            let champion =
+                bot::DNA::load_weights("champion.txt", genes).expect("No champion.txt found. Run `train ga` first.");
             Box::new(mcts::MonteCarlo::with_ga(200, champion))
         }
         BotType::Opportunist => Box::<strategy::Opportunist>::default(),
         BotType::Conservative => Box::<strategy::Conservative>::default(),
         BotType::Random => Box::new(strategy::Random),
+    }
+}
+
+/// Model directory for `pair-alt` / `pair-search-alt`, from `QWIXXER_ALT_MODEL`.
+fn alt_model_dir() -> String {
+    std::env::var("QWIXXER_ALT_MODEL")
+        .expect("pair-alt / pair-search-alt need QWIXXER_ALT_MODEL=<dir containing model.mpk>")
+}
+
+/// Env var holding the `SearchConfig` spec of an experimental pair-search.
+fn exp_env(bot: &BotType) -> &'static str {
+    match bot {
+        BotType::PairSearchExpB => "QWIXXER_SEARCH_B",
+        _ => "QWIXXER_SEARCH",
+    }
+}
+
+/// `SearchConfig` for `pair-search-exp[-b]`, from env var `var`.
+fn exp_search_config(var: &str) -> strategy::search::SearchConfig {
+    let spec =
+        std::env::var(var).unwrap_or_else(|_| panic!("{var} must be set, e.g. {var}=passive,lock=256,strat,k=144"));
+    strategy::search::SearchConfig::parse(&spec).unwrap_or_else(|e| panic!("{var}: {e}"))
+}
+
+struct StrategyTemplates {
+    dqn: Option<dqn::DqnStrategy>,
+    pair: Option<dqn::pair::PairStrategy>,
+    pair_alt: Option<dqn::pair::PairStrategy>,
+    champion: Option<bot::DNA>,
+}
+
+impl StrategyTemplates {
+    fn new(bots: &[BotType]) -> Self {
+        let needs_dqn = bots.iter().any(|b| matches!(b, BotType::Dqn));
+        let needs_pair = bots.iter().any(|b| {
+            matches!(
+                b,
+                BotType::Pair | BotType::PairSearch | BotType::PairSearchExp | BotType::PairSearchExpB
+            )
+        });
+        let needs_pair_alt = bots
+            .iter()
+            .any(|b| matches!(b, BotType::PairAlt | BotType::PairSearchAlt));
+        let needs_champion = bots.iter().any(|b| matches!(b, BotType::Ga | BotType::Mcts));
+        let genes = Arc::new(bot::default_genes());
+        StrategyTemplates {
+            dqn: if needs_dqn {
+                Some(dqn::DqnStrategy::load("dqn_model"))
+            } else {
+                None
+            },
+            pair: if needs_pair {
+                Some(dqn::pair::PairStrategy::load("pair_model"))
+            } else {
+                None
+            },
+            pair_alt: if needs_pair_alt {
+                Some(dqn::pair::PairStrategy::load(&alt_model_dir()))
+            } else {
+                None
+            },
+            champion: if needs_champion {
+                Some(bot::DNA::load_weights("champion.txt", genes).expect("No champion.txt found. Run `evolve` first."))
+            } else {
+                None
+            },
+        }
+    }
+
+    fn create(&self, bot: &BotType) -> Box<dyn strategy::Strategy> {
+        match bot {
+            BotType::Ga => Box::new(self.champion.as_ref().unwrap().clone()),
+            BotType::Dqn => {
+                let t = self.dqn.as_ref().unwrap();
+                Box::new(dqn::DqnStrategy::from_shared(t.model.clone(), t.device.clone()))
+            }
+            BotType::Pair => {
+                let t = self.pair.as_ref().unwrap();
+                Box::new(dqn::pair::PairStrategy::from_shared(t.model.clone(), t.device.clone()))
+            }
+            BotType::PairSearch => {
+                let t = self.pair.as_ref().unwrap();
+                Box::new(strategy::search::SearchBot::new(dqn::pair::PairStrategy::from_shared(
+                    t.model.clone(),
+                    t.device.clone(),
+                )))
+            }
+            BotType::PairSearchExp | BotType::PairSearchExpB => {
+                let t = self.pair.as_ref().unwrap();
+                Box::new(strategy::search::SearchBot::with_config(
+                    dqn::pair::PairStrategy::from_shared(t.model.clone(), t.device.clone()),
+                    exp_search_config(exp_env(bot)),
+                ))
+            }
+            BotType::PairAlt => {
+                let t = self.pair_alt.as_ref().unwrap();
+                Box::new(dqn::pair::PairStrategy::from_shared(t.model.clone(), t.device.clone()))
+            }
+            BotType::PairSearchAlt => {
+                let t = self.pair_alt.as_ref().unwrap();
+                Box::new(strategy::search::SearchBot::new(dqn::pair::PairStrategy::from_shared(
+                    t.model.clone(),
+                    t.device.clone(),
+                )))
+            }
+            BotType::Mcts => Box::new(mcts::MonteCarlo::with_ga(200, self.champion.as_ref().unwrap().clone())),
+            BotType::Opportunist => Box::<strategy::Opportunist>::default(),
+            BotType::Conservative => Box::<strategy::Conservative>::default(),
+            BotType::Random => Box::new(strategy::Random),
+        }
     }
 }
 
@@ -82,6 +230,9 @@ enum Commands {
         /// Number of games
         #[arg(short, long, default_value = "1000")]
         num_games: usize,
+        /// Base seed for paired dice streams (same seed = identical game set)
+        #[arg(short, long, default_value = "42")]
+        seed: u64,
     },
     /// Single-player score benchmark
     Solo {
@@ -91,9 +242,6 @@ enum Commands {
     },
     /// Evolve the GA champion via genetic algorithm
     Evolve,
-    /// Train DQN (MC-supervised)
-    #[cfg(feature = "dqn")]
-    DqnTrain,
     /// DQN self-play reinforcement learning
     #[cfg(feature = "dqn")]
     DqnSelfplay {
@@ -106,6 +254,57 @@ enum Commands {
         /// Save per-iteration checkpoints as iter-N.mpk
         #[arg(short, long)]
         checkpoints: bool,
+        /// Starting iteration offset (for epsilon schedule when resuming)
+        #[arg(short, long, default_value = "0")]
+        start_iteration: usize,
+    },
+    /// Pair-network self-play reinforcement learning
+    #[cfg(feature = "dqn")]
+    PairTrain {
+        /// Number of iterations
+        #[arg(short, long, default_value = "40")]
+        iterations: usize,
+        /// Games per iteration
+        #[arg(short, long, default_value = "20000")]
+        games: usize,
+        /// Training epochs per iteration over the replay buffer
+        #[arg(short, long, default_value = "10")]
+        epochs: usize,
+        /// Benchmark games per iteration (0 to disable)
+        #[arg(short, long, default_value = "0")]
+        bench: usize,
+        /// Save per-iteration checkpoints as iter-N.mpk
+        #[arg(short, long)]
+        checkpoints: bool,
+        /// Starting iteration offset (for epsilon schedule when resuming)
+        #[arg(long, default_value = "0")]
+        start_iteration: usize,
+        /// Generate games with the search bot as every player's policy
+        /// (expert iteration)
+        #[arg(long)]
+        search: bool,
+        /// Emit rollout-derived value targets at gated and lock-forced
+        /// decisions (search-value distillation)
+        #[arg(long)]
+        distill: bool,
+        /// Full-game rollouts per distill candidate
+        #[arg(long, default_value = "32")]
+        distill_k: usize,
+        /// Distill samples per (candidate, opponent) at gated decisions
+        #[arg(long, default_value = "2")]
+        distill_m: usize,
+        /// Distill samples per (candidate, opponent) at lock firings
+        /// (weighted higher: firings are ~15x rarer than gated decisions)
+        #[arg(long, default_value = "16")]
+        distill_m_lock: usize,
+        /// Probability of declining a forced safe lock during generation
+        /// (0 = current behavior; the run recipe uses 0.05)
+        #[arg(long, default_value = "0.0")]
+        epsilon_lock: f32,
+        /// Also emit distill targets at gated passive (white-sum) decisions,
+        /// which production search searches since Phase 21
+        #[arg(long)]
+        distill_passive: bool,
     },
 }
 
@@ -128,55 +327,83 @@ fn run_play(bots: Vec<BotType>, verbose: bool) {
     game.print_game_over();
 }
 
-fn run_bench(bots: Vec<BotType>, num_games: usize) {
+fn splitmix64(x: u64) -> u64 {
+    let mut z = x.wrapping_add(0x9E3779B97F4A7C15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
+    z ^ (z >> 31)
+}
+
+/// Dice-stream seed for one seat of one game pair. Distinct `(pair, seat)`
+/// inputs map to distinct values within a run (seats < 8); hashing `base`
+/// keeps the stream sets of nearby base seeds disjoint, so different `--seed`
+/// runs are independent samples. `seed_from_u64` expands the result into a
+/// decorrelated stream state.
+fn seat_dice_seed(base: u64, pair: usize, seat: usize) -> u64 {
+    splitmix64(base).wrapping_add(pair as u64 * 8 + seat as u64)
+}
+
+fn run_bench(bots: Vec<BotType>, num_games: usize, seed: u64) {
     if bots.len() < 2 {
         eprintln!("Need at least 2 bots to benchmark");
         return;
     }
 
     let num_players = bots.len();
+    // Games come in pairs of num_players rotations sharing per-seat dice
+    // streams, so round up to complete the final pair.
+    let num_games = num_games.div_ceil(num_players) * num_players;
     println!(
-        "Benchmarking {} ({num_games} games, rotating seats):\n",
+        "Benchmarking {} ({num_games} games, rotating seats, paired dice, seed {seed}):\n",
         bots.iter().map(|b| b.to_string()).collect::<Vec<_>>().join(" vs ")
     );
+    let bench_start = std::time::Instant::now();
 
     #[cfg(feature = "parallel")]
     use rayon::prelude::*;
 
-    // Run games in parallel when available
+    let bench_game = |templates: &StrategyTemplates, i: usize| {
+        let pair = i / num_players;
+        let rotation = i % num_players;
+        let players: Vec<Player> = (0..num_players)
+            .map(|j| {
+                let bot_idx = (j + num_players - rotation) % num_players;
+                Player::new(
+                    templates.create(&bots[bot_idx]),
+                    Box::new(SmallRng::seed_from_u64(seat_dice_seed(seed, pair, j))),
+                )
+            })
+            .collect();
+
+        let mut game = game::Game::new(players);
+        game.play();
+
+        let scores: Vec<isize> = game.players.iter().map(|p| p.state.count_points()).collect();
+        let max = *scores.iter().max().unwrap();
+        let num_winners = scores.iter().filter(|&&s| s == max).count();
+
+        let per_bot: Vec<(usize, isize)> = (0..num_players)
+            .map(|j| {
+                let bot_idx = (j + num_players - rotation) % num_players;
+                (bot_idx, scores[j])
+            })
+            .collect();
+
+        let is_tie = num_winners > 1;
+        (per_bot, is_tie)
+    };
+
     #[cfg(feature = "parallel")]
-    let iter = (0..num_games).into_par_iter();
-    #[cfg(not(feature = "parallel"))]
-    let iter = 0..num_games;
-
-    let results: Vec<(Vec<(usize, isize)>, bool)> = iter
-        .map(|i| {
-            let rotation = i % num_players;
-            let players: Vec<Player> = (0..num_players)
-                .map(|j| {
-                    let bot_idx = (j + num_players - rotation) % num_players;
-                    Player::new(make_strategy(&bots[bot_idx]), Box::new(SmallRng::from_entropy()))
-                })
-                .collect();
-
-            let mut game = game::Game::new(players);
-            game.play();
-
-            let scores: Vec<isize> = game.players.iter().map(|p| p.state.count_points()).collect();
-            let max = *scores.iter().max().unwrap();
-            let num_winners = scores.iter().filter(|&&s| s == max).count();
-
-            let per_bot: Vec<(usize, isize)> = (0..num_players)
-                .map(|j| {
-                    let bot_idx = (j + num_players - rotation) % num_players;
-                    (bot_idx, scores[j])
-                })
-                .collect();
-
-            let is_tie = num_winners > 1;
-            (per_bot, is_tie)
-        })
+    let results: Vec<(Vec<(usize, isize)>, bool)> = (0..num_games)
+        .into_par_iter()
+        .map_init(|| StrategyTemplates::new(&bots), |t, i| bench_game(t, i))
         .collect();
+
+    #[cfg(not(feature = "parallel"))]
+    let results: Vec<(Vec<(usize, isize)>, bool)> = {
+        let templates = StrategyTemplates::new(&bots);
+        (0..num_games).map(|i| bench_game(&templates, i)).collect()
+    };
 
     // Aggregate
     let mut wins = vec![0u32; num_players];
@@ -217,7 +444,12 @@ fn run_bench(bots: Vec<BotType>, num_games: usize) {
     }
 
     // Aggregate stats per strategy (when multiple bots share a strategy)
-    let unique_strategies: Vec<String> = bots.iter().map(|b| b.to_string()).collect::<std::collections::BTreeSet<_>>().into_iter().collect();
+    let unique_strategies: Vec<String> = bots
+        .iter()
+        .map(|b| b.to_string())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
     if unique_strategies.len() < num_players {
         println!("\n  By strategy:");
 
@@ -284,44 +516,108 @@ fn run_bench(bots: Vec<BotType>, num_games: usize) {
                 strat_ties as f64 / num_games as f64 * 100.0
             );
         }
-
-        // CI for 2-strategy matchups
-        if unique_strategies.len() == 2 {
-            let s0 = &unique_strategies[0];
-            let s1 = &unique_strategies[1];
-            let w0 = *strat_wins.get(s0).unwrap_or(&0);
-            let w1 = *strat_wins.get(s1).unwrap_or(&0);
-            let leader = if w0 >= w1 { s0 } else { s1 };
-            let leader_wins = w0.max(w1);
-            let n = num_games as f64;
-            let p = leader_wins as f64 / n;
-            let se = (p * (1.0 - p) / n).sqrt();
-            let z = 2.576;
-            let moe = z * se;
-            println!(
-                "\n  99% CI: {} wins {:.2}% - {:.2}%",
-                leader,
-                (p - moe) * 100.0,
-                (p + moe) * 100.0
-            );
-        }
-    } else {
-        // Simple 1v1 CI (no duplicate strategies)
-        if num_players == 2 {
-            let leader = if wins[0] >= wins[1] { 0 } else { 1 };
-            let n = num_games as f64;
-            let p = wins[leader] as f64 / n;
-            let se = (p * (1.0 - p) / n).sqrt();
-            let z = 2.576;
-            let moe = z * se;
-            println!(
-                "\n  99% CI: {} wins {:.2}% - {:.2}%",
-                bots[leader],
-                (p - moe) * 100.0,
-                (p + moe) * 100.0
-            );
-        }
     }
+
+    // 99% CI on winrate for 2-strategy matchups (covers plain 1v1 and
+    // aggregated NvN). Computed over pair means: the games of one pair share
+    // per-seat dice streams, so their outcomes are correlated and the pair is
+    // the independent sampling unit. This both keeps the CI honest and
+    // captures the variance reduction from pairing.
+    if unique_strategies.len() == 2 {
+        // Winning strategy per game (None = tie between the two strategies).
+        let game_winners: Vec<Option<String>> = results
+            .iter()
+            .map(|(per_bot, _)| {
+                let max = per_bot.iter().map(|(_, s)| *s).max().unwrap();
+                let winners: std::collections::BTreeSet<String> = per_bot
+                    .iter()
+                    .filter(|(_, s)| *s == max)
+                    .map(|(idx, _)| bots[*idx].to_string())
+                    .collect();
+                if winners.len() == 1 {
+                    winners.into_iter().next()
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        let count_wins = |name: &str| game_winners.iter().filter(|w| w.as_deref() == Some(name)).count();
+        let (s0, s1) = (&unique_strategies[0], &unique_strategies[1]);
+        let leader = if count_wins(s0) >= count_wins(s1) { s0 } else { s1 };
+
+        let pair_means: Vec<f64> = game_winners
+            .chunks(num_players)
+            .map(|chunk| {
+                chunk.iter().filter(|w| w.as_deref() == Some(leader.as_str())).count() as f64 / chunk.len() as f64
+            })
+            .collect();
+        let num_pairs = pair_means.len() as f64;
+        let p = pair_means.iter().sum::<f64>() / num_pairs;
+        let var = pair_means.iter().map(|a| (a - p).powi(2)).sum::<f64>() / (num_pairs - 1.0);
+        let se_paired = (var / num_pairs).sqrt();
+        let se_naive = (p * (1.0 - p) / num_games as f64).sqrt();
+        let z = 2.576;
+        println!(
+            "\n  99% CI (paired): {} wins {:.2}% - {:.2}%",
+            leader,
+            (p - z * se_paired) * 100.0,
+            (p + z * se_paired) * 100.0
+        );
+        if se_paired > 0.0 {
+            println!(
+                "  Pairing efficiency: {:.2}x (naive SE {:.3}%, paired SE {:.3}%)",
+                (se_naive / se_paired).powi(2),
+                se_naive * 100.0,
+                se_paired * 100.0
+            );
+        }
+
+        // Dice-pairing attribution: the games of one pairing share per-seat
+        // dice, so a pairing SWEPT by one strategy (it wins every rotation)
+        // is a skill signal, while a SPLIT pairing (each strategy wins at
+        // least once) was decided by seat/dice. The split share is a direct
+        // read on how much of the matchup is dice-dominated.
+        let mut swept = [0usize; 2];
+        let mut split = 0usize;
+        let mut with_ties = 0usize;
+        for chunk in game_winners.chunks(num_players) {
+            let w0 = chunk.iter().filter(|w| w.as_deref() == Some(s0.as_str())).count();
+            let w1 = chunk.iter().filter(|w| w.as_deref() == Some(s1.as_str())).count();
+            if w0 == chunk.len() {
+                swept[0] += 1;
+            } else if w1 == chunk.len() {
+                swept[1] += 1;
+            } else if w0 > 0 && w1 > 0 {
+                split += 1;
+            } else {
+                with_ties += 1; // no sweep, no split: at least one tie involved
+            }
+        }
+        let np = game_winners.chunks(num_players).len() as f64;
+        println!(
+            "  Dice pairings ({:.0}): swept by {} {} ({:.1}%), by {} {} ({:.1}%), split {} ({:.1}%), with ties {} ({:.1}%)",
+            np,
+            s0,
+            swept[0],
+            swept[0] as f64 / np * 100.0,
+            s1,
+            swept[1],
+            swept[1] as f64 / np * 100.0,
+            split,
+            split as f64 / np * 100.0,
+            with_ties,
+            with_ties as f64 / np * 100.0
+        );
+    }
+
+    let elapsed = bench_start.elapsed();
+    println!(
+        "\n  Elapsed: {}m{:02}s ({:.0} games/s)",
+        elapsed.as_secs() / 60,
+        elapsed.as_secs() % 60,
+        num_games as f64 / elapsed.as_secs_f64()
+    );
 }
 
 fn run_solo(num_games: usize) {
@@ -367,32 +663,113 @@ fn run_train() {
 
     let _champion = pop.current_champion().clone();
     println!("\nBenchmarking champion vs Opportunist...\n");
-    run_bench(vec![BotType::Ga, BotType::Opportunist], 100_000);
+    run_bench(vec![BotType::Ga, BotType::Opportunist], 100_000, 42);
 }
 
 #[cfg(feature = "dqn")]
-fn run_dqn_train() {
-    let samples = dqn::train::generate_training_data(1500, 500);
-    dqn::train::train(samples, "dqn_model");
+fn run_dqn_selfplay(iterations: usize, bench_games: usize, checkpoints: bool, start_iteration: usize) {
+    dqn::train::self_play_train(
+        "dqn_model",
+        iterations,
+        20000,
+        10,
+        bench_games,
+        checkpoints,
+        start_iteration,
+    );
 }
 
-#[cfg(feature = "dqn")]
-fn run_dqn_selfplay(iterations: usize, bench_games: usize, checkpoints: bool) {
-    dqn::train::self_play_train("dqn_model", iterations, 20000, 10, bench_games, checkpoints);
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn seat_dice_seeds_are_unique() {
+        let mut seen = std::collections::HashSet::new();
+        for pair in 0..1000 {
+            for seat in 0..5 {
+                assert!(seen.insert(seat_dice_seed(42, pair, seat)));
+            }
+        }
+    }
+
+    #[test]
+    fn seeded_games_are_deterministic() {
+        let play = || {
+            let players = vec![
+                Player::new(
+                    Box::<strategy::Opportunist>::default(),
+                    Box::new(SmallRng::seed_from_u64(seat_dice_seed(42, 7, 0))),
+                ),
+                Player::new(
+                    Box::<strategy::Conservative>::default(),
+                    Box::new(SmallRng::seed_from_u64(seat_dice_seed(42, 7, 1))),
+                ),
+            ];
+            let mut game = game::Game::new(players);
+            game.play();
+            game.players.iter().map(|p| p.state.count_points()).collect::<Vec<_>>()
+        };
+        assert_eq!(play(), play());
+    }
 }
 
 fn main() {
+    // Our matmuls are tiny (≤ a few hundred rows of a 45→128→64 MLP) and run
+    // inside rayon-parallel games; matrixmultiply's own thread pool on top is
+    // pure scheduler churn (measured 2x slowdown on search benches). Respect
+    // an explicit user override.
+    if std::env::var_os("MATMUL_NUM_THREADS").is_none() {
+        std::env::set_var("MATMUL_NUM_THREADS", "1");
+    }
+
     let cli = Cli::parse();
 
     match cli.command {
         Some(Commands::Play { bots, verbose }) => run_play(bots, verbose),
-        Some(Commands::Bench { bots, num_games }) => run_bench(bots, num_games),
+        Some(Commands::Bench { bots, num_games, seed }) => run_bench(bots, num_games, seed),
         Some(Commands::Solo { num_games }) => run_solo(num_games),
         Some(Commands::Evolve) => run_train(),
         #[cfg(feature = "dqn")]
-        Some(Commands::DqnTrain) => run_dqn_train(),
+        Some(Commands::DqnSelfplay {
+            iterations,
+            bench,
+            checkpoints,
+            start_iteration,
+        }) => run_dqn_selfplay(iterations, bench, checkpoints, start_iteration),
         #[cfg(feature = "dqn")]
-        Some(Commands::DqnSelfplay { iterations, bench, checkpoints }) => run_dqn_selfplay(iterations, bench, checkpoints),
+        Some(Commands::PairTrain {
+            iterations,
+            games,
+            epochs,
+            bench,
+            checkpoints,
+            start_iteration,
+            search,
+            distill,
+            distill_k,
+            distill_m,
+            distill_m_lock,
+            epsilon_lock,
+            distill_passive,
+        }) => dqn::pair_train::self_play_train(
+            "pair_model",
+            iterations,
+            games,
+            epochs,
+            bench,
+            checkpoints,
+            start_iteration,
+            search,
+            dqn::pair_train::DistillCfg {
+                enabled: distill,
+                k: distill_k,
+                m_gated: distill_m,
+                m_lock: distill_m_lock,
+                epsilon_lock,
+                passive: distill_passive,
+            },
+        ),
         None => {
             // Default: play against MCTS
             run_play(vec![BotType::Mcts], false);
