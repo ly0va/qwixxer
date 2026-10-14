@@ -249,6 +249,36 @@ the paper-sheet look, desktop 1280×800, no scrolling.
   full games against a simple greedy stand-in bot (rules re-implemented in
   JavaScript for the prototype only).
 
+## Pacing
+
+The bot never moves instantly; short beats make its play followable (the
+real pair-search bot also needs a moment to compute):
+
+- After the user's roll the dice tumble, then the bot "thinks" (about
+  0.5 s, "thinking…" beside its name) before its white sum draws in. The
+  user's selection opens only after that reveal, since the legal set depends
+  on it.
+- On the bot's turn, after the user confirms: the user's mark inks at once,
+  the bot thinks (about 0.5 s), draws its white sum, then about 0.45 s later
+  its colour mark or strike.
+- If the real bot takes longer, "thinking…" simply stays up longer; the
+  beats are minimums, not fixed delays.
+
+## Implementation notes
+
+- **Keyboard (desktop):** Enter confirms, Space rolls, Escape clears the
+  selection. (The design canvas can't bind page-wide keys, so the prototype
+  has none.)
+- **Window sizes:** the desktop layout needs about 1280×800; below about
+  1100 px wide, or on a portrait screen, switch to the phone layout. Tablets
+  in landscape get the desktop layout scaled down.
+- **Log:** scrolls instead of truncating (the prototype shows the last six
+  rolls); a "Game N" separator between games.
+- **Rules source:** legality, locks and game end come from the WASM engine
+  (the legal-selection list above). The prototype re-implements the rules in
+  JavaScript only to be playable on the canvas; the real UI must not, so the
+  two can't drift apart.
+
 ## Edge cases to test
 
 - White sum 2 or 12 that locks a second row: no second square selectable,
