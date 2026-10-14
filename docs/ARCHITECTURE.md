@@ -6,7 +6,7 @@ Qwixxer is a Rust workspace with a native binary/library crate and a WASM web cr
 
 ```
 qwixxer/
-  Cargo.toml          -- lib + bin crate, feature flags: dqn, burn, parallel
+  Cargo.toml          -- lib + bin crate, feature flags: dqn, parallel
   src/
     lib.rs             -- Public module re-exports
     main.rs            -- CLI entry point (clap subcommands: play, bench, solo, evolve, dqn-train, dqn-selfplay)
@@ -19,20 +19,30 @@ qwixxer/
       train.rs         -- TD(lambda) targets, decoupled mu/sigma losses, self-play loop
     mcts.rs            -- Monte Carlo tree search with pluggable rollout policy
   web/
-    Cargo.toml         -- WASM crate (qwixxer-web), depends on qwixxer with burn feature only
+    Cargo.toml         -- WASM crate (qwixxer-web), depends on qwixxer with default-features = false
+    build.sh           -- wasm-pack + wasm-opt -Oz into web/pkg/
     src/
-      lib.rs           -- WebGame state machine, StateExplorer, wasm-bindgen exports
-      ts/
-        main.ts        -- Game entry point, render loop, event wiring
-        board.ts       -- Scoresheet renderer (colored rows, marks, strikes, totals)
-        dice.ts        -- Dice display with colored faces
-        moves.ts       -- Move parsing, cell click handling, selection state machine
-        types.ts       -- TypeScript interfaces (GameView, StateView, RowView, MoveView, etc.)
-        explorer.ts    -- State Explorer page: interactive board + live GA/DQN evaluation
-        style.css      -- Dark theme with Qwixx color palette
-    index.html         -- Play page
-    explorer.html      -- State Explorer page
-    vite.config.ts     -- Multi-page Vite build, base path /qwixxer/ for GitHub Pages
+      lib.rs           -- wasm-bindgen exports: WasmGame (one game, JSON in/out)
+      session.rs       -- Session: one human-vs-bot game, turn flow, snapshots, views
+      selection.rs     -- The human's legal selections (passive white sum, active options)
+      bots.rs          -- Master+ / Master / Student, embedded champion + pair net
+      bench.rs         -- bench(bot, games, seed): bot decision latency
+      main.ts          -- Mounts App.svelte
+      engine/
+        protocol.ts    -- TS mirror of the session's JSON types, Engine interface
+        client.ts      -- WorkerEngine: promise RPC over postMessage
+        engine.worker.ts -- Web Worker holding the WasmGame
+      game/
+        rules.ts       -- Pure sheet/confirm/log model (lookups over engine data only)
+        controller.svelte.ts -- GameController: turn sequencing, pacing, tips, persistence
+        keys.ts        -- keyAction: pure page-wide keyboard decisions
+        layout.ts      -- phoneLayout: pure phone sizing
+        *.test.ts      -- Vitest unit tests
+      ui/              -- Svelte 5 components (App, Desktop, Phone, sheets, dice, log, ...)
+      styles/theme.css -- Light/dark tokens, self-hosted Barlow fonts
+    scripts/bench.mjs  -- Node runner for the latency bench
+    index.html         -- Single page
+    vite.config.ts     -- Svelte plugin, ES-module worker, base path /qwixxer/, Vitest config
 ```
 
 ### Feature Flags
@@ -40,10 +50,9 @@ qwixxer/
 | Feature | Description |
 |---------|-------------|
 | `dqn` | Full DQN training (burn with train support, serde, rayon) |
-| `burn` | Burn inference only (model definition + forward pass, no training) |
 | `parallel` | Rayon parallelism for benchmarks and GA training |
 
-Default features are `dqn` + `parallel` for the native binary. The web crate uses only `burn` (no rayon, no training code) to keep the WASM binary small (~1 MB with wasm-opt).
+Default features are `dqn` + `parallel` for the native binary. Burn (ndarray backend) is always available for inference. The web crate depends on the root crate with `default-features = false` (no rayon, no training code) to keep the WASM binary small (~1 MB with wasm-opt). `mimalloc`, the native binary's global allocator, is a target dependency for non-wasm32 only (its C build fails on wasm32).
 
 ---
 
@@ -368,26 +377,52 @@ The rollout policy is pluggable via `RolloutFactory = Arc<dyn Fn() -> Box<dyn St
 
 ## Web UI Architecture
 
-### WASM Crate (`web/src/lib.rs`)
+Browser Qwixx against one bot, specified in
+`docs/superpowers/specs/2026-10-13-web-turn-flow-design.md` (turn flow, legal
+squares, pacing, visual design). The Rust side owns every rule; the Svelte 5 +
+TypeScript frontend (Vite) only looks up what the engine reports. The old
+`WebGame` (Move-index API) and the State Explorer page were removed; an
+explorer is deferred.
 
-**`WebGame`** is a `#[wasm_bindgen]` struct that manages a 2-player game (human vs bot) as a state machine with phases:
+### WASM Crate (`web/src/`)
+
+**`Session`** (`session.rs`) is one human-vs-bot game. The human is player 0,
+the bot player 1, and the bot starts every game. It follows the turn order of
+`src/game.rs` (both phase-1 marks decided on the pre-roll boards and applied
+together, locks propagate, the game may end, then the active player's phase 2).
+Phases:
 
 ```
-BotActive -> PlayerPassive -> PlayerActive -> BotPassive -> (BotActive or GameOver)
+bot_to_roll -> passive -> you_to_roll -> active -> bot_to_roll -> ...   (any step may end in over)
 ```
 
-- `BotActive`: Bot rolls dice, picks a move. Transitions to `PlayerPassive`.
-- `PlayerPassive`: Player may mark the white sum (or skip). Transitions to `PlayerActive`.
-- `PlayerActive`: Player rolls dice, picks from full move set. Bot then takes its passive turn. Transitions back to `BotActive`.
-- `GameOver`: Final scores displayed.
+- `bot_to_roll`: `bot_roll()` rolls and decides the bot's white sum, kept hidden.
+- `passive`: `submit_passive(pick | null)` applies your white sum (or pass) and
+  the bot's phase 1, then the bot's colour mark or strike. Returns a `RollRecord`.
+- `you_to_roll`: `you_roll()` rolls and decides the bot's white sum, which is
+  revealed (`view.bot_white`) because your legal set depends on it.
+- `active`: `submit_active(picks, strike)` applies one of the engine's legal
+  selections (`view.options.selections`) or a strike. Returns a `RollRecord`.
+- `over`: with a reason (`locks`, `you_strikes`, `bot_strikes`).
 
-The struct tracks per-cell marks (`player_marks` and `bot_marks` as `[[bool; 11]; 4]`) separately from the `State` free pointer, so the UI can distinguish marked cells from skipped cells.
+Per-cell display marks (`[[bool; 11]; 4]` per player) are the source of truth;
+`State` is derived from them, so marked and skipped cells stay distinguishable.
+`selection.rs` computes the human's legal selections (spec "Which squares are
+legal"): phase-1 marks judged on the pre-roll boards, phase 2 after both
+phase-1 marks and lock propagation, no colour mark or strike once two rows are
+locked. The session serialises to a `Snapshot`, so a game survives a reload.
 
-**Exported methods**: `new(bot_type)`, `view() -> JSON`, `make_move(index)`, `skip()`, `new_game(bot_type)`.
+**Bots** (`bots.rs`, engine ids in brackets): **Master+** (`master_plus`,
+default) = pair-search over the pair net with `SearchConfig::parse(MASTER_PLUS_SPEC)`,
+where `MASTER_PLUS_SPEC = ""` is the native production config (see the latency
+table below); **Master** (`master`) = the static pair net; **Student**
+(`student`) = the GA champion. `champion.txt` and `pair_model/model.mpk` are
+embedded at compile time via `include_bytes!`, so rebuild after changing them.
 
-**Model embedding**: The GA champion weights (`champion.txt`) and DQN model (`dqn_model/model.mpk`) are embedded at compile time via `include_bytes!`. The DQN model loads via `NamedMpkBytesRecorder` with half-precision settings.
-
-**`StateExplorer`** is a second `#[wasm_bindgen]` struct for the explorer page. It holds both a GA champion and a DQN model, and evaluates arbitrary board states constructed from a JSON-serialized marks array. Returns GA value, DQN value, score, blanks, probability, weighted probability, and per-gene breakdowns.
+**`WasmGame`** (`lib.rs`) wraps a `Session` for wasm-bindgen with JSON in/out:
+`new(bot, seed)`, `restore(bot, snapshot, seed)`, `view()`, `snapshot()`,
+`bot_roll()`, `submit_passive(pick_json)`, `you_roll()`,
+`submit_active(picks_json, strike)`. `bench.rs` exports `bench(bot, games, seed)`.
 
 ### Web bot latency
 
@@ -407,20 +442,53 @@ Master+ passes the bar (p95 ≤ 400 ms, max ≤ 2500 ms) at the native productio
 search config (`SearchConfig::default()`), so the web build keeps
 `MASTER_PLUS_SPEC = ""` and the size-optimised `opt-level = 'z'` / `-Oz`.
 
-### TypeScript Frontend
+### Frontend (`web/src/`)
 
-Built with Vite (vanilla TypeScript, no framework). Multi-page configuration serves both `index.html` (game) and `explorer.html` (explorer).
+**Worker engine.** `engine.worker.ts` holds one `WasmGame` per worker, so bot
+decisions (Master+ can take hundreds of ms) never stall animations.
+`WorkerEngine` (`client.ts`) implements the `Engine` interface of
+`protocol.ts` as promise RPC over `postMessage` (`start`, `restore`,
+`snapshot`, `botRoll`, `submitPassive`, `youRoll`, `submitActive`);
+`protocol.ts` mirrors the session's serde JSON types. A failed `start` or
+`restore` leaves the worker usable; calls to a dead worker reject.
 
-**Board rendering** (`board.ts`): Programmatically constructs DOM elements for each row and cell. Cells are classified as `marked` (X overlay), `skipped` (dimmed), `available` (colored), or `lock-unavailable` (lock number without 5 marks). Footer shows clickable strike boxes and a detailed scoring breakdown.
+**`GameController`** (`game/controller.svelte.ts`) is the Svelte 5 rune state
+for one page: it sequences turns against the `Engine`, enforces the pacing
+minimums (`PACE`: tumble 600 ms with faces every 75 ms, bot think 500 ms,
+colour-mark stagger 450 ms, hand-over 900 ms; beats overlap the engine call
+and stretch if the bot is slower), stages the bot's marks (pencil, then ink),
+keeps the selection, tips and log, and surfaces engine errors. After your
+roll, `pendingDice` shows the rolled dice during the bot's think, before the
+view (with the bot's revealed white sum) lands. The log resets per game.
+`game/rules.ts` is the pure sheet / confirm-button / log model; it only looks
+up the engine's lists and never re-derives legality.
 
-**Move interaction** (`moves.ts`): Players click directly on scoresheet cells. The system:
-1. Parses move descriptions (e.g., "RED 7 + GRN 10") into `MoveTarget` arrays
-2. Highlights all cells that appear in any legal move
-3. As cells are clicked, narrows compatible moves and updates highlights
-4. Requires explicit Confirm button press (no auto-confirm)
-5. Supports toggle deselection (click a selected cell to unselect)
+**Persistence** (`localStorage`): `qwixxer.save.v1` holds the snapshot, log,
+roll count, current and next bot; it is written after each resolved step and
+restored on load (a game waiting on the bot's roll resumes its turn). If the
+engine rejects a saved snapshot, the save is discarded and a new game starts.
+`qwixxer.prefs.v1` holds the theme and the bot for the next game (changing the
+bot applies from the next game).
 
-**State Explorer** (`explorer.ts`): A standalone page where users can click any cell to toggle marks, click strike boxes, and adjust sliders for opponent count / max opponent strikes / score gap. Evaluations update live, showing both GA instinct value and DQN predicted value with a full gene-by-gene breakdown table.
+**Layouts.** `App.svelte` picks `Desktop.svelte` (paper sheet, targets
+1280×800) or `Phone.svelte` (sheet turned sideways, portrait 390×844) by the
+media query `(max-width: 1099px), (orientation: portrait)`. On the phone the
+bot's sheet, the bot picker and the log live in a modal drawer.
+`game/layout.ts` (`phoneLayout`) sizes the phone: 48 px squares shrinking to a
+28 px floor; if even that does not fit, the page scrolls vertically rather
+than clipping. `game/keys.ts` (`keyAction`) decides page-wide keys: Enter
+confirms, Space rolls, Escape clears; keyboard-focused controls and form
+fields keep their native keys; while the drawer is open Escape closes it and
+Enter/Space never act on the game.
+
+**Look.** Light/dark tokens in `styles/theme.css`, self-hosted Barlow and
+Barlow Condensed (`@fontsource/*`). Squares, strike boxes and actions are real
+`<button>`s with descriptive labels and `aria-pressed` / `aria-disabled`
+(never `disabled`, so pressing an inactive control can show a tip).
+
+**Tests.** Rust: `cd web && cargo test --release` (session and selection edge
+cases). TypeScript: `npm test` (Vitest: rules, controller with a fake engine,
+keys, layout) and `npm run check` (svelte-check).
 
 ---
 

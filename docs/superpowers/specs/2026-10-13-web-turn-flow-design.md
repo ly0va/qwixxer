@@ -243,8 +243,11 @@ the paper-sheet look, desktop 1280×800, no scrolling.
   bot's most recent marks as small log chips (its revealed white sum on the
   user's turn, its previous turn's marks before the user rolls), and locking
   shows on the sheet itself. The bot's sheet (compact, horizontal, view-only), the bot picker and the
-  log live in a bottom drawer. Short phones shrink the cells, down to about
-  36 px; no scrolling. Portrait only.
+  log live in a bottom drawer, which is modal: Escape closes it, and Enter /
+  Space don't act on the game while it is open. Cells shrink with the screen
+  down to a 28 px floor; if even that does not fit (e.g. small phones with
+  browser toolbars) the page scrolls vertically rather than clipping.
+  Portrait only.
 - Clickable prototype: the "Prototype · play a game (desktop)" artboard plays
   full games against a simple greedy stand-in bot (rules re-implemented in
   JavaScript for the prototype only).
@@ -257,7 +260,7 @@ real pair-search bot also needs a moment to compute):
 - After the user's roll the dice tumble, then the bot "thinks" (about
   0.5 s, "thinking…" beside its name) before its white sum draws in. The
   user's selection opens only after that reveal, since the legal set depends
-  on it.
+  on it. The rolled dice stay visible while the bot thinks.
 - On the bot's turn, after the user confirms: the user's mark inks at once,
   the bot thinks (about 0.5 s), draws its white sum, then about 0.45 s later
   its colour mark or strike.
@@ -293,12 +296,14 @@ real pair-search bot also needs a moment to compute):
 
 - **Keyboard (desktop):** Enter confirms, Space rolls, Escape clears the
   selection. (The design canvas can't bind page-wide keys, so the prototype
-  has none.)
+  has none.) On the phone, the bot drawer is modal: Escape closes it, and
+  Enter / Space don't act on the game while it is open.
 - **Window sizes:** the desktop layout needs about 1280×800; below about
   1100 px wide, or on a portrait screen, switch to the phone layout. Tablets
   in landscape get the desktop layout scaled down.
 - **Log:** scrolls instead of truncating (the prototype shows the last six
-  rolls); a "Game N" separator between games.
+  rolls). Decision taken: the log resets with each new game, so there is no
+  "Game N" separator.
 - **Rules source:** legality, locks and game end come from the WASM engine
   (the legal-selection list above). The prototype re-implements the rules in
   JavaScript only to be playable on the canvas; the real UI must not, so the
