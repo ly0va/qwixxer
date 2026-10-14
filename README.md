@@ -79,7 +79,7 @@ Model artifacts (committed, embedded in the web build):
 
 ## Web UI
 
-Svelte 5 + TypeScript + Vite. The game rules run in Rust compiled to WASM inside a Web Worker, so bot thinking never blocks the animations. PWA-installable and playable offline. Deployed to GitHub Pages by `.github/workflows/deploy.yml` on every push to `main`. Build and development instructions are in `web/README.md`; the design is in `docs/superpowers/specs/2026-10-13-web-turn-flow-design.md`.
+Svelte 5 + TypeScript + Vite. The game rules run in Rust compiled to WASM inside a Web Worker, so bot thinking never blocks the animations. PWA-installable and playable offline. Deployed to GitHub Pages by `.github/workflows/deploy.yml` on every push to `main`. An explorer (`#/explore`) evaluates any two-sheet position and, for a roll, ranks your moves and shows which one each bot would pick; positions can be shared as links. Build and development instructions are in `web/README.md`; the design is in `docs/superpowers/specs/2026-10-13-web-turn-flow-design.md`.
 
 ## Project structure
 
@@ -96,7 +96,7 @@ src/
 examples/          Analysis tools: divergence and feature screens, sigma probes,
                    score distributions, search calibration
 web/
-  src/*.rs         WASM crate: game session, legal selections, bots, latency bench
+  src/*.rs         WASM crate: game session, legal selections, bots, explorer, latency bench
   src/engine/      Worker RPC to the WASM engine
   src/game/        Pure UI model, controller, keyboard and layout helpers
   src/ui/          Svelte components (desktop and phone layouts)

@@ -6,6 +6,25 @@ TypeScript on Vite. Design and turn flow:
 `docs/superpowers/specs/2026-10-13-web-turn-flow-design.md`; architecture:
 `docs/ARCHITECTURE.md` ("Web UI Architecture").
 
+## State explorer
+
+`#/explore` (the desktop Play / Explore tabs, or the "⋯" menu's Explorer and,
+in a game, "Explore this position") sets up any two-sheet position and asks
+the engine about it. Spec: `docs/superpowers/specs/2026-10-14-state-explorer-design.md`.
+
+- `src/explorer.rs` (`WasmExplorer` in `src/lib.rs`): the pair net's P(win)
+  and margin for the position, and for a roll every legal move of yours
+  ranked by P(win) after it, tagged with the move each bot would make in your
+  seat. Runs as the `explore` command of the same worker as the game.
+- `src/game/position.ts`: the editable position (marks, strikes, tap-closed
+  rows, dice, whose roll) and its sheet model; `src/game/link.ts`: the
+  21-character link code (`#/explore?p=<code>`); `src/game/explorer.svelte.ts`:
+  `ExplorerController` (edits, one engine call in flight with edits coalesced,
+  the position remembered in `localStorage`, Copy link); `src/game/route.ts`:
+  hash routing.
+- `src/ui/`: `ExplorerDesktop` / `ExplorerPhone`, with `ExSheet`,
+  `PositionCard`, `RollCard`, `MovesList`, `StrikeBoxes` and `Tabs`.
+
 ## Prerequisites
 
 - Rust toolchain with `wasm32-unknown-unknown` target: `rustup target add wasm32-unknown-unknown`

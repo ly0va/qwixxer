@@ -382,9 +382,10 @@ The rollout policy is pluggable via `RolloutFactory = Arc<dyn Fn() -> Box<dyn St
 Browser Qwixx against one bot, specified in
 `docs/superpowers/specs/2026-10-13-web-turn-flow-design.md` (turn flow, legal
 squares, pacing, visual design). The Rust side owns every rule; the Svelte 5 +
-TypeScript frontend (Vite) only looks up what the engine reports. The old
-`WebGame` (Move-index API) and the State Explorer page were removed; an
-explorer is deferred.
+TypeScript frontend (Vite) only looks up what the engine reports. A state
+explorer (`#/explore`, spec
+`docs/superpowers/specs/2026-10-14-state-explorer-design.md`) evaluates any
+two-sheet position; see "State explorer" below.
 
 ### WASM Crate (`web/src/`)
 
@@ -420,7 +421,8 @@ where `MASTER_PLUS_SPEC = ""` is the native production config (see the latency
 table below); **Master** (`master`) = the static pair net; **Student**
 (`student`) = the GA champion; **Newbie** (`newbie`) = the hand-written
 Opportunist. The header's "⋯" menu (`Menu.svelte`, both layouts) holds New
-game (two clicks mid-game) and the dark-mode switch. `champion.txt` and `pair_model/model.mpk` are
+game (two clicks mid-game), Explore this position, Explorer (Back to game in
+the explorer) and the dark-mode switch. `champion.txt` and `pair_model/model.mpk` are
 embedded at compile time via `include_bytes!`, so rebuild after changing them.
 
 **`WasmGame`** (`lib.rs`) wraps a `Session` for wasm-bindgen with JSON in/out:
@@ -448,11 +450,12 @@ search config (`SearchConfig::default()`), so the web build keeps
 
 ### Frontend (`web/src/`)
 
-**Worker engine.** The worker (`engine.worker.ts`, logic in `serve.ts`) holds one `WasmGame`, so bot
+**Worker engine.** The worker (`engine.worker.ts`, logic in `serve.ts`) holds one `WasmGame` (and the explorer's `WasmExplorer`), so bot
 decisions (Master+ can take hundreds of ms) never stall animations.
 `WorkerEngine` (`client.ts`) implements the `Engine` interface of
 `protocol.ts` as promise RPC over `postMessage` (`start`, `restore`,
-`snapshot`, `botRoll`, `submitPassive`, `youRoll`, `submitActive`);
+`snapshot`, `botRoll`, `submitPassive`, `youRoll`, `submitActive`, and the
+explorer's `explore`);
 `protocol.ts` mirrors the session's serde JSON types. Arguments are deep-copied
 to plain JSON data before `postMessage`, since callers pass Svelte `$state`
 Proxies, which cannot be structured-cloned. Failures reject with an
@@ -500,14 +503,34 @@ confirms, Space rolls, Escape clears; keyboard-focused controls and form
 fields keep their native keys; while the drawer is open Escape closes it and
 Enter/Space never act on the game.
 
+**State explorer.** `explorer.rs` (`WasmExplorer` in `lib.rs`,
+`explore(position_json)`) takes both sheets, the rows closed by tapping their
+lock (rows closed by marking are derived and unioned in), the dice and whose
+roll. It returns the pair net's P(you win), margin (score difference + μ) and
+σ, the result for a finished game, and for a roll every legal turn of yours
+(from `selection.rs`; on your roll the opponent's white-sum mark is treated as
+a pass) ranked by P(win) after it, tagged with the ids of the bots that would
+take it in your seat. The worker creates one `WasmExplorer` on the first
+`explore` call and keeps it beside the game's `WasmGame`, so both views share
+one worker. `ExplorerController` (`game/explorer.svelte.ts`) holds the
+position (`game/position.ts`) and keeps one engine call in flight: edits made
+meanwhile coalesce into one call for the latest position, and an outdated
+answer never lands. Links are `#/explore?p=<code>`, where `game/link.ts`
+packs the position into 117 bits as a version character plus 20 base64url
+characters; the app loads a link once, then rewrites the address to
+`#/explore`. The position is remembered as a link code in
+`qwixxer.explorer.v1`. The ⋯ menu's "Explore this position" copies the game's
+current view into the explorer.
+
 **Look.** Light/dark tokens in `styles/theme.css`, self-hosted Barlow and
 Barlow Condensed (`@fontsource/*`). Squares, strike boxes and actions are real
 `<button>`s with descriptive labels and `aria-pressed` / `aria-disabled`
 (never `disabled`, so pressing an inactive control can show a tip).
 
-**Tests.** Rust: `cd web && cargo test --release` (session and selection edge
-cases). TypeScript: `npm test` (Vitest: rules, controller with a fake engine,
-worker RPC and handler, keys, layout) and `npm run check` (svelte-check).
+**Tests.** Rust: `cd web && cargo test --release` (session, selection and
+explorer edge cases). TypeScript: `npm test` (Vitest: rules, controller and
+explorer controller with a fake engine, position, link codec, route, worker
+RPC and handler, keys, layout) and `npm run check` (svelte-check).
 Vitest runs in a custom environment (`src/test/client-env.ts`) that compiles
 runes for the client, so `$state` values are Proxies as in the browser; the
 fake engine `structuredClone`s its arguments like `postMessage`. CI

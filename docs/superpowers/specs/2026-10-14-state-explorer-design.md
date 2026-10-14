@@ -1,7 +1,7 @@
 # Web: state explorer
 
-**Status:** design agreed (mockups: the "Explorer" page of the design canvas,
-https://claude.ai/artifact/4eDmxXF5jEskvwxcFS26im, artboards E1–E5).
+**Status:** implemented (branch `explorer`). Mockups: the "Explorer" page of the design canvas,
+https://claude.ai/artifact/4eDmxXF5jEskvwxcFS26im, artboards E1–E5.
 
 ## Goal
 
@@ -77,7 +77,7 @@ faded, until the new one arrives.
 ## Evaluation (always shown)
 
 - "**38%** chance you win" with a bar, and "Opponent ahead by about 9 (± 15)"
-  (or "You ahead by…", "Level, ± 15"). Under it, "before the roll".
+  (or "You ahead by…", "Level (± 15)"). Under it, "before the roll".
 - Numbers come from the pair net (Master's and Master+'s evaluator): P(win)
   is its Gaussian win probability for You against Opponent; the margin is
   current score difference + μ, rounded, with σ rounded as the ±.
