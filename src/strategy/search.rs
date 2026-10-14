@@ -346,6 +346,22 @@ struct Candidate {
     post: State,
 }
 
+/// A decision with the evidence behind it (the web explorer's ranking):
+/// the move the bot plays, and the blended score `(1 − λ)·Φ(static z) +
+/// λ·mean(rollout outcomes)` of each candidate it played out. `searched` is
+/// empty when no search ran (forced move, closed gates, too few candidates).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Explanation {
+    pub pick: Option<Mark>,
+    pub searched: Vec<(Option<Mark>, f32)>,
+}
+
+impl Explanation {
+    fn unsearched(pick: Option<Mark>) -> Self {
+        Explanation { pick, searched: vec![] }
+    }
+}
+
 /// Gate predicate over (static value, post-move state) pairs sorted desc by
 /// value. `our` is the pre-decision state (lock comparisons are relative to
 /// it). `pub(crate)` so training-time distillation can reuse the exact gate
@@ -703,7 +719,7 @@ impl<B: WinProb> SearchBot<B> {
         entries: Vec<(Vec<State>, bool)>,
         seed: u64,
         first_active: usize,
-    ) -> usize {
+    ) -> (usize, Vec<f32>) {
         debug_assert_eq!(entries.len(), cands.len().min(self.cfg.cands));
         let k_max = self.cfg.k_samples;
         let mut k = self.cfg.seq.unwrap_or(k_max).min(k_max);
@@ -717,7 +733,15 @@ impl<B: WinProb> SearchBot<B> {
                     // Samples per candidate, averaged over the shortlist.
                     st.borrow_mut().rollout_samples += (sampled / entries.len()) as u64;
                 }
-                return best;
+                // Absolute blended score per shortlisted candidate, over the
+                // samples it got (eliminated ones stopped early).
+                let lambda = self.cfg.blend.unwrap_or(1.0);
+                let scores = values
+                    .iter()
+                    .zip(cands)
+                    .map(|(v, c)| (1.0 - lambda) * phi(c.value) + lambda * v.iter().sum::<f32>() / v.len() as f32)
+                    .collect();
+                return (best, scores);
             }
             let next = (2 * k).min(k_max);
             let more = self.rollout_values(&entries, &active, seed, first_active, k..next);
@@ -848,8 +872,10 @@ impl<B: WinProb> SearchBot<B> {
     }
 }
 
-impl<B: WinProb> Strategy for SearchBot<B> {
-    fn active_phase1(&mut self, state: &State, opp_states: &[State], dice: [u8; 6]) -> Option<Mark> {
+impl<B: WinProb> SearchBot<B> {
+    /// `Strategy::active_phase1` with its evidence: the phase-1 mark it plays
+    /// and the blended score of each phase-1 mark it played out.
+    pub fn explain_active_phase1(&mut self, state: &State, opp_states: &[State], dice: [u8; 6]) -> Explanation {
         if let Some(stats) = &self.stats {
             stats.borrow_mut().active_decisions += 1;
         }
@@ -857,7 +883,7 @@ impl<B: WinProb> Strategy for SearchBot<B> {
         let plans = match decision {
             Decision::Forced(Some(lock)) if self.cfg.lock_k.is_some() && is_safe_lock(state, Some(lock)) => {
                 let rule_free = phase1_plan_choices_with(state, &sim_opp, dice, false);
-                return self.adjudicate_lock(
+                return Explanation::unsearched(self.adjudicate_lock(
                     state,
                     lock,
                     rule_free,
@@ -867,9 +893,9 @@ impl<B: WinProb> Strategy for SearchBot<B> {
                     |m, _| phase1_entry(&self.bot, state, &sim_opp, dice, m),
                     context_seed(state, opp_states, dice),
                     1 % (opp_states.len() + 1),
-                );
+                ));
             }
-            Decision::Forced(m) => return m,
+            Decision::Forced(m) => return Explanation::unsearched(m),
             Decision::Choices(c) => c,
         };
         let states: Vec<State> = plans.iter().map(|(_, s)| *s).collect();
@@ -900,7 +926,7 @@ impl<B: WinProb> Strategy for SearchBot<B> {
         } else {
             self.gate_and_record(&cands, state, opp_states)
         }) else {
-            return cands[0].mark;
+            return Explanation::unsearched(cands[0].mark);
         };
 
         // Entry per shortlisted phase-1 mark: opponents' (shared, simultaneous)
@@ -912,9 +938,18 @@ impl<B: WinProb> Strategy for SearchBot<B> {
             .collect();
 
         let seed = context_seed(state, opp_states, dice);
-        let pick = self.search_pick(shortlist, entries, seed, 1 % (opp_states.len() + 1));
+        let (pick, scores) = self.search_pick(shortlist, entries, seed, 1 % (opp_states.len() + 1));
         self.record_search_result(close || endgame, pick != 0);
-        shortlist[pick].mark
+        Explanation {
+            pick: shortlist[pick].mark,
+            searched: shortlist.iter().map(|c| c.mark).zip(scores).collect(),
+        }
+    }
+}
+
+impl<B: WinProb> Strategy for SearchBot<B> {
+    fn active_phase1(&mut self, state: &State, opp_states: &[State], dice: [u8; 6]) -> Option<Mark> {
+        self.explain_active_phase1(state, opp_states, dice).pick
     }
 
     fn active_phase2(&mut self, state: &State, opp_states: &[State], dice: [u8; 6], has_marked: bool) -> Option<Mark> {
@@ -971,7 +1006,7 @@ impl<B: WinProb> Strategy for SearchBot<B> {
         let entries: Vec<(Vec<State>, bool)> = shortlist.iter().map(|c| phase2_entry(c.post, opp_states)).collect();
 
         let seed = context_seed(state, opp_states, dice);
-        let pick = self.search_pick(shortlist, entries, seed, 1 % (opp_states.len() + 1));
+        let (pick, _) = self.search_pick(shortlist, entries, seed, 1 % (opp_states.len() + 1));
         self.record_search_result(close || endgame, pick != 0);
         shortlist[pick].mark
     }
@@ -983,8 +1018,21 @@ impl<B: WinProb> Strategy for SearchBot<B> {
         dice: [u8; 6],
         active_player: usize,
     ) -> Option<Mark> {
+        self.explain_passive_phase1(state, opp_states, dice, active_player).pick
+    }
+}
+
+impl<B: WinProb> SearchBot<B> {
+    /// `Strategy::passive_phase1` with its evidence (see [`Explanation`]).
+    pub fn explain_passive_phase1(
+        &mut self,
+        state: &State,
+        opp_states: &[State],
+        dice: [u8; 6],
+        active_player: usize,
+    ) -> Explanation {
         if !self.cfg.search_passive && self.cfg.lock_k.is_none() {
-            return passive_phase1_impl(&self.bot, state, opp_states, dice);
+            return Explanation::unsearched(passive_phase1_impl(&self.bot, state, opp_states, dice));
         }
         let choices = match passive_phase1_choices(state, opp_states, dice) {
             Decision::Forced(Some(lock)) if self.cfg.lock_k.is_some() && is_safe_lock(state, Some(lock)) => {
@@ -992,7 +1040,7 @@ impl<B: WinProb> Strategy for SearchBot<B> {
                 let marks = state.generate_white_moves(white_sum);
                 let opp_best = opp_best_phase1_score(opp_states, white_sum);
                 let rule_free = mark_choices_with(state, &marks, *state, opp_best, false);
-                return self.adjudicate_lock(
+                return Explanation::unsearched(self.adjudicate_lock(
                     state,
                     lock,
                     rule_free,
@@ -1002,13 +1050,13 @@ impl<B: WinProb> Strategy for SearchBot<B> {
                     |m, _| passive_entry(&self.bot, state, opp_states, dice, active_player, m),
                     context_seed(state, opp_states, dice),
                     passive_first_active(active_player, opp_states.len() + 1),
-                );
+                ));
             }
-            Decision::Forced(m) => return m,
+            Decision::Forced(m) => return Explanation::unsearched(m),
             Decision::Choices(c) => c,
         };
         if !self.cfg.search_passive {
-            return eval_decision(&self.bot, Decision::Choices(choices), opp_states);
+            return Explanation::unsearched(eval_decision(&self.bot, Decision::Choices(choices), opp_states));
         }
         let states: Vec<State> = choices.iter().map(|(_, s)| *s).collect();
         let values = self.bot.evaluate_batch(&states, opp_states);
@@ -1028,7 +1076,7 @@ impl<B: WinProb> Strategy for SearchBot<B> {
         } else {
             self.gate_and_record(&cands, state, opp_states)
         }) else {
-            return cands[0].mark;
+            return Explanation::unsearched(cands[0].mark);
         };
 
         // Entry per candidate: our mark, then the rest of the turn (other
@@ -1042,12 +1090,15 @@ impl<B: WinProb> Strategy for SearchBot<B> {
 
         let seed = context_seed(state, opp_states, dice);
         let first_active = passive_first_active(active_player, opp_states.len() + 1);
-        let pick = self.search_pick(shortlist, entries, seed, first_active);
+        let (pick, scores) = self.search_pick(shortlist, entries, seed, first_active);
         self.record_search_result(close || endgame, pick != 0);
         if let Some(stats) = &self.stats {
             stats.borrow_mut().passive_searched += 1;
         }
-        shortlist[pick].mark
+        Explanation {
+            pick: shortlist[pick].mark,
+            searched: shortlist.iter().map(|c| c.mark).zip(scores).collect(),
+        }
     }
 }
 
@@ -1105,6 +1156,53 @@ mod tests {
         let c = bot.active_phase2(&state, &opps, dice, false);
         let d = bot.active_phase2(&state, &opps, dice, false);
         assert_eq!(c, d);
+    }
+
+    #[test]
+    fn explanations_pick_what_the_bot_plays_and_score_what_it_searched() {
+        use rand::Rng;
+        // A small shortlist and sample count keep this quick; `force` makes
+        // every decision with two or more candidates search.
+        let cfg = SearchConfig {
+            k_samples: 64,
+            seq: Some(16),
+            search_passive: true,
+            ..Default::default()
+        };
+        let mut bot = SearchBot::with_config(test_bot(), cfg);
+        bot.force = true;
+        let mut rng = SmallRng::seed_from_u64(5);
+        let mut searched = 0;
+        for _ in 0..40 {
+            let mut marks = [[false; 11]; 4];
+            for row in marks.iter_mut() {
+                for m in row.iter_mut() {
+                    *m = rng.gen_bool(0.25);
+                }
+            }
+            let state = State::from_marks(&marks, rng.gen_range(0..=2));
+            let opps = [State::default()];
+            let dice: [u8; 6] = core::array::from_fn(|_| rng.gen_range(1..=6));
+            for e in [
+                bot.explain_active_phase1(&state, &opps, dice),
+                bot.explain_passive_phase1(&state, &opps, dice, 0),
+            ] {
+                assert!(e.searched.iter().all(|(_, v)| (0.0..=1.0).contains(v)), "{e:?}");
+                if !e.searched.is_empty() {
+                    searched += 1;
+                    assert!(e.searched.iter().any(|(m, _)| *m == e.pick), "{e:?}");
+                }
+            }
+            assert_eq!(
+                bot.explain_active_phase1(&state, &opps, dice).pick,
+                bot.active_phase1(&state, &opps, dice)
+            );
+            assert_eq!(
+                bot.explain_passive_phase1(&state, &opps, dice, 0).pick,
+                bot.passive_phase1(&state, &opps, dice, 0)
+            );
+        }
+        assert!(searched > 10, "only {searched} searched decisions");
     }
 
     #[test]

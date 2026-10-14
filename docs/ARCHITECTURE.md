@@ -508,9 +508,13 @@ Enter/Space never act on the game.
 lock (rows closed by marking are derived and unioned in), the dice and whose
 roll. It returns the pair net's P(you win), margin (score difference + μ) and
 σ, the result for a finished game, and for a roll every legal turn of yours
-(from `selection.rs`; on your roll the opponent's white-sum mark is treated as
-a pass) ranked by P(win) after it, tagged with the ids of the bots that would
-take it in your seat. The worker creates one `WasmExplorer` on the first
+(from `selection.rs`) ranked the way Master+ weighs it, tagged with the ids
+of the bots that would take it in your seat. Each turn's score is the pair
+net's P(win) against the boards Master+ judges against (on your roll the
+opponent's predicted white-sum mark); turns Master+'s search played out carry
+its blended score instead (`SearchBot::explain_active_phase1` /
+`explain_passive_phase1` return the pick plus those scores, deciding exactly
+as `Strategy` does). Master+'s pick is listed first. The worker creates one `WasmExplorer` on the first
 `explore` call and keeps it beside the game's `WasmGame`, so both views share
 one worker. `ExplorerController` (`game/explorer.svelte.ts`) holds the
 position (`game/position.ts`) and keeps one engine call in flight: edits made

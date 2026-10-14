@@ -47,12 +47,17 @@ impl BotKind {
     }
 }
 
+/// Master+ as its concrete type (the explorer asks it to explain decisions).
+pub fn master_plus() -> SearchBot<PairStrategy> {
+    SearchBot::with_config(
+        PairStrategy::load_from_bytes(PAIR_MODEL),
+        SearchConfig::parse(MASTER_PLUS_SPEC).expect("MASTER_PLUS_SPEC"),
+    )
+}
+
 pub fn make_bot(kind: BotKind) -> Box<dyn Strategy> {
     match kind {
-        BotKind::MasterPlus => Box::new(SearchBot::with_config(
-            PairStrategy::load_from_bytes(PAIR_MODEL),
-            SearchConfig::parse(MASTER_PLUS_SPEC).expect("MASTER_PLUS_SPEC"),
-        )),
+        BotKind::MasterPlus => Box::new(master_plus()),
         BotKind::Master => Box::new(PairStrategy::load_from_bytes(PAIR_MODEL)),
         BotKind::Student => Box::new(DNA::load_weights_from_bytes(CHAMPION, Arc::new(bot::default_genes()))),
         BotKind::Newbie => Box::<Opportunist>::default(),

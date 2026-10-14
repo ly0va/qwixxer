@@ -91,21 +91,28 @@ faded, until the new one arrives.
 - Header "Best moves", "*N* legal · your chance to win after each".
 - **Your roll:** every legal full turn from the game's rules (the same set
   the game offers: white only, colour only, white then colour), plus
-  "Strike" (or "Pass" when the game's rules make a pass legal). The
-  opponent's simultaneous white-sum mark is not modelled: the opponent is
-  treated as passing.
+  "Strike" (or "Pass" when the game's rules make a pass legal).
 - **Opponent's roll:** each legal white-sum mark, plus "Pass".
 - Each row: rank, the marks as row-coloured chips (strike chip / "Pass"
-  text), the bot tags, and your P(win) after the move with a bar. Ranked
-  by that P(win), highest first; ties keep engine order.
-- P(win) after a move = the pair net's win probability for your sheet after
-  the move (locks applied) against the opponent's sheet.
+  text), the bot tags, and Master+'s score for the move with a bar.
+- **Ranked the way Master+ weighs the moves.** Each move's score is the
+  pair net's P(win) for your sheet after it, judged as Master+ judges it:
+  on your roll against the opponent's *predicted* white-sum mark (the
+  bots' own prediction), on the opponent's roll against their sheet. When
+  Master+'s search plays moves out (at most 3, only when Master+ itself
+  would search: a close decision or the endgame), those moves show its
+  blended score instead (0.3 × static + 0.7 × share of playouts won). On
+  your roll the search scores a white-sum choice; the blended score goes
+  to the full turn Master+ completes from it.
+- Master+'s own pick is always first (a move forced by its rules — a safe
+  lock, a game-winning end — has no score to rank by); the rest follow by
+  score, highest first; ties keep engine order.
 - The top row is outlined in ink. The first 6 rows show; "Show all *N*"
   expands the list in place.
 - **Bot tags:** Master+, Master, Student, Newbie, each on the move that bot
   would make in your seat with this roll. Master+ is ink-filled, the others
-  outlined. Several tags may share a row. Master+ uses its full search, so
-  its tag can sit below rank 1; that disagreement is shown, not hidden.
+  outlined. Several tags may share a row. Master+'s tag is always on rank
+  1; the other bots' tags show where they disagree with it.
 - No dice: the list area says "Set the dice to rank the moves" and "Tap a
   die to choose its face, or press Random."
 
