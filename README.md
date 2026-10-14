@@ -117,3 +117,7 @@ The web crate builds the root crate with `default-features = false` (inference o
 ## Rules
 
 Qwixx is a dice game for 2–5 players. Each turn the active player rolls 6 dice (2 white, 4 coloured). Every player may mark the white sum in any row; the active player may also mark one white + colour sum in that colour's row. Numbers are marked left to right (Red and Yellow ascending, Green and Blue descending). Locking a row requires 5 marks before marking its last number. If the active player marks nothing, they take a strike. The game ends when someone has 4 strikes or two rows are locked. A row with n marks scores n(n+1)/2 points; each strike costs 5.
+
+## Disclaimer
+
+An unofficial fan project. Qwixx is a trademark of Nürnberger-Spielkarten-Verlag GmbH, published in North America by Gamewright. This project is not affiliated with or endorsed by either.
