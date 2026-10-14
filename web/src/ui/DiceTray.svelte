@@ -6,14 +6,15 @@
     const v = $derived(c.view);
     // Controller ruling: during the bot's think after your tumble, the rolled
     // dice (pendingDice) are shown while the view is still 'you_to_roll'.
-    const idle = $derived(v?.phase === 'you_to_roll' && !c.rolling && !c.pendingDice);
-    const values = $derived(c.rolling ? c.shownDice : (c.pendingDice ?? v?.dice));
+    // While thinking before they arrive, the last tumble faces (shownDice) stay up.
+    const idle = $derived(v?.phase === 'you_to_roll' && !c.rolling && !c.pendingDice && !c.thinking);
+    const values = $derived(c.rolling ? c.shownDice : (c.pendingDice ?? c.shownDice ?? v?.dice));
     const faces = [['var(--die-face)', 'var(--die-pip)', 'White'], ['var(--die-face)', 'var(--die-pip)', 'White'],
         ['var(--red-band)', 'var(--on-band)', 'Red'], ['var(--yellow-band)', 'var(--on-yellow)', 'Yellow'],
         ['var(--green-band)', 'var(--on-band)', 'Green'], ['var(--blue-band)', 'var(--on-band)', 'Blue']];
     const canRoll = $derived(v?.phase === 'you_to_roll' && !c.busy);
     const rollLabel = $derived(c.rolling ? 'Rolling…' : canRoll ? 'Roll' : v?.phase === 'passive' || v?.phase === 'bot_to_roll' ? 'Bot rolled' : 'Rolled');
-    const shown = $derived(c.pendingDice ?? v?.dice);
+    const shown = $derived(c.pendingDice ?? (c.shownDice ? null : v?.dice));
     const white = $derived(shown && !idle && !c.rolling ? String(shown[0] + shown[1]) : '–');
 </script>
 

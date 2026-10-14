@@ -44,7 +44,7 @@
     main { flex: 1; display: flex; flex-direction: column; gap: 14px; min-width: 0; }
     .you { display: flex; flex-direction: column; gap: 8px; }
     h2 { margin: 0; font-family: var(--cond); font-size: 22px; font-weight: 700; }
-    .sheet { background: var(--paper); border-radius: 14px; padding: 10px; width: fit-content; box-shadow: 0 1px 0 var(--edge), 0 8px 24px var(--shadow); }
+    .sheet { background: var(--paper); border-radius: 14px; padding: 8px; width: fit-content; box-shadow: 0 1px 0 var(--edge), 0 8px 24px var(--shadow); }
     .score { display: flex; gap: 8px; font-size: 14px; color: var(--soft); align-items: center; }
     .part { padding: 2px 8px; border-radius: 6px; font-weight: 600; }
     .part.strikes { background: var(--btn-muted-bg); color: var(--ink); }

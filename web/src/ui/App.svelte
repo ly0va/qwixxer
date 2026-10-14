@@ -2,6 +2,7 @@
     import { onMount } from 'svelte';
     import { createEngine } from '../engine/client';
     import { GameController } from '../game/controller.svelte';
+    import { keyAction } from '../game/keys';
     import Desktop from './Desktop.svelte';
 
     const store = { get: (k: string) => { try { return localStorage.getItem(k); } catch { return null; } },
@@ -11,13 +12,20 @@
     $effect(() => { document.documentElement.dataset.theme = c.theme; });
 
     // Spec "Implementation notes · Keyboard": Enter confirms, Space rolls,
-    // Escape clears. A focused button keeps its native Enter/Space click.
+    // Escape clears. Only keyboard-focused controls and form fields keep their
+    // native Enter/Space (see keys.ts).
+    function focusVisible(el: Element): boolean {
+        try { return el.matches(':focus-visible'); } catch { return false; }
+    }
     function onKey(e: KeyboardEvent) {
-        const t = e.target as HTMLElement | null;
-        if (t && (t.closest('button') || t.closest('select') || t.closest('input'))) return;
-        if (e.key === 'Enter') { e.preventDefault(); c.confirm(); }
-        else if (e.key === ' ' && c.view?.phase === 'you_to_roll') { e.preventDefault(); c.roll(); }
-        else if (e.key === 'Escape') c.clearSelection();
+        const t = e.target instanceof Element ? e.target : null;
+        const field = !!t?.closest('select, input, textarea');
+        const keyboardFocus = !!t && t !== document.body && focusVisible(t);
+        const action = keyAction(e.key, { field, keyboardFocus }, c.view?.phase);
+        if (action && action !== 'clear') e.preventDefault();
+        if (action === 'confirm') c.confirm();
+        else if (action === 'roll') c.roll();
+        else if (action === 'clear') c.clearSelection();
     }
 </script>
 

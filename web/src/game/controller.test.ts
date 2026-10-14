@@ -160,13 +160,15 @@ describe('GameController', () => {
         const e = fakeEngine();
         const c = new GameController(e, memStore({ 'qwixxer.save.v1': JSON.stringify({ snapshot: '{}', log: [], rollNo: 2, bot: 'master', nextBot: 'master' }) }), sleep, () => 1);
         await c.init();
-        const pending = c.roll();
+        let finished = false;
+        const pending = c.roll().then(() => (finished = true));
         await flush();
         expect(waits.map((w) => w.ms)).toEqual([600]);
         expect(c.pendingDice).toBe(null);
         waits[0].done();
         await flush();
         expect(waits.map((w) => w.ms)).toEqual([600, 500]);
+        expect(finished).toBe(false); // the think is a minimum even with a fast engine
         expect(c.rolling).toBe(false);
         expect(c.thinking).toBe(true);
         expect(c.pendingDice).toEqual([1, 2, 3, 4, 5, 6]);
@@ -175,5 +177,36 @@ describe('GameController', () => {
         await pending;
         expect(c.pendingDice).toBe(null);
         expect(c.view?.phase).toBe('active');
+    });
+    it('keeps thinking with tumble faces up while a slow engine computes', async () => {
+        const waits: { ms: number; done: () => void }[] = [];
+        const sleep = (ms: number) => new Promise<void>((r) => waits.push({ ms, done: r }));
+        const flush = () => new Promise((r) => setTimeout(r, 0));
+        let finish: (v: View) => void = () => {};
+        const e = fakeEngine({ youRoll: vi.fn(() => new Promise<View>((r) => { finish = r; })) });
+        const c = new GameController(e, memStore({ 'qwixxer.save.v1': JSON.stringify({ snapshot: '{}', log: [], rollNo: 2, bot: 'master', nextBot: 'master' }) }), sleep, () => 1);
+        await c.init();
+        let finished = false;
+        const pending = c.roll().then(() => (finished = true));
+        await flush();
+        waits[0].done(); // tumble over, engine still computing
+        await flush();
+        expect(waits.map((w) => w.ms)).toEqual([600, 500]); // think overlaps the engine call
+        expect(c.rolling).toBe(false);
+        expect(c.thinking).toBe(true);
+        expect(c.shownDice).not.toBe(null); // tray keeps the last tumble faces, never blank
+        expect(c.pendingDice).toBe(null);
+        waits[1].done(); // minimum think over, engine still busy
+        await flush();
+        expect(finished).toBe(false);
+        expect(c.thinking).toBe(true);
+        expect(c.view?.phase).toBe('you_to_roll');
+        finish(v({ phase: 'active', dice: [6, 5, 4, 3, 2, 1], options: { selections: [[{ row: 0, n: 11 }]], strike: true, pass: false } }));
+        await pending;
+        expect(c.thinking).toBe(false);
+        expect(c.shownDice).toBe(null);
+        expect(c.pendingDice).toBe(null);
+        expect(c.view?.phase).toBe('active');
+        expect(waits.length).toBe(2);
     });
 });

@@ -44,7 +44,7 @@
     .box { position: relative; box-sizing: border-box; width: 40px; height: 40px; border-radius: 8px; padding: 0; border: 2px solid var(--ink); background: var(--paper); cursor: pointer; }
     .box.faded { opacity: 0.35; cursor: default; }
     .msg { flex: 1; display: flex; justify-content: flex-end; }
-    .tip { display: flex; align-items: center; gap: 8px; background: var(--paper); border-radius: 10px; padding: 6px 12px; font-size: 13px; line-height: 1.3; max-height: 52px; overflow: hidden; box-shadow: inset 0 0 0 2px var(--ink); max-width: 460px; }
+    .tip { display: flex; align-items: center; gap: 8px; background: var(--paper); border-radius: 10px; padding: 6px 12px; font-size: 13px; line-height: 1.3; max-height: 64px; overflow: hidden; box-shadow: inset 0 0 0 2px var(--ink); max-width: 460px; }
     .result { display: flex; align-items: baseline; gap: 12px; }
     .result b { font-family: var(--cond); font-weight: 800; font-size: 28px; }
     .score { font-family: var(--cond); font-weight: 700; font-size: 22px; }

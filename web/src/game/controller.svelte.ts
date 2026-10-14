@@ -125,17 +125,21 @@ export class GameController {
             const result = this.engine.youRoll();
             let failed = false;
             result.catch(() => (failed = true));
-            const reveal = async () => {
+            // Tumble, then the bot thinks for at least PACE.think while the
+            // engine computes; the last tumble faces stay up until the real
+            // dice arrive, so the tray never falls back to blank.
+            const anim = async () => {
+                await this.tumble(true);
                 if (failed) return;
-                const rolled = await result.catch(() => null);
-                if (!rolled) return;
-                this.pendingDice = rolled.dice;
-                await this.think();
+                this.thinking = true;
+                result.then((r) => (this.pendingDice = r.dice), () => {});
+                await Promise.all([result.catch(() => {}), this.sleep(PACE.think)]);
             };
-            const v = await this.settled(result, this.tumble().then(reveal));
+            const v = await this.settled(result, anim());
             this.thinking = false;
             this.view = v;
             this.pendingDice = null;
+            this.shownDice = null;
             this.rollNo += 1;
             this.save();
         });
@@ -285,7 +289,8 @@ export class GameController {
         return r.value;
     }
 
-    private async tumble() {
+    /** `keepFaces` leaves the last tumble faces in `shownDice` for the caller to clear. */
+    private async tumble(keepFaces = false) {
         this.rolling = true;
         this.shownDice = randomDice();
         const t = setInterval(() => (this.shownDice = randomDice()), PACE.tick);
@@ -294,13 +299,8 @@ export class GameController {
         } finally {
             clearInterval(t);
             this.rolling = false;
-            this.shownDice = null;
+            if (!keepFaces) this.shownDice = null;
         }
-    }
-
-    private async think() {
-        this.thinking = true;
-        await this.sleep(PACE.think);
     }
 
     private async guard(work: () => Promise<void>) {
@@ -314,6 +314,7 @@ export class GameController {
             this.thinking = false;
             this.rolling = false;
             this.pendingDice = null;
+            this.shownDice = null;
             this.committing = false;
         } finally {
             this.busy = false;
