@@ -1,3 +1,16 @@
+/** Desktop layout design size (spec "Implementation notes · Window sizes"). */
+export const DESK_W = 1280;
+export const DESK_H = 800;
+
+/**
+ * Scale factor for the fixed 1280×800 desktop layout: smaller windows
+ * (1366×768 laptops, landscape tablets) get the whole desk scaled down so it
+ * fits without scrolling; larger ones keep it at 1.
+ */
+export function deskScale(innerWidth: number, innerHeight: number): number {
+    return Math.max(0.1, Math.min(1, innerWidth / DESK_W, innerHeight / DESK_H));
+}
+
 /**
  * Phone layout sizes (spec "Visual design · Phone"): 48 px squares on a
  * 390×844 phone, shrinking on short or narrow screens. Ruling (Task 9 review):

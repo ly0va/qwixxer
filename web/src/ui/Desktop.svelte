@@ -1,5 +1,6 @@
 <script lang="ts">
     import type { GameController } from '../game/controller.svelte';
+    import { DESK_H, DESK_W, deskScale } from '../game/layout';
     import { chipsFor, ROWS, sheetModel, type LogEntry } from '../game/rules';
     import ActionBar from './ActionBar.svelte';
     import BotPanel from './BotPanel.svelte';
@@ -8,6 +9,9 @@
     import Log from './Log.svelte';
     import SheetRows from './SheetRows.svelte';
     let { c }: { c: GameController } = $props();
+    let w = $state(window.innerWidth);
+    let h = $state(window.innerHeight);
+    const scale = $derived(deskScale(w, h));
     const rows = $derived(c.view ? sheetModel(c.view, 'you', { sel: c.sel, strikeSel: c.strikeSel, committing: c.committing, fresh: c.fresh, hidden: [] }) : []);
     const current = $derived<LogEntry | null>(c.view?.phase === 'active'
         ? { n: c.rollNo, lines: [{ who: 'You', chips: [], empty: 'choosing…' }, { who: 'Bot', chips: chipsFor(c.view.bot_white ? [c.view.bot_white] : [], false), empty: '–' }] }
@@ -15,7 +19,10 @@
     const scoreParts = $derived(c.view ? ROWS.map((r, i) => ({ r, text: `${['Red', 'Yellow', 'Green', 'Blue'][i]} ${c.view!.you.row_points[i]}` })) : []);
 </script>
 
-<div class="desk">
+<svelte:window bind:innerWidth={w} bind:innerHeight={h} />
+<!-- The 1280×800 desk scaled to fit the window; .fit takes the scaled size so nothing scrolls. -->
+<div class="fit" style="width: {Math.floor(DESK_W * scale)}px; height: {Math.floor(DESK_H * scale)}px">
+<div class="desk" style="transform: scale({scale})">
     <Header {c} />
     <div class="body">
         <main>
@@ -37,9 +44,11 @@
         </aside>
     </div>
 </div>
+</div>
 
 <style>
-    .desk { width: 1280px; height: 800px; box-sizing: border-box; padding: 22px 32px; display: flex; flex-direction: column; gap: 16px; overflow: hidden; margin: 0 auto; }
+    .fit { margin: 0 auto; overflow: hidden; }
+    .desk { width: 1280px; height: 800px; box-sizing: border-box; padding: 22px 32px; display: flex; flex-direction: column; gap: 16px; overflow: hidden; transform-origin: top left; }
     .body { display: flex; gap: 24px; flex: 1; min-height: 0; }
     main { flex: 1; display: flex; flex-direction: column; gap: 14px; min-width: 0; }
     .you { display: flex; flex-direction: column; gap: 8px; }
