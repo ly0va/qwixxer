@@ -21,6 +21,8 @@ export class GameController {
     error = $state('');
     rolling = $state(false);
     shownDice = $state<number[] | null>(null);
+    /** Your rolled dice, shown during the bot's think before the view lands (spec "Pacing"). */
+    pendingDice = $state<number[] | null>(null);
     thinking = $state(false);
     busy = $state(false);
     committing = $state(false);
@@ -102,6 +104,7 @@ export class GameController {
         await this.guard(async () => {
             this.bot = this.nextBot;
             this.thinking = false;
+            this.pendingDice = null;
             this.log = [];
             this.rollNo = 0;
             this.sel = [];
@@ -122,9 +125,17 @@ export class GameController {
             const result = this.engine.youRoll();
             let failed = false;
             result.catch(() => (failed = true));
-            const v = await this.settled(result, this.tumble().then(() => (failed ? undefined : this.think())));
+            const reveal = async () => {
+                if (failed) return;
+                const rolled = await result.catch(() => null);
+                if (!rolled) return;
+                this.pendingDice = rolled.dice;
+                await this.think();
+            };
+            const v = await this.settled(result, this.tumble().then(reveal));
             this.thinking = false;
             this.view = v;
+            this.pendingDice = null;
             this.rollNo += 1;
             this.save();
         });
@@ -302,6 +313,7 @@ export class GameController {
             this.error = e instanceof Error ? e.message : String(e);
             this.thinking = false;
             this.rolling = false;
+            this.pendingDice = null;
             this.committing = false;
         } finally {
             this.busy = false;

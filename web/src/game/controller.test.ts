@@ -153,4 +153,27 @@ describe('GameController', () => {
         finish(v({ phase: 'active', dice: [1, 2, 3, 4, 5, 6], options: { selections: [[{ row: 0, n: 3 }]], strike: true, pass: false } }));
         await pending;
     });
+    it('shows the rolled dice while the bot thinks, before revealing the view', async () => {
+        const waits: { ms: number; done: () => void }[] = [];
+        const sleep = (ms: number) => new Promise<void>((r) => waits.push({ ms, done: r }));
+        const flush = () => new Promise((r) => setTimeout(r, 0));
+        const e = fakeEngine();
+        const c = new GameController(e, memStore({ 'qwixxer.save.v1': JSON.stringify({ snapshot: '{}', log: [], rollNo: 2, bot: 'master', nextBot: 'master' }) }), sleep, () => 1);
+        await c.init();
+        const pending = c.roll();
+        await flush();
+        expect(waits.map((w) => w.ms)).toEqual([600]);
+        expect(c.pendingDice).toBe(null);
+        waits[0].done();
+        await flush();
+        expect(waits.map((w) => w.ms)).toEqual([600, 500]);
+        expect(c.rolling).toBe(false);
+        expect(c.thinking).toBe(true);
+        expect(c.pendingDice).toEqual([1, 2, 3, 4, 5, 6]);
+        expect(c.view?.phase).toBe('you_to_roll');
+        waits[1].done();
+        await pending;
+        expect(c.pendingDice).toBe(null);
+        expect(c.view?.phase).toBe('active');
+    });
 });
