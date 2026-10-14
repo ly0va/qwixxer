@@ -6,7 +6,7 @@
 
 {#if onTap}
     <button type="button" class="cell look-{cell.look}" style="--c: var(--{color}-ink); --s: {size}px"
-        aria-label={cell.label} aria-pressed={cell.mark === 'pencil'} aria-disabled={!cell.clickable && cell.mark !== 'pencil'}
+        aria-label={cell.label} aria-pressed={cell.mark === 'pencil' || (cell.clickable && cell.mark === 'ink')} aria-disabled={!cell.clickable && cell.mark !== 'pencil'}
         onclick={() => onTap(cell)}>
         <span>{cell.n}</span>
         {#if cell.mark !== 'none'}<MarkX pencil={cell.mark === 'pencil'} anim={cell.anim} />{/if}
