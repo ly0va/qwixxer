@@ -12,14 +12,18 @@ const view = () => JSON.parse(need().view());
 
 function run(cmd: string, args: any[]): unknown {
     switch (cmd) {
-        case 'start':
+        case 'start': {
+            const g = new WasmGame(args[0], args[1]);
             game?.free();
-            game = new WasmGame(args[0], args[1]);
+            game = g;
             return view();
-        case 'restore':
+        }
+        case 'restore': {
+            const g = WasmGame.restore(args[0], args[1], args[2]);
             game?.free();
-            game = WasmGame.restore(args[0], args[1], args[2]);
+            game = g;
             return view();
+        }
         case 'snapshot':
             return need().snapshot();
         case 'botRoll':

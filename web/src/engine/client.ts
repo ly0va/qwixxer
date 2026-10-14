@@ -6,6 +6,7 @@ type Pending = { resolve: (v: any) => void; reject: (e: Error) => void };
 export class WorkerEngine implements Engine {
     private next = 1;
     private pending = new Map<number, Pending>();
+    private dead: Error | null = null;
 
     constructor(private worker: Worker) {
         worker.onmessage = (e: MessageEvent<{ id: number; ok: boolean; result?: any; error?: string }>) => {
@@ -15,13 +16,19 @@ export class WorkerEngine implements Engine {
             if (e.data.ok) p.resolve(e.data.result);
             else p.reject(new Error(e.data.error));
         };
-        worker.onerror = (e) => {
-            for (const p of this.pending.values()) p.reject(new Error(e.message || 'engine failed to load'));
-            this.pending.clear();
-        };
+        worker.onerror = (e) => this.fail(new Error(e.message || 'engine failed to load'));
+        worker.onmessageerror = () => this.fail(new Error('engine message could not be decoded'));
+    }
+
+    /** The worker is unusable: reject everything pending and every later call. */
+    private fail(err: Error) {
+        this.dead = err;
+        for (const p of this.pending.values()) p.reject(err);
+        this.pending.clear();
     }
 
     private call<T>(cmd: string, ...args: unknown[]): Promise<T> {
+        if (this.dead) return Promise.reject(this.dead);
         const id = this.next++;
         return new Promise<T>((resolve, reject) => {
             this.pending.set(id, { resolve, reject });
