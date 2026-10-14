@@ -133,6 +133,38 @@ pub struct Snapshot {
     pub over: Option<OverReason>,
 }
 
+impl Snapshot {
+    /// Checks what the session indexes or unwraps: square rows and numbers,
+    /// dice faces, strikes, and that dice are present exactly when a roll is
+    /// being resolved.
+    pub fn validate(&self) -> Result<(), String> {
+        if let Some(s) = self.bot_white {
+            if s.row >= 4 || !(2..=12).contains(&s.n) {
+                return Err(format!("bad square {s:?}"));
+            }
+        }
+        if let Some(d) = self.dice {
+            if d.iter().any(|f| !(1..=6).contains(f)) {
+                return Err(format!("bad dice {d:?}"));
+            }
+        }
+        if self.you.strikes > 4 || self.bot.strikes > 4 {
+            return Err("too many strikes".into());
+        }
+        let rolling = matches!(self.phase, Phase::Passive | Phase::Active);
+        if rolling && self.dice.is_none() {
+            return Err(format!("phase {:?} needs dice", self.phase));
+        }
+        if !rolling && self.bot_white.is_some() {
+            return Err(format!("phase {:?} has a pending bot mark", self.phase));
+        }
+        if (self.phase == Phase::Over) != self.over.is_some() {
+            return Err("phase and game-over reason disagree".into());
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct SheetView {
     pub marks: [[bool; 11]; 4],
@@ -181,15 +213,22 @@ impl Session {
             bot_white: None,
             over: None,
         };
-        Self::restore(g, strategy, seed)
-    }
-
-    pub fn restore(snap: Snapshot, strategy: Box<dyn Strategy>, seed: u64) -> Self {
         Session {
-            g: snap,
+            g,
             strategy,
             rng: SmallRng::seed_from_u64(seed),
         }
+    }
+
+    /// Resume a saved game. Snapshots come from browser storage, so a
+    /// malformed one is rejected here rather than panicking later.
+    pub fn restore(snap: Snapshot, strategy: Box<dyn Strategy>, seed: u64) -> Result<Self, String> {
+        snap.validate()?;
+        Ok(Session {
+            g: snap,
+            strategy,
+            rng: SmallRng::seed_from_u64(seed),
+        })
     }
 
     pub fn snapshot(&self) -> Snapshot {
@@ -534,7 +573,7 @@ mod tests {
         };
         let you = sheet(&[(0, &[2, 3, 4, 5, 6])], 0);
         let s0 = snap(you, sheet(&[], 0), [false; 4], Phase::Passive, [6, 6, 1, 1, 1, 1], None);
-        let mut s = Session::restore(s0, Box::new(bot), 1);
+        let mut s = Session::restore(s0, Box::new(bot), 1).unwrap();
         let rec = s.submit_passive(Some(sq(0, 12))).unwrap();
         assert_eq!(rec.locked, vec![0]);
         assert_eq!(
@@ -564,7 +603,7 @@ mod tests {
             [6, 6, 1, 1, 1, 1],
             None,
         );
-        let mut s = Session::restore(s0, Box::new(bot), 1);
+        let mut s = Session::restore(s0, Box::new(bot), 1).unwrap();
         let rec = s.submit_passive(Some(sq(0, 12))).unwrap();
         assert!(seen.borrow().is_none(), "no phase 2 after the game ended");
         assert!(!rec.bot_strike);
@@ -589,7 +628,7 @@ mod tests {
             [6, 6, 1, 1, 1, 1],
             None,
         );
-        let mut s = Session::restore(s0, Box::new(bot), 1);
+        let mut s = Session::restore(s0, Box::new(bot), 1).unwrap();
         s.you_roll().unwrap();
         let v = s.view();
         assert_eq!(v.bot_white.map(|w| (w.row, w.n)), Some((0, 12)));
@@ -618,7 +657,8 @@ mod tests {
             ),
             Box::new(Scripted::default()),
             3,
-        );
+        )
+        .unwrap();
         s.you_roll().unwrap();
         let before = serde_json::to_string(&s.view()).unwrap();
         assert!(s.submit_active(&[sq(0, 11)], false).is_err());
@@ -639,7 +679,7 @@ mod tests {
             [1, 1, 1, 1, 1, 1],
             None,
         );
-        let mut s = Session::restore(s0, Box::new(Scripted::default()), 1);
+        let mut s = Session::restore(s0, Box::new(Scripted::default()), 1).unwrap();
         s.you_roll().unwrap();
         let rec = s.submit_active(&[], true).unwrap();
         assert!(rec.you_strike);
@@ -652,7 +692,7 @@ mod tests {
         for _ in 0..12 {
             let json = serde_json::to_string(&s.snapshot()).unwrap();
             let back: Snapshot = serde_json::from_str(&json).unwrap();
-            let r = Session::restore(back, make_bot(BotKind::Student), 77);
+            let r = Session::restore(back, make_bot(BotKind::Student), 77).unwrap();
             assert_eq!(
                 serde_json::to_string(&r.view()).unwrap(),
                 serde_json::to_string(&s.view()).unwrap()
@@ -673,5 +713,92 @@ mod tests {
                 Phase::Over => break,
             }
         }
+    }
+
+    #[test]
+    fn restore_rejects_malformed_snapshots() {
+        let ok = snap(
+            sheet(&[], 0),
+            sheet(&[], 0),
+            [false; 4],
+            Phase::Active,
+            [1; 6],
+            Some(sq(0, 2)),
+        );
+        assert!(Session::restore(ok.clone(), make_bot(BotKind::Student), 1).is_ok());
+        let bad: Vec<(&str, Snapshot)> = vec![
+            (
+                "row 4",
+                Snapshot {
+                    bot_white: Some(sq(4, 7)),
+                    ..ok.clone()
+                },
+            ),
+            (
+                "n 1",
+                Snapshot {
+                    bot_white: Some(sq(0, 1)),
+                    ..ok.clone()
+                },
+            ),
+            (
+                "n 13",
+                Snapshot {
+                    bot_white: Some(sq(2, 13)),
+                    ..ok.clone()
+                },
+            ),
+            (
+                "die 0",
+                Snapshot {
+                    dice: Some([0, 1, 1, 1, 1, 1]),
+                    ..ok.clone()
+                },
+            ),
+            (
+                "die 7",
+                Snapshot {
+                    dice: Some([1, 1, 1, 1, 1, 7]),
+                    ..ok.clone()
+                },
+            ),
+            (
+                "active without dice",
+                Snapshot {
+                    dice: None,
+                    ..ok.clone()
+                },
+            ),
+            (
+                "passive without dice",
+                Snapshot {
+                    phase: Phase::Passive,
+                    dice: None,
+                    ..ok.clone()
+                },
+            ),
+            (
+                "strikes",
+                Snapshot {
+                    you: sheet(&[], 9),
+                    ..ok.clone()
+                },
+            ),
+            (
+                "over without reason",
+                Snapshot {
+                    phase: Phase::Over,
+                    bot_white: None,
+                    ..ok.clone()
+                },
+            ),
+        ];
+        for (what, s) in bad {
+            assert!(Session::restore(s, make_bot(BotKind::Student), 1).is_err(), "{what}");
+        }
+        // Same through JSON, as the browser sends it: parse errors and bad values are errors, not panics.
+        let json = serde_json::to_string(&ok).unwrap().replace("\"n\":2", "\"n\":200");
+        let snap: Snapshot = serde_json::from_str(&json).unwrap();
+        assert!(Session::restore(snap, make_bot(BotKind::Student), 1).is_err());
     }
 }

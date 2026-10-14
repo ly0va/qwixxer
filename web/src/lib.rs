@@ -33,7 +33,7 @@ impl WasmGame {
         let kind = BotKind::parse(bot).map_err(js)?;
         let snap: Snapshot = serde_json::from_str(snapshot).map_err(js)?;
         Ok(WasmGame {
-            session: Session::restore(snap, make_bot(kind), seed as u64),
+            session: Session::restore(snap, make_bot(kind), seed as u64).map_err(js)?,
         })
     }
 
