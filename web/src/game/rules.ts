@@ -27,7 +27,7 @@ export function confirmState(view: View, sel: Sq[], strikeSel: boolean): { label
     if (view.phase === 'over') return { label: 'New game', ok: true };
     if (view.phase === 'passive') return { label: sel.length ? 'Mark' : 'Pass', ok: true };
     if (view.phase === 'active' && view.options) {
-        if (strikeSel) return { label: 'Take strike', ok: view.options.strike };
+        if (strikeSel) return { label: 'Strike', ok: view.options.strike };
         const k = selKey(sel);
         const ok = sel.length > 0 ? view.options.selections.some((x) => selKey(x) === k) : view.options.pass;
         const label = sel.length === 2 ? 'Mark 2' : sel.length === 1 ? 'Mark 1' : view.options.pass ? 'Pass' : 'Mark';

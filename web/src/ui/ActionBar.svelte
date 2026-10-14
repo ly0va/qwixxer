@@ -49,6 +49,7 @@
     .result b { font-family: var(--cond); font-weight: 800; font-size: 28px; }
     .score { font-family: var(--cond); font-weight: 700; font-size: 22px; }
     .reason { font-size: 14px; color: var(--muted); }
-    .confirm { min-height: 48px; padding: 0 28px; border: none; border-radius: 12px; font-weight: 700; font-size: 17px; cursor: not-allowed; background: var(--btn-muted-bg); color: var(--btn-muted-fg); }
+    /* Fixed width so the bar doesn't shift as the label changes (Mark 1, Strike, New game…). */
+    .confirm { width: 136px; min-height: 48px; padding: 0; border: none; border-radius: 12px; font-weight: 700; font-size: 17px; cursor: not-allowed; background: var(--btn-muted-bg); color: var(--btn-muted-fg); }
     .confirm.primary { cursor: pointer; background: var(--ink); color: var(--ground); }
 </style>

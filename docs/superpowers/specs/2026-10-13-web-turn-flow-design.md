@@ -59,7 +59,7 @@ These follow the engine (`src/game.rs`), which is the source of truth:
    - the strike box (see "Strike protection").
    Clicking a selected square deselects it.
 4. **Confirm.** One button whose label states the consequence: "Mark 1",
-   "Mark 2", "Take strike", or "Pass" (only when rule 2 applies and nothing is
+   "Mark 2", "Strike", or "Pass" (only when rule 2 applies and nothing is
    selected). It is inactive whenever the selection is not a legal turn, but
    stays clickable (`aria-disabled`, not `disabled`): pressing it then shows a
    short tip in the action bar, e.g. "Select a square to mark, or the strike

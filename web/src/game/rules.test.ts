@@ -24,7 +24,7 @@ describe('clickable / confirm', () => {
         expect(confirmState(v, [], false)).toEqual({ label: 'Mark', ok: false });
         expect(confirmState(v, [{ row: 0, n: 7 }], false)).toEqual({ label: 'Mark 1', ok: true });
         expect(confirmState(v, [{ row: 1, n: 5 }, { row: 0, n: 7 }], false)).toEqual({ label: 'Mark 2', ok: true });
-        expect(confirmState(v, [], true)).toEqual({ label: 'Take strike', ok: true });
+        expect(confirmState(v, [], true)).toEqual({ label: 'Strike', ok: true });
         expect(confirmState(view({ options: { selections: [], strike: false, pass: true } }), [], false)).toEqual({ label: 'Pass', ok: true });
         expect(confirmState(view({ phase: 'passive' }), [], false)).toEqual({ label: 'Pass', ok: true });
         expect(confirmState(view({ phase: 'over' }), [], false)).toEqual({ label: 'New game', ok: true });
