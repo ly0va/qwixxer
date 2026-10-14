@@ -282,6 +282,18 @@ impl PairStrategy {
         Self::from_model(model, device)
     }
 
+    /// Load the model from embedded bytes (the web build has no file system).
+    /// Same format as `load`: `CompactRecorder` = named MessagePack, half precision.
+    pub fn load_from_bytes(model_bytes: &[u8]) -> Self {
+        use burn::record::{HalfPrecisionSettings, NamedMpkBytesRecorder, Recorder};
+        let device = burn::backend::ndarray::NdArrayDevice::Cpu;
+        let record = NamedMpkBytesRecorder::<HalfPrecisionSettings>::new()
+            .load(model_bytes.to_vec(), &device)
+            .expect("Failed to load pair model from bytes");
+        let model = PairModelConfig::new().init::<MyBackend>(&device).load_record(record);
+        Self::from_model(model, device)
+    }
+
     pub fn from_model(model: PairModel<MyBackend>, device: burn::backend::ndarray::NdArrayDevice) -> Self {
         Self::from_shared(Arc::new(model), device)
     }
@@ -566,5 +578,20 @@ mod tests {
         assert!(p.iter().all(|x| (0.0..=1.0).contains(x)));
         // A 28-point lead with the same opponent must not be rated worse.
         assert!(p[1] >= p[0]);
+    }
+
+    #[test]
+    fn load_from_bytes_matches_file_load() {
+        use crate::strategy::Bot;
+        let from_file = PairStrategy::load("pair_model");
+        let from_bytes = PairStrategy::load_from_bytes(include_bytes!("../../pair_model/model.mpk"));
+        let mut a = State::default();
+        a.apply_mark(crate::state::Mark { row: 0, number: 4 });
+        let b = State::default();
+        for (s, o) in [(a, b), (b, a)] {
+            let x = from_file.evaluate(&s, &[o]);
+            let y = from_bytes.evaluate(&s, &[o]);
+            assert!((x - y).abs() < 1e-6, "{x} vs {y}");
+        }
     }
 }
