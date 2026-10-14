@@ -508,14 +508,17 @@ Enter/Space never act on the game.
 lock (rows closed by marking are derived and unioned in), the dice and whose
 roll. It returns the pair net's P(you win), margin (score difference + μ) and
 σ, the result for a finished game, and for a roll every legal turn of yours
-(from `selection.rs`) ranked by the pair net's P(win) after it, judged against
-the boards Master+ judges against (on your roll the opponent's predicted
-white-sum mark), and tagged with the ids of the bots that would take it in
-your seat. When Master+'s move isn't first it carries a note: `rolled_out`
-(its search preferred it) or `rule` (a meta-rule forced it), from
-`SearchBot::explain_active_phase1` / `explain_passive_phase1`, which decide
+(from `selection.rs`) ranked by the pair net's P(win) after it, and tagged
+with the ids of the bots that would take it in your seat. On your roll the
+opponent's simultaneous white-sum mark is predicted as Master predicts it
+(`predict_opp_white`) and used throughout: legality, the P(win) and every
+bot's phase 2; the answer reports it as `opponent_white`. When Master+'s or
+Master's move isn't first it carries a note: `rolled_out` (Master+'s search
+preferred it) or `rule` (a meta-rule forced it), from
+`SearchBot::explain_active_phase1` / `explain_passive_phase1` (which decide
 exactly as `Strategy` does and also report whether the move was forced and
-the blended score of each candidate searched. The worker creates one `WasmExplorer` on the first
+the blended score of each candidate searched) and the pipeline's
+`Decision::Forced`. The worker creates one `WasmExplorer` on the first
 `explore` call and keeps it beside the game's `WasmGame`, so both views share
 one worker. `ExplorerController` (`game/explorer.svelte.ts`) holds the
 position (`game/position.ts`) and keeps one engine call in flight: edits made

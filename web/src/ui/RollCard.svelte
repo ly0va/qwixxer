@@ -1,6 +1,8 @@
 <script lang="ts">
     import type { ExplorerController } from '../game/explorer.svelte';
     import { closedRows } from '../game/position';
+    import { chipsFor } from '../game/rules';
+    import ChipView from './Chip.svelte';
     import Die from './Die.svelte';
     let { x, compact = false }: { x: ExplorerController; compact?: boolean } = $props();
     const FACES = [['var(--die-face)', 'var(--die-pip)', 'White'], ['var(--die-face)', 'var(--die-pip)', 'White'],
@@ -66,9 +68,18 @@
         {/each}
         {#if !compact}<div class="wsum"><span>White sum</span><b>{white}</b></div>{/if}
     </div>
+    <!-- Spec "Moves": on your roll the ranking assumes the opponent's predicted white-sum mark. -->
+    {#if x.pos.roller === 'you' && x.answer?.opponent_white}
+        {@const ow = x.answer.opponent_white}
+        <p class="opp" class:stale={x.pending}>
+            {#if ow.mark}Opponent likely marks {#each chipsFor([ow.mark], false) as ch}<ChipView chip={ch} size={22} />{/each}{:else}Opponent likely passes{/if}
+        </p>
+    {/if}
 </section>
 
 <style>
+    .opp { margin: 0; display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--soft); min-height: 22px; }
+    .opp.stale { opacity: 0.6; }
     .card { display: flex; flex-direction: column; gap: 10px; background: var(--paper); border-radius: 14px; padding: 12px 16px; box-shadow: 0 1px 0 var(--edge); }
     .card.compact { padding: 10px 12px; }
     .top { display: flex; align-items: center; gap: 10px; }

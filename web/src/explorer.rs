@@ -10,7 +10,9 @@ use crate::session::{SheetSnap, Sq};
 use qwixxer::dqn::pair::{pair_features, PairStrategy};
 use qwixxer::dqn::{LOG_VAR_MAX, LOG_VAR_MIN};
 use qwixxer::state::{Mark, State};
-use qwixxer::strategy::bot_impl::active_phase1_choices;
+use qwixxer::strategy::bot_impl::{
+    active_phase1_choices, active_phase2_choices, eval_decision, passive_phase1_choices, Decision,
+};
 use qwixxer::strategy::search::{phi, SearchBot, WinProb};
 use qwixxer::strategy::{Bot, Strategy};
 use serde::{Deserialize, Serialize};
@@ -88,6 +90,14 @@ pub struct Answer {
     pub over: Option<Over>,
     pub eval: Eval,
     pub moves: Option<Vec<MoveOut>>,
+    /// On your roll (dice set, game not over): the white-sum mark the
+    /// opponent is predicted to make at the same time (`mark: null` = pass).
+    pub opponent_white: Option<OpponentWhite>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct OpponentWhite {
+    pub mark: Option<Sq>,
 }
 
 /// One full turn of yours: marks in application order, a strike, or (both
@@ -117,16 +127,16 @@ pub fn states(pos: &Position) -> (State, State, [bool; 4]) {
 }
 
 /// Your legal turns, from the game's own rules (`selection.rs`). On your
-/// roll the opponent's simultaneous white-sum mark is not modelled (spec
-/// "Moves"): it is treated as a pass.
-pub fn legal_turns(you: &State, opp: &State, dice: [u8; 6], roller: Roller) -> Vec<Turn> {
+/// roll they are judged with the opponent's simultaneous white-sum mark
+/// `opp_white` (a lock it makes can end the game after phase 1).
+pub fn legal_turns(you: &State, opp: &State, dice: [u8; 6], roller: Roller, opp_white: Option<Mark>) -> Vec<Turn> {
     let pass = Turn {
         marks: vec![],
         strike: false,
     };
     match roller {
         Roller::You => {
-            let o = active_options(you, opp, None, dice);
+            let o = active_options(you, opp, opp_white, dice);
             let mut t: Vec<Turn> = o
                 .selections
                 .into_iter()
@@ -157,6 +167,12 @@ pub fn legal_turns(you: &State, opp: &State, dice: [u8; 6], roller: Roller) -> V
     }
 }
 
+/// The opponent's white-sum mark on your roll, predicted as the bots predict
+/// it (`bot_impl::simulate_opp_phase1` with the pair net: Master's choice).
+pub fn predict_opp_white(net: &PairStrategy, you: &State, opp: &State, dice: [u8; 6]) -> Option<Mark> {
+    eval_decision(net, passive_phase1_choices(opp, from_ref(you), dice), from_ref(you))
+}
+
 /// Both sheets after your turn, with any row it closed applied to both.
 pub fn after(you: &State, opp: &State, turn: &Turn) -> (State, State) {
     let mut y = *you;
@@ -174,40 +190,69 @@ pub fn after(you: &State, opp: &State, turn: &Turn) -> (State, State) {
 }
 
 /// The turn `bot` would take in your seat: its own two-phase decision, as
-/// the game asks it (see `web/examples/wiring_check.rs`).
-pub fn bot_turn(bot: &mut dyn Strategy, you: &State, opp: &State, dice: [u8; 6], roller: Roller) -> Turn {
+/// the game asks it (see `web/examples/wiring_check.rs`), with the
+/// opponent's predicted white-sum mark `opp_white` on your roll. The flag
+/// says whether a meta-rule forced its phase 2 (a safe lock).
+pub fn bot_turn(
+    bot: &mut dyn Strategy,
+    you: &State,
+    opp: &State,
+    opp_white: Option<Mark>,
+    dice: [u8; 6],
+    roller: Roller,
+) -> (Turn, bool) {
     match roller {
         // The active player (the opponent) is index 0 of the opponents.
-        Roller::Opponent => Turn {
-            marks: bot.passive_phase1(you, from_ref(opp), dice, 0).into_iter().collect(),
-            strike: false,
-        },
+        Roller::Opponent => (
+            Turn {
+                marks: bot.passive_phase1(you, from_ref(opp), dice, 0).into_iter().collect(),
+                strike: false,
+            },
+            false,
+        ),
         Roller::You => {
             let w = bot.active_phase1(you, from_ref(opp), dice);
-            finish_turn(bot, you, opp, dice, w)
+            finish_turn(bot, you, opp, opp_white, dice, w)
         }
     }
 }
 
-/// Your turn after the phase-1 mark `w`: locks propagate, then (unless two
-/// rows are closed) the bot's phase 2; nothing marked is a strike.
-fn finish_turn(bot: &mut dyn Strategy, you: &State, opp: &State, dice: [u8; 6], w: Option<Mark>) -> Turn {
+/// Your turn after the phase-1 mark `w`, with the opponent's simultaneous
+/// mark `opp_white`: locks propagate, then (unless two rows are closed) the
+/// bot's phase 2 against the opponent's marked sheet; nothing marked is a
+/// strike. Also returns whether a meta-rule forced phase 2.
+fn finish_turn(
+    bot: &mut dyn Strategy,
+    you: &State,
+    opp: &State,
+    opp_white: Option<Mark>,
+    dice: [u8; 6],
+    w: Option<Mark>,
+) -> (Turn, bool) {
     let mut marks: Vec<Mark> = w.into_iter().collect();
+    let mut forced = false;
     let mut y = *you;
     if let Some(m) = w {
         y.apply_mark(m);
     }
-    let locks = union(y.locked(), opp.locked());
+    let mut o = *opp;
+    if let Some(m) = opp_white {
+        o.apply_mark(m);
+    }
+    let locks = union(y.locked(), o.locked());
     if n_locked(locks) < 2 {
-        let mut o = *opp;
         y.lock(locks);
         o.lock(locks);
+        forced = matches!(
+            active_phase2_choices(&y, from_ref(&o), dice, w.is_some()),
+            Decision::Forced(Some(_))
+        );
         if let Some(c) = bot.active_phase2(&y, from_ref(&o), dice, w.is_some()) {
             marks.push(c);
         }
     }
-    let strike = marks.is_empty() && active_options(you, opp, None, dice).strike;
-    Turn { marks, strike }
+    let strike = marks.is_empty() && active_options(you, opp, opp_white, dice).strike;
+    (Turn { marks, strike }, forced)
 }
 
 pub struct Explorer {
@@ -240,11 +285,23 @@ impl Explorer {
             you: you.count_points(),
             opponent: opp.count_points(),
         });
-        let moves = match (&over, pos.dice) {
-            (None, Some(dice)) => Some(self.moves(&you, &opp, dice, pos.roller)),
-            _ => None,
+        let (moves, opponent_white) = match (&over, pos.dice) {
+            (None, Some(dice)) => {
+                let opp_white = match pos.roller {
+                    Roller::You => Some(predict_opp_white(&self.net, &you, &opp, dice)),
+                    Roller::Opponent => None,
+                };
+                let moves = self.moves(&you, &opp, dice, pos.roller, opp_white.flatten());
+                (Some(moves), opp_white.map(|m| OpponentWhite { mark: m.map(Sq::from) }))
+            }
+            _ => (None, None),
         };
-        Ok(Answer { over, eval, moves })
+        Ok(Answer {
+            over,
+            eval,
+            moves,
+            opponent_white,
+        })
     }
 
     fn eval(&self, you: &State, opp: &State) -> Eval {
@@ -258,21 +315,41 @@ impl Explorer {
     }
 
     /// Spec "Moves": every legal turn with the pair net's P(win) after it,
-    /// judged as Master+ judges it (on your roll against the opponent's
-    /// predicted white-sum mark, as every bot predicts it; on theirs against
-    /// their sheet), highest first. Master+'s move carries a note when it
-    /// isn't first: its search preferred it, or a meta-rule forced it.
-    fn moves(&mut self, you: &State, opp: &State, dice: [u8; 6], roller: Roller) -> Vec<MoveOut> {
-        let turns = legal_turns(you, opp, dice, roller);
+    /// judged as Master judges it (on your roll against the opponent's sheet
+    /// with its predicted white-sum mark `opp_white`; on theirs against their
+    /// sheet), highest first. When Master+'s or Master's move isn't first, a
+    /// note says why: Master+'s search preferred it ("rolled_out"), or a
+    /// meta-rule forced it ("rule").
+    fn moves(
+        &mut self,
+        you: &State,
+        opp: &State,
+        dice: [u8; 6],
+        roller: Roller,
+        opp_white: Option<Mark>,
+    ) -> Vec<MoveOut> {
+        let turns = legal_turns(you, opp, dice, roller, opp_white);
         let keys: Vec<_> = turns.iter().map(Turn::key).collect();
-        let (eval_opps, explained) = match roller {
+        let mut opp_after = *opp;
+        if let Some(m) = opp_white {
+            opp_after.apply_mark(m);
+        }
+        // Whether a meta-rule forced Master's (pair-net pipeline) phase-1 or
+        // passive decision; Master+ shares that pipeline.
+        let (explained, rule_first) = match roller {
             Roller::You => (
-                active_phase1_choices(&self.net, you, from_ref(opp), dice).1,
                 self.plus.explain_active_phase1(you, from_ref(opp), dice),
+                matches!(
+                    active_phase1_choices(&self.net, you, from_ref(opp), dice).0,
+                    Decision::Forced(Some(_))
+                ),
             ),
             Roller::Opponent => (
-                vec![*opp],
                 self.plus.explain_passive_phase1(you, from_ref(opp), dice, 0),
+                matches!(
+                    passive_phase1_choices(you, from_ref(opp), dice),
+                    Decision::Forced(Some(_))
+                ),
             ),
         };
 
@@ -289,7 +366,7 @@ impl Explorer {
                 y
             })
             .collect();
-        let z = self.net.evaluate_batch(&posts, &eval_opps);
+        let z = self.net.evaluate_batch(&posts, from_ref(&opp_after));
         let mut out: Vec<MoveOut> = turns
             .iter()
             .zip(z)
@@ -302,44 +379,61 @@ impl Explorer {
                 note: None,
             })
             .collect();
-        let plus_pick = match roller {
-            Roller::You => finish_turn(&mut self.plus, you, opp, dice, explained.pick),
-            Roller::Opponent => Turn {
-                marks: explained.pick.into_iter().collect(),
-                strike: false,
-            },
+
+        // Each bot's pick, and the note its row gets if it isn't first.
+        let (plus_turn, plus_forced2) = match roller {
+            Roller::You => finish_turn(&mut self.plus, you, opp, opp_white, dice, explained.pick),
+            Roller::Opponent => (
+                Turn {
+                    marks: explained.pick.into_iter().collect(),
+                    strike: false,
+                },
+                false,
+            ),
         };
-        let mut picks = vec![(BotKind::MasterPlus, plus_pick.key())];
+        let plus_note = if !explained.searched.is_empty() {
+            Some("rolled_out")
+        } else if explained.forced || plus_forced2 {
+            Some("rule")
+        } else {
+            None
+        };
+        let mut picks = vec![(BotKind::MasterPlus, plus_turn.key(), plus_note)];
         for (kind, bot) in self.others.iter_mut() {
-            picks.push((*kind, bot_turn(bot.as_mut(), you, opp, dice, roller).key()));
+            let (turn, forced2) = bot_turn(bot.as_mut(), you, opp, opp_white, dice, roller);
+            let note = (*kind == BotKind::Master && (rule_first || forced2)).then_some("rule");
+            picks.push((*kind, turn.key(), note));
         }
-        for (kind, pick) in picks {
+        let mut notes: Vec<Option<&'static str>> = vec![None; out.len()];
+        for (kind, pick, note) in picks {
             // A pick that matches no listed move is an engine bug: it tags
             // nothing, and development builds report it (the random-position
             // test pins that it never happens).
             if let Some(i) = keys.iter().position(|k| *k == pick) {
                 out[i].bots.push(kind.id());
+                notes[i] = notes[i].or(note);
             } else {
                 debug_assert!(false, "{} picked {:?}, which is not a listed move", kind.id(), pick);
             }
         }
-        // Highest first; on a tie Master+'s move leads.
-        let plus = |m: &MoveOut| m.bots.first() == Some(&"master_plus");
+        for (m, n) in out.iter_mut().zip(notes) {
+            m.note = n;
+        }
+
+        // Highest first; on a tie Master+'s move, then Master's, leads.
+        let rank = |m: &MoveOut| match m.bots.first() {
+            Some(&"master_plus") => 2,
+            Some(&"master") => 1,
+            _ => 0,
+        };
         out.sort_by(|a, b| {
             b.p_win
                 .partial_cmp(&a.p_win)
                 .unwrap_or(std::cmp::Ordering::Equal)
-                .then(plus(b).cmp(&plus(a)))
+                .then(rank(b).cmp(&rank(a)))
         });
-        if let Some(m) = out.iter_mut().skip(1).find(|m| plus(m)) {
-            m.note = if !explained.searched.is_empty() {
-                Some("rolled_out")
-            } else if explained.forced {
-                Some("rule")
-            } else {
-                None
-            };
-        }
+        // A note explains a move that isn't first; the first row needs none.
+        out[0].note = None;
         out
     }
 }
@@ -464,6 +558,7 @@ mod tests {
     fn random_positions_never_panic_and_every_pick_is_listed() {
         let mut ex = Explorer::new();
         let mut rng = SmallRng::seed_from_u64(11);
+        let mut unexplained: Vec<String> = vec![];
         for _ in 0..150 {
             let mut p = pos(
                 None,
@@ -488,11 +583,16 @@ mod tests {
             if let Some(moves) = a.moves {
                 assert!(!moves.is_empty());
                 assert!(moves.windows(2).all(|w| w[0].p_win >= w[1].p_win));
-                // Only Master+'s move can carry a note, and only below rank 1.
+                // Notes sit only on Master+'s or Master's move, below rank 1.
                 assert!(moves[0].note.is_none());
                 assert!(moves
                     .iter()
-                    .all(|m| m.note.is_none() || m.bots.first() == Some(&"master_plus")));
+                    .all(|m| m.note.is_none() || m.bots.iter().any(|b| *b == "master_plus" || *b == "master")));
+                // Master (the static net) is first unless a rule moved it.
+                let master = moves.iter().position(|m| m.bots.contains(&"master")).unwrap();
+                if master != 0 && moves[master].note.is_none() {
+                    unexplained.push(format!("{:.3} vs {:.3}", moves[master].p_win, moves[0].p_win));
+                }
                 for id in ["master_plus", "master", "student", "newbie"] {
                     assert_eq!(
                         moves.iter().filter(|m| m.bots.contains(&id)).count(),
@@ -502,5 +602,9 @@ mod tests {
                 }
             }
         }
+        assert!(
+            unexplained.is_empty(),
+            "Master off rank 1 without a note: {unexplained:?}"
+        );
     }
 }

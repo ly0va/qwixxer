@@ -14,10 +14,10 @@ the engine about it. Spec: `docs/superpowers/specs/2026-10-14-state-explorer-des
 
 - `src/explorer.rs` (`WasmExplorer` in `src/lib.rs`): the pair net's P(win)
   and margin for the position, and for a roll every legal move of yours
-  ranked by the pair net's P(win) after it, judged as Master+ judges it
-  (against the opponent's predicted white-sum mark on your roll), tagged with
-  the move each bot would make in your seat; Master+'s move notes "rolled
-  out" or "rule" when it isn't first. Runs as the `explore` command of the same worker as the game.
+  ranked by the pair net's P(win) after it, judged as Master judges it
+  (with the opponent's predicted white-sum mark on your roll, which every bot
+  also sees), tagged with the move each bot would make in your seat; an (i)
+  tooltip explains Master+'s or Master's move when it isn't first. Runs as the `explore` command of the same worker as the game.
 - `src/game/position.ts`: the editable position (marks, strikes, tap-closed
   rows, dice, whose roll) and its sheet model; `src/game/link.ts`: the
   21-character link code (`#/explore?p=<code>`); `src/game/explorer.svelte.ts`:

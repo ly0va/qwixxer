@@ -8,13 +8,30 @@
     const moves = $derived(x.answer?.moves ?? null);
     const shown = $derived(moves ? (x.showAll ? moves : moves.slice(0, 6)) : []);
     const noDice = $derived(x.pos.dice.some((d) => d === null));
-    // Why Master+ plays a move ranked below the top (spec "Moves").
-    const NOTE = { rolled_out: ['rolled out', 'Master+ played the roll out and preferred this move'], rule: ['rule', 'A fixed rule makes Master+ play this move (safe lock or winning end)'] };
+    // Why a bot plays a move ranked below the top (spec "Moves"), behind an (i).
+    const NOTE = {
+        rolled_out: 'Master+ played this roll out many times and prefers this move.',
+        rule: 'A fixed rule makes the bot play this move: a safe lock or a game-winning end.',
+    };
+    // The open tooltip (tap on phones; hover and focus show it too).
+    let open = $state<number | null>(null);
+    function outside(e: MouseEvent) {
+        if (open !== null && !(e.target instanceof Element && e.target.closest('.info'))) open = null;
+    }
 </script>
 
-{#snippet tags(m: MoveOut)}
+<svelte:document onclick={outside} />
+
+{#snippet tags(m: MoveOut, i: number)}
     {#each m.bots as b}<span class="tag" class:plus={b === 'master_plus'}>{BOT_NAMES[b]}</span>{/each}
-    {#if m.note}<span class="note" title={NOTE[m.note][1]}>{NOTE[m.note][0]}</span>{/if}
+    {#if m.note}
+        <span class="info" class:open={open === i}>
+            <button type="button" aria-label="Why this move: {NOTE[m.note]}" aria-expanded={open === i} onclick={() => (open = open === i ? null : i)}>
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M12 11v6M12 7.5v.5"></path></svg>
+            </button>
+            <span class="tip" role="tooltip">{NOTE[m.note]}</span>
+        </span>
+    {/if}
 {/snippet}
 
 <!-- A finished game shows its result (PositionCard) and no move list. -->
@@ -38,9 +55,9 @@
                         <div class="chips">
                             {#each chipsFor(m.marks, m.strike) as ch}<ChipView chip={ch} />{/each}
                             {#if m.strike}<span class="txt">Strike</span>{:else if m.pass}<span class="txt">Pass</span>{/if}
-                            {#if !compact}{@render tags(m)}{/if}
+                            {#if !compact}{@render tags(m, i)}{/if}
                         </div>
-                        {#if compact && m.bots.length}<div class="tags">{@render tags(m)}</div>{/if}
+                        {#if compact && m.bots.length}<div class="tags">{@render tags(m, i)}</div>{/if}
                     </div>
                     <div class="pct">
                         <b>{percent(m.p_win, 1)}</b>
@@ -66,14 +83,18 @@
     .empty { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; padding: 24px 16px; text-align: center; color: var(--muted); font-size: 14px; }
     .empty b { color: var(--soft); font-size: 16px; }
     ol { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
-    li { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-radius: 10px; background: var(--log-bg); }
+    li { position: relative; display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-radius: 10px; background: var(--log-bg); }
     .rank { width: 18px; font-family: var(--cond); font-weight: 700; font-size: 17px; color: var(--muted); }
     .what { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 5px; }
     .chips, .tags { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
     .txt { font-size: 14px; font-weight: 600; }
     .tag { height: 22px; padding: 0 7px; border-radius: 11px; display: inline-flex; align-items: center; font-size: 12px; font-weight: 700; box-shadow: inset 0 0 0 1.5px var(--muted); color: var(--soft); box-sizing: border-box; }
     .tag.plus { background: var(--ink); color: var(--ground); box-shadow: none; }
-    .note { font-size: 12px; font-style: italic; color: var(--muted); }
+    /* The tip spans its row (not the icon), so it never runs off the card. */
+    .info { display: inline-flex; }
+    .info button { width: 28px; height: 28px; margin: -3px 0; padding: 0; border: none; border-radius: 50%; background: none; color: var(--muted); display: flex; align-items: center; justify-content: center; cursor: pointer; }
+    .tip { display: none; position: absolute; z-index: 4; bottom: calc(100% - 4px); left: 30px; right: 8px; padding: 8px 10px; border-radius: 10px; background: var(--ink); color: var(--ground); font-size: 13px; font-weight: 500; line-height: 1.35; box-shadow: 0 6px 20px var(--shadow); }
+    .info:hover .tip, .info:focus-within .tip, .info.open .tip { display: block; }
     .pct { width: 84px; display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
     .pct b { font-family: var(--cond); font-weight: 800; font-size: 22px; line-height: 1; font-variant-numeric: tabular-nums; }
     .bar { width: 100%; height: 5px; border-radius: 3px; background: var(--btn-muted-bg); display: flex; overflow: hidden; }

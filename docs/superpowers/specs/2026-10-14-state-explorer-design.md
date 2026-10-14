@@ -91,19 +91,25 @@ faded, until the new one arrives.
 - Header "Best moves", "*N* legal · your chance to win after each".
 - **Your roll:** every legal full turn from the game's rules (the same set
   the game offers: white only, colour only, white then colour), plus
-  "Strike" (or "Pass" when the game's rules make a pass legal).
+  "Strike" (or "Pass" when the game's rules make a pass legal). The
+  opponent marks the white sum at the same time; the explorer predicts
+  that mark the way Master does and uses it everywhere: for legality (a
+  lock it makes can end the game after the white sum), for the chances
+  below, and for every bot's colour-mark decision. The Roll card shows it:
+  "Opponent likely marks [chip]" or "Opponent likely passes".
 - **Opponent's roll:** each legal white-sum mark, plus "Pass".
 - Each row: rank, the marks as row-coloured chips (strike chip / "Pass"
   text), the bot tags, and your chance to win after the move with a bar.
 - **The chance to win** is the pair net's P(win) for your sheet after the
-  move, judged as Master+ judges it: on your roll against the opponent's
-  *predicted* white-sum mark (the bots' own prediction), on the opponent's
-  roll against their sheet. Moves are listed highest to lowest; ties keep
-  engine order, with Master+'s move first among equals.
-- **Notes:** when Master+'s move is not ranked first, its row says why
-  Master+ still plays it: "rolled out" (its search played the roll out and
-  preferred it) or "rule" (a fixed rule forced it: a safe lock or a
-  game-winning end).
+  move, judged as Master judges it: against the opponent's sheet with its
+  predicted white-sum mark on your roll, against their sheet on theirs.
+  Moves are listed highest to lowest; on a tie Master+'s move, then
+  Master's, comes first.
+- **Why a bot plays a lower move:** Master plays the top move unless a
+  fixed rule forces another (a safe lock, a game-winning end); Master+ can
+  also prefer another move after playing the roll out. When Master+'s or
+  Master's move is not first, its row has an (i) icon whose tooltip (hover,
+  focus or tap) says which.
 - No row is highlighted. The first 6 rows show; "Show all *N*" expands the
   list in place.
 - **Bot tags:** Master+, Master, Student, Newbie, each on the move that bot

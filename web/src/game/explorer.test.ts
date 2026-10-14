@@ -5,7 +5,7 @@ import { BAD_LINK, ExplorerController } from './explorer.svelte';
 import { encode } from './link';
 import { emptyPosition, toggleSquare } from './position';
 
-const answer = (p_win: number): Answer => ({ over: null, eval: { p_win, margin: 0, sigma: 10 }, moves: null });
+const answer = (p_win: number): Answer => ({ over: null, eval: { p_win, margin: 0, sigma: 10 }, moves: null, opponent_white: null });
 function memStore(init: Record<string, string> = {}): Store & { data: Record<string, string> } {
     const data = { ...init };
     return { data, get: (k) => data[k] ?? null, set: (k, v) => { data[k] = v; } };

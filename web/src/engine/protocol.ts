@@ -33,7 +33,8 @@ export interface Position { you: SheetSnap; opponent: SheetSnap; locked: boolean
 export interface Eval { p_win: number; margin: number; sigma: number }
 /** `note` (only on Master+'s move when it isn't ranked first): why Master+ still plays it. */
 export interface MoveOut { marks: Sq[]; strike: boolean; pass: boolean; p_win: number; bots: BotKind[]; note: 'rolled_out' | 'rule' | null }
-export interface Answer { over: { you: number; opponent: number } | null; eval: Eval; moves: MoveOut[] | null }
+/** `opponent_white`: on your roll, the opponent's predicted simultaneous white-sum mark (`mark: null` = pass). */
+export interface Answer { over: { you: number; opponent: number } | null; eval: Eval; moves: MoveOut[] | null; opponent_white: { mark: Sq | null } | null }
 /**
  * Why an engine call failed: `snapshot` when `restore` rejected the saved
  * game itself (bad JSON or values), `engine` for anything else (the wasm or
