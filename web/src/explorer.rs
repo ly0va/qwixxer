@@ -266,10 +266,13 @@ impl Explorer {
         let keys: Vec<_> = turns.iter().map(Turn::key).collect();
         for (kind, bot) in self.bots.iter_mut() {
             let pick = bot_turn(bot.as_mut(), you, opp, dice, roller).key();
-            // A pick that matches no listed move is an engine bug; the
-            // random-position test pins that it never happens.
+            // A pick that matches no listed move is an engine bug: it tags
+            // nothing, and development builds report it (the random-position
+            // test pins that it never happens).
             if let Some(i) = keys.iter().position(|k| *k == pick) {
                 out[i].bots.push(kind.id());
+            } else {
+                debug_assert!(false, "{} picked {:?}, which is not a listed move", kind.id(), pick);
             }
         }
         out.sort_by(|a, b| b.p_win.partial_cmp(&a.p_win).unwrap_or(std::cmp::Ordering::Equal));
@@ -355,6 +358,19 @@ mod tests {
         let mut p = pos(None, Roller::You);
         p.locked = [true, false, true, false];
         assert!(Explorer::new().explore(&p).unwrap().over.is_some());
+    }
+
+    #[test]
+    fn opponents_roll_with_every_white_sum_square_blocked_offers_only_pass() {
+        let mut p = pos(Some([3, 4, 2, 5, 3, 1]), Roller::Opponent);
+        // Index 6 is red/yellow 8 and green/blue 6: each lies past 7.
+        for r in 0..4 {
+            p.you.marks[r][6] = true;
+        }
+        let moves = Explorer::new().explore(&p).unwrap().moves.unwrap();
+        assert_eq!(moves.len(), 1);
+        assert!(moves[0].pass && moves[0].marks.is_empty() && !moves[0].strike);
+        assert_eq!(moves[0].bots, ["master_plus", "master", "student", "newbie"]);
     }
 
     #[test]
