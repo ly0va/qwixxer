@@ -53,7 +53,7 @@
 
 <style>
     .fit { margin: 0 auto; overflow: hidden; }
-    .desk { width: 1280px; height: 800px; box-sizing: border-box; padding: 18px 32px 22px; display: flex; flex-direction: column; gap: 14px; overflow: hidden; transform-origin: top left; }
+    .desk { width: 1280px; height: 800px; box-sizing: border-box; padding: 22px 32px; display: flex; flex-direction: column; gap: 16px; overflow: hidden; transform-origin: top left; }
     .head { display: flex; align-items: center; justify-content: space-between; height: 44px; }
     .left, .right { display: flex; align-items: center; gap: 20px; }
     .right { gap: 10px; }
