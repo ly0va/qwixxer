@@ -18,7 +18,7 @@
     const white = $derived(shown && !idle && !c.rolling ? String(shown[0] + shown[1]) : '–');
 </script>
 
-<section aria-label="Dice" class="tray">
+<section aria-label="Dice" class="tray" class:compact>
     {#if !compact || canRoll}
         <button type="button" class="roll" class:primary={canRoll} aria-disabled={!canRoll} onclick={() => c.roll()} style="width: {compact ? 110 : 148}px">
             <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="4"></rect><circle cx="8.5" cy="8.5" r="1.2" fill="currentColor"></circle><circle cx="15.5" cy="15.5" r="1.2" fill="currentColor"></circle><circle cx="15.5" cy="8.5" r="1.2" fill="currentColor"></circle><circle cx="8.5" cy="15.5" r="1.2" fill="currentColor"></circle></svg>
@@ -38,6 +38,8 @@
 
 <style>
     .tray { display: flex; align-items: center; gap: 14px; }
+    /* Phone: tighter gaps to fit 390 px, and a fixed height so the sheet doesn't jump when Roll (48 px) swaps for the White badge (44 px). */
+    .tray.compact { gap: 6px; min-height: 48px; }
     .roll { min-height: 48px; padding: 0; border: none; border-radius: 12px; display: inline-flex; align-items: center; justify-content: center; gap: 8px; font-weight: 700; font-size: 17px; flex-shrink: 0; cursor: not-allowed; background: var(--btn-muted-bg); color: var(--btn-muted-fg); }
     .roll.primary { cursor: pointer; background: var(--ink); color: var(--ground); box-shadow: 0 0 0 4px var(--ground), 0 0 0 6px var(--ink); }
     .sum { margin-left: 8px; display: flex; flex-direction: column; gap: 2px; }
