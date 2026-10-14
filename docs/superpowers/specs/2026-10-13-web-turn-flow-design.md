@@ -19,8 +19,8 @@ always sees what the bot just did.
 
 - 1 human vs 1 bot. Multiplayer notes are in "Later".
 - Turn input, legality, strike handling, and making bot moves visible.
-- Out of scope: visual style, framework choice, the state explorer, MCTS or
-  search in the browser, game setup and settings screens.
+- Out of scope: the state explorer (later), MCTS, game setup and settings
+  screens. Visual design, stack and bots are settled below.
 
 ## Rules the flow must respect
 
@@ -190,10 +190,10 @@ works with reduced motion.
   more), both scores, and a
   **dark-mode toggle** (moon button). The dark palette is still to be
   designed.
-- **Bot picker:** a dropdown in the bot sheet's header (pair search, pair
-  net, DQN, GA champion, Opportunist, Conservative). Open question: a change
-  mid-game should most likely apply from the next game, with a note saying
-  so.
+- **Bot picker:** a dropdown in the bot sheet's header with three bots:
+  **Master+** (pair-search, the default), **Master** (pair net, static) and
+  **Student** (GA champion). A change mid-game applies from the next game,
+  with a note saying so.
 
 ## Visual design
 
@@ -263,6 +263,29 @@ real pair-search bot also needs a moment to compute):
   its colour mark or strike.
 - If the real bot takes longer, "thinking…" simply stays up longer; the
   beats are minimums, not fixed delays.
+
+## Implementation decisions
+
+- **Stack:** Svelte + TypeScript + Vite, rebuilt in place in `web/` (the
+  old UI is replaced; nothing is deployed until the rewrite is finished).
+  No state explorer for now.
+- **Engine API:** a new Rust game session in the web crate replaces the
+  Move-index `WebGame`. It exposes the bot's revealed white-sum mark, the
+  list of legal selections for the human, applying a selection (or a pass on
+  the bot's turn), and the bot's marks for its own turn; it reuses the turn
+  order of `src/game.rs`. Every edge case in "Edge cases to test" gets a
+  Rust unit test. The session serialises, so a game survives a page reload.
+- **Bots:** Master+ = pair-search with the production config, Master = the
+  static pair net, Student = the GA champion. Bot decisions run in a **Web
+  Worker** so animations never stall. Master+ stays the default if its
+  decision latency in a browser is acceptable (target: well under a second
+  for typical decisions); otherwise the web build uses a lighter search
+  config (e.g. `k=128`, 2 candidates) rather than dropping the default.
+- **Turn order:** the bot starts every game (as today).
+- **Fonts:** Barlow and Barlow Condensed are self-hosted, not loaded from
+  Google Fonts.
+- **Accessibility:** the log is an `aria-live` region so bot moves are
+  announced.
 
 ## Implementation notes
 
