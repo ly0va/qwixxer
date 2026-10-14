@@ -25,7 +25,7 @@ qwixxer/
       lib.rs           -- wasm-bindgen exports: WasmGame (one game, JSON in/out)
       session.rs       -- Session: one human-vs-bot game, turn flow, snapshots, views
       selection.rs     -- The human's legal selections (passive white sum, active options)
-      bots.rs          -- Master+ / Master / Student, embedded champion + pair net
+      bots.rs          -- Master+ / Master / Student / Newbie, embedded champion + pair net
       bench.rs         -- bench(bot, games, seed): bot decision latency
       main.ts          -- Mounts App.svelte
       engine/
@@ -418,7 +418,9 @@ locked. The session serialises to a `Snapshot`, so a game survives a reload.
 default) = pair-search over the pair net with `SearchConfig::parse(MASTER_PLUS_SPEC)`,
 where `MASTER_PLUS_SPEC = ""` is the native production config (see the latency
 table below); **Master** (`master`) = the static pair net; **Student**
-(`student`) = the GA champion. `champion.txt` and `pair_model/model.mpk` are
+(`student`) = the GA champion; **Newbie** (`newbie`) = the hand-written
+Opportunist. The bot panel's New game button abandons the current game (two
+clicks mid-game). `champion.txt` and `pair_model/model.mpk` are
 embedded at compile time via `include_bytes!`, so rebuild after changing them.
 
 **`WasmGame`** (`lib.rs`) wraps a `Session` for wasm-bindgen with JSON in/out:

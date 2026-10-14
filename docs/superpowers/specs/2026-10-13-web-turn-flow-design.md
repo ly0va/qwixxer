@@ -190,10 +190,15 @@ works with reduced motion.
   more), both scores, and a
   **dark-mode toggle** (moon button). The dark palette is still to be
   designed.
-- **Bot picker:** a dropdown in the bot sheet's header with three bots:
-  **Master+** (pair-search, the default), **Master** (pair net, static) and
-  **Student** (GA champion). A change mid-game applies from the next game,
-  with a note saying so.
+- **Bot picker:** a dropdown in the bot sheet's header with four bots:
+  **Master+** (pair-search, the default), **Master** (pair net, static),
+  **Student** (GA champion) and **Newbie** (the hand-written Opportunist).
+  A change mid-game applies from the next game, with a note saying so.
+- **New game:** a button beside the bot picker (so on phones it lives in the
+  bot drawer) abandons the current game and starts a new one. Mid-game it
+  takes two clicks: the first arms it ("Abandon game?") for 3 s, the second
+  starts the game; after a game is over one click is enough. On phones the
+  drawer closes when the new game starts.
 
 ## Visual design
 
@@ -279,7 +284,7 @@ real pair-search bot also needs a moment to compute):
   order of `src/game.rs`. Every edge case in "Edge cases to test" gets a
   Rust unit test. The session serialises, so a game survives a page reload.
 - **Bots:** Master+ = pair-search with the production config, Master = the
-  static pair net, Student = the GA champion. Bot decisions run in a **Web
+  static pair net, Student = the GA champion, Newbie = the Opportunist. Bot decisions run in a **Web
   Worker** so animations never stall. Master+ stays the default if its
   decision latency in a browser is acceptable (target: well under a second
   for typical decisions); otherwise the web build uses a lighter search

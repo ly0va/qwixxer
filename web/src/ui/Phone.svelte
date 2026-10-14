@@ -92,7 +92,7 @@
         <button type="button" class="scrim" aria-label="Close" onclick={() => (drawer = false)}></button>
         <div class="drawer" role="dialog" aria-modal="true" aria-label="Bot and log">
             <div class="handle"></div>
-            <BotPanel {c} size={L.botSize} />
+            <BotPanel {c} size={L.botSize} onNewGame={() => (drawer = false)} />
             <Log entries={c.log} {current} chip={24} />
             <button type="button" class="close" bind:this={closeBtn} onclick={() => (drawer = false)}>Close</button>
         </div>

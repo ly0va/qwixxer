@@ -3,7 +3,27 @@
     import type { GameController } from '../game/controller.svelte';
     import { sheetModel } from '../game/rules';
     import SheetRows from './SheetRows.svelte';
-    let { c, size = 25 }: { c: GameController; size?: number } = $props();
+    let { c, size = 25, onNewGame }: { c: GameController; size?: number; onNewGame?: () => void } = $props();
+
+    // New game abandons the current one, so mid-game it takes two clicks:
+    // the first arms it ("Abandon game?") for 3 s, the second starts.
+    let confirming = $state(false);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const midGame = $derived(!!c.view && c.view.phase !== 'over');
+    function newGame() {
+        if (c.busy) return;
+        if (midGame && !confirming) {
+            confirming = true;
+            clearTimeout(timer);
+            timer = setTimeout(() => (confirming = false), 3000);
+            return;
+        }
+        confirming = false;
+        clearTimeout(timer);
+        onNewGame?.();
+        c.newGame();
+    }
+    $effect(() => () => clearTimeout(timer));
     const rows = $derived(c.view ? sheetModel(c.view, 'bot', { sel: [], strikeSel: false, committing: false, fresh: c.fresh, hidden: c.hidden }) : []);
     const strikes = $derived((c.view?.bot.strikes ?? 0) - (c.hidden.includes('bot:strike') ? 1 : 0));
 </script>
@@ -21,7 +41,12 @@
             {c.view?.bot.score ?? 0} pts · {strikes} strikes
         </span>
     </div>
-    {#if c.nextBot !== c.bot}<p class="note">{BOT_NAMES[c.nextBot]} plays from the next game.</p>{/if}
+    <div class="row">
+        <p class="note">{#if c.nextBot !== c.bot}{BOT_NAMES[c.nextBot]} plays from the next game.{/if}</p>
+        <button type="button" class="new" class:armed={confirming} aria-disabled={c.busy} onclick={newGame}>
+            {confirming ? 'Abandon game?' : 'New game'}
+        </button>
+    </div>
     <SheetRows {rows} {size} />
 </section>
 
@@ -33,5 +58,9 @@
     select { height: 32px; border-radius: 8px; border: 2px solid var(--ink); background: var(--paper); color: var(--ink); font-weight: 600; font-size: 14px; padding: 0 8px; }
     .meta { font-size: 13px; color: var(--muted); }
     .meta i { margin-right: 6px; }
+    .row { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 32px; }
     .note { margin: 0; font-size: 12px; color: var(--muted); }
+    .new { height: 32px; padding: 0 12px; border-radius: 8px; border: 2px solid var(--ink); background: var(--paper); color: var(--ink); font-weight: 600; font-size: 14px; cursor: pointer; flex-shrink: 0; }
+    .new.armed { background: var(--ink); color: var(--ground); }
+    .new[aria-disabled='true'] { opacity: 0.5; cursor: default; }
 </style>

@@ -2,7 +2,7 @@
 export interface Sq { row: number; n: number }
 export type Phase = 'bot_to_roll' | 'passive' | 'you_to_roll' | 'active' | 'over';
 export type OverReason = 'locks' | 'you_strikes' | 'bot_strikes';
-export type BotKind = 'master_plus' | 'master' | 'student';
+export type BotKind = 'master_plus' | 'master' | 'student' | 'newbie';
 export interface SheetView { marks: boolean[][]; strikes: number; score: number; row_points: number[] }
 export interface OptionsView { selections: Sq[][]; strike: boolean; pass: boolean }
 export interface View {
@@ -50,4 +50,4 @@ export interface Engine {
     youRoll(): Promise<View>;
     submitActive(picks: Sq[], strike: boolean): Promise<Step>;
 }
-export const BOT_NAMES: Record<BotKind, string> = { master_plus: 'Master+', master: 'Master', student: 'Student' };
+export const BOT_NAMES: Record<BotKind, string> = { master_plus: 'Master+', master: 'Master', student: 'Student', newbie: 'Newbie' };

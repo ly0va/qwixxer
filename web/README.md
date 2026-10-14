@@ -1,6 +1,6 @@
 # Qwixx Web UI
 
-Browser Qwixx against three bots: Master+, Master and Student. The game runs
+Browser Qwixx against four bots: Master+, Master, Student and Newbie. The game runs
 as a Rust session compiled to WASM inside a Web Worker; the UI is Svelte 5 +
 TypeScript on Vite. Design and turn flow:
 `docs/superpowers/specs/2026-10-13-web-turn-flow-design.md`; architecture:
