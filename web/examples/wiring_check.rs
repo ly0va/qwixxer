@@ -5,11 +5,14 @@
 //!    the human seat through the web `Session` API (bot starts every game).
 //!
 //! Run from the repo root: `cargo run --release --manifest-path web/Cargo.toml --example wiring_check -- 400`
+//! Optional second argument: comma-separated bots for part 2 only, skipping
+//! part 1 (e.g. `-- 3000 newbie,opportunist`; `opportunist` is the unpruned
+//! CLI bot, for comparison with Newbie).
 
 use qwixxer::dqn::pair::PairStrategy;
 use qwixxer::state::{Mark, State};
 use qwixxer::strategy::search::{SearchBot, SearchConfig};
-use qwixxer::strategy::Strategy;
+use qwixxer::strategy::{Opportunist, Strategy};
 use qwixxer_web::bots::{make_bot, BotKind, MASTER_PLUS_SPEC};
 use qwixxer_web::session::{Phase, Session, SheetSnap, Snapshot, Sq};
 use rand::rngs::SmallRng;
@@ -105,14 +108,22 @@ fn advance(s: &mut Session, human: &mut Box<dyn Strategy>) {
     }
 }
 
+/// The bots part 2 can measure: id, display name, constructor.
+const BOTS: [(&str, &str, fn() -> Box<dyn Strategy>); 5] = [
+    ("master_plus", "Master+", || make_bot(BotKind::MasterPlus)),
+    ("master", "Master", || make_bot(BotKind::Master)),
+    ("student", "Student", || make_bot(BotKind::Student)),
+    ("newbie", "Newbie", || make_bot(BotKind::Newbie)),
+    ("opportunist", "Opp.", || Box::<Opportunist>::default()),
+];
+
 /// Part 2: bot vs GA (human seat) through the Session, `games` per bot.
-fn win_rates(games: usize) {
-    for (kind, name) in [
-        (BotKind::MasterPlus, "Master+"),
-        (BotKind::Master, "Master"),
-        (BotKind::Student, "Student"),
-        (BotKind::Newbie, "Newbie"),
-    ] {
+fn win_rates(games: usize, only: Option<&str>) {
+    let wanted = |id: &str| match only {
+        Some(list) => list.split(',').any(|x| x == id),
+        None => id != "opportunist",
+    };
+    for (_, name, make) in BOTS.into_iter().filter(|(id, _, _)| wanted(id)) {
         let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
         let per = games.div_ceil(threads);
         let handles: Vec<_> = (0..threads)
@@ -121,7 +132,7 @@ fn win_rates(games: usize) {
                     let (mut bot_w, mut ga_w, mut ties) = (0, 0, 0);
                     let mut ga = make_bot(BotKind::Student);
                     for g in 0..per {
-                        let mut s = Session::new(make_bot(kind), (t * 100_000 + g) as u64);
+                        let mut s = Session::new(make(), (t * 100_000 + g) as u64);
                         while s.view().phase != Phase::Over {
                             advance(&mut s, &mut ga);
                         }
@@ -156,6 +167,9 @@ fn win_rates(games: usize) {
 
 fn main() {
     let games: usize = std::env::args().nth(1).and_then(|a| a.parse().ok()).unwrap_or(400);
-    same_decisions(300);
-    win_rates(games);
+    let only = std::env::args().nth(2);
+    if only.is_none() {
+        same_decisions(300);
+    }
+    win_rates(games, only.as_deref());
 }

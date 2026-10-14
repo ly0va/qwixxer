@@ -13,11 +13,13 @@ A bot framework for the dice game [Qwixx](https://en.wikipedia.org/wiki/Qwixx): 
 | **DQN** | | TD(λ) single-board value net + Gaussian P(win) ranking | ~60.3% |
 | **GA Champion** | Student | Genetically evolved 4-weight heuristic | baseline |
 | **MCTS** | | Monte Carlo tree search with GA rollouts | ~GA level |
-| **Opportunist** | Newbie | Max weighted probability, blank caps, always lock | ~30% |
+| **Opportunist** | Newbie* | Max weighted probability, blank caps, always lock | ~30% |
 | **Conservative** | | Skip at most 2 numbers per mark | ~25% |
 | **Random** | | Uniform random legal move | ~0% |
 
 Win rates are from deterministic paired-dice benches; the full history is in `docs/EXPERIMENTS.md`.
+
+\* The web's Newbie is the Opportunist with the shared pipeline's pruning (it never picks a mark another available mark dominates); the win rate above is the unpruned CLI `opportunist`.
 
 All non-trivial bots share one decision pipeline (`src/strategy/bot_impl.rs`) with **meta-rules**:
 - **Smart lock / smart strike**: end the game when it is won, never end it into a loss.

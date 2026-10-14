@@ -1,10 +1,11 @@
 //! The four web bots: Master+, Master, Student (spec "Implementation
-//! decisions") and Newbie, the hand-written Opportunist.
+//! decisions") and Newbie, the hand-written Opportunist with the shared
+//! pipeline's pruning (it never picks a dominated mark).
 
 use qwixxer::bot::{self, DNA};
 use qwixxer::dqn::pair::PairStrategy;
 use qwixxer::strategy::search::{SearchBot, SearchConfig};
-use qwixxer::strategy::{Opportunist, Strategy};
+use qwixxer::strategy::{PrunedOpportunist, Strategy};
 use std::sync::Arc;
 
 const CHAMPION: &[u8] = include_bytes!("../../champion.txt");
@@ -60,7 +61,7 @@ pub fn make_bot(kind: BotKind) -> Box<dyn Strategy> {
         BotKind::MasterPlus => Box::new(master_plus()),
         BotKind::Master => Box::new(PairStrategy::load_from_bytes(PAIR_MODEL)),
         BotKind::Student => Box::new(DNA::load_weights_from_bytes(CHAMPION, Arc::new(bot::default_genes()))),
-        BotKind::Newbie => Box::<Opportunist>::default(),
+        BotKind::Newbie => Box::<PrunedOpportunist>::default(),
     }
 }
 

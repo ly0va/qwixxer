@@ -2,7 +2,7 @@ use super::Bot;
 use crate::state::{Mark, State};
 use std::cmp::Ordering;
 
-fn prune_dominated<T>(items: &mut Vec<T>, state_of: impl Fn(&T) -> &State) {
+pub(crate) fn prune_dominated<T>(items: &mut Vec<T>, state_of: impl Fn(&T) -> &State) {
     let n = items.len();
     let mut dominated = vec![false; n];
     for i in 0..n {
