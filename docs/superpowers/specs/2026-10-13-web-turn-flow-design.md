@@ -169,6 +169,12 @@ Optionally each greyed square carries a reason string for a hover tooltip
   "–" means a pass. The current roll is not highlighted; the user's line reads
   "choosing…" until they confirm.
 
+## Game over
+
+No dialog or overlay: the final sheets stay fully visible. The result sits in
+the action bar where tips appear ("You win 45 – 38 · Two rows are locked."),
+the turn pill reads "Game over", and the confirm button becomes **New game**.
+
 ## Pencil and ink
 
 Pending marks are **pencil**: a thin, doubled graphite-grey X (the user's
