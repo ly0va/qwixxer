@@ -47,4 +47,10 @@ describe('keyAction', () => {
             expect(keyAction('a', mModal, 'active')).toBe(null);
         });
     });
+    it('never confirms or rolls the hidden game from the explorer', () => {
+        const ex = { field: false, keyboardFocus: false, explore: true };
+        expect(keyAction('Enter', ex, 'active')).toBe(null);
+        expect(keyAction(' ', ex, 'you_to_roll')).toBe(null);
+        expect(keyAction('Escape', ex, 'active')).toBe('close');
+    });
 });

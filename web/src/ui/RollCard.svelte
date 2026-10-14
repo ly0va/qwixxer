@@ -67,7 +67,7 @@
     .top { display: flex; align-items: center; gap: 10px; }
     h2 { margin: 0; font-family: var(--cond); font-size: 20px; font-weight: 700; }
     .seg { display: flex; gap: 2px; padding: 3px; border-radius: 10px; background: var(--btn-muted-bg); }
-    .seg button { height: 32px; padding: 0 12px; border-radius: 7px; border: none; background: transparent; color: var(--muted); font-weight: 600; font-size: 14px; cursor: pointer; }
+    .seg button { height: 32px; padding: 0 12px; border-radius: 7px; border: none; background: transparent; color: var(--muted); font-weight: 600; font-size: 14px; cursor: pointer; white-space: nowrap; }
     .seg button[aria-checked='true'] { background: var(--paper); color: var(--ink); font-weight: 700; box-shadow: 0 1px 0 var(--edge); }
     .tool { height: 36px; min-width: 40px; padding: 0 12px; border-radius: 9px; border: none; background: var(--ground); color: var(--ink); display: flex; align-items: center; justify-content: center; gap: 6px; font-weight: 600; font-size: 14px; cursor: pointer; }
     .top .tool:first-of-type { margin-left: auto; }

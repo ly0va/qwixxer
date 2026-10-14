@@ -14,6 +14,8 @@
     let { c, x, nav }: { c: GameController; x: ExplorerController; nav: Nav } = $props();
     let w = $state(window.innerWidth);
     const size = $derived(explorerPhoneSize(w));
+    // Four strike boxes and their three 5 px gaps fit in one compact sheet column (4·size + 41 px).
+    const strikeSize = $derived(Math.min(34, Math.floor((4 * size + 41 - 15) / 4)));
     const base = () => location.origin + location.pathname;
     const sides: { who: Who; name: string }[] = [{ who: 'you', name: 'You' }, { who: 'opponent', name: 'Opponent' }];
 </script>
@@ -37,7 +39,7 @@
             <section class="side" aria-label="{sd.name} sheet">
                 <div class="name"><h2>{sd.name}</h2><b>{sheetTotal(x.pos[sd.who])}</b></div>
                 <SheetColumns {rows} {size} compact onTap={(cell) => x.tapSquare(sd.who, cell.sq.row, cellIndex(cell.sq.row, cell.sq.n))} onLock={(r) => x.tapLock(r)} />
-                <StrikeBoxes count={x.pos[sd.who].strikes} size={34} label={sd.name} onTap={(k) => x.tapStrike(sd.who, k)} />
+                <StrikeBoxes count={x.pos[sd.who].strikes} size={strikeSize} label={sd.name} onTap={(k) => x.tapStrike(sd.who, k)} />
             </section>
         {/each}
     </div>

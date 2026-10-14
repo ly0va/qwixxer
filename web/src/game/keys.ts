@@ -8,6 +8,8 @@ export interface KeyTarget {
     keyboardFocus: boolean;
     /** A modal (the phone's bot/log drawer) is open over the game. */
     modal?: boolean;
+    /** The explorer is showing: no game keys at all; Escape closes the menu or die picker. */
+    explore?: boolean;
 }
 
 export type KeyAction = 'confirm' | 'roll' | 'clear' | 'close' | 'swallow' | null;
@@ -22,6 +24,7 @@ export type KeyAction = 'confirm' | 'roll' | 'clear' | 'close' | 'swallow' | nul
  * Enter/Space only act natively on keyboard-focused controls or fields.
  */
 export function keyAction(key: string, t: KeyTarget, phase: Phase | undefined): KeyAction {
+    if (t.explore) return key === 'Escape' ? 'close' : null;
     if (t.modal) {
         if (key === 'Escape') return 'close';
         if (key !== 'Enter' && key !== ' ') return null;

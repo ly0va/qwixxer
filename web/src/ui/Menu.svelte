@@ -1,11 +1,11 @@
 <script lang="ts">
     import type { GameController } from '../game/controller.svelte';
     import type { Nav } from './nav';
-    // `nav` is accepted now and wired up with the routes (explorer task 8).
-    let { c }: { c: GameController; nav?: Nav } = $props();
+    let { c, nav }: { c: GameController; nav: Nav } = $props();
 
-    // The "⋯" header menu (both layouts): New game, dark mode, the rules PDF,
-    // the source repo and a trademark notice. Open state lives on the
+    // The "⋯" header menu (all layouts). In the game: New game, Explore this
+    // position, Explorer; in the explorer: Back to game. Then, in both, dark
+    // mode, the rules PDF, the source repo and a trademark notice. Open state lives on the
     // controller so App's page-wide keys treat it as a modal.
     let trigger = $state<HTMLButtonElement>();
     let first = $state<HTMLButtonElement>();
@@ -58,9 +58,15 @@
     </button>
     {#if c.menuOpen}
         <div class="pop" role="menu" aria-label="Menu">
-            <button type="button" role="menuitem" class="item" class:armed bind:this={first} aria-disabled={c.busy} onclick={newGame}>
-                {armed ? 'Abandon game?' : 'New game'}
-            </button>
+            {#if nav.current === 'play'}
+                <button type="button" role="menuitem" class="item" class:armed bind:this={first} aria-disabled={c.busy} onclick={newGame}>
+                    {armed ? 'Abandon game?' : 'New game'}
+                </button>
+                <button type="button" role="menuitem" class="item" onclick={() => { c.menuOpen = false; nav.exploreThis(); }}>Explore this position</button>
+                <button type="button" role="menuitem" class="item" onclick={() => { c.menuOpen = false; nav.explorer(); }}>Explorer</button>
+            {:else}
+                <button type="button" role="menuitem" class="item" bind:this={first} onclick={() => { c.menuOpen = false; nav.play(); }}>Back to game</button>
+            {/if}
             <button type="button" role="menuitemcheckbox" class="item" aria-checked={c.theme === 'dark'} onclick={() => c.toggleTheme()}>
                 <span>Dark mode</span>
                 <span class="switch" class:on={c.theme === 'dark'} aria-hidden="true"><span></span></span>

@@ -8,9 +8,10 @@
     import Log from './Log.svelte';
     import MarkX from './MarkX.svelte';
     import Menu from './Menu.svelte';
+    import type { Nav } from './nav';
     import SheetColumns from './SheetColumns.svelte';
     // `drawer` is bound by App so its page-wide key handler knows the drawer is open (keys.ts).
-    let { c, drawer = $bindable(false) }: { c: GameController; drawer?: boolean } = $props();
+    let { c, nav, drawer = $bindable(false) }: { c: GameController; nav: Nav; drawer?: boolean } = $props();
     const v = $derived(c.view);
     let h = $state(window.innerHeight);
     let w = $state(window.innerWidth);
@@ -57,7 +58,7 @@
                 Bot <b>{v?.bot.score ?? 0}</b>
                 {#each botChips as ch}<ChipView chip={ch} size={20} />{/each}
             </button>
-            <Menu {c} />
+            <Menu {c} {nav} />
         </div>
     </header>
     {#if result}

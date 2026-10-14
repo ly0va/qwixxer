@@ -7,8 +7,9 @@
     import DiceTray from './DiceTray.svelte';
     import Header from './Header.svelte';
     import Log from './Log.svelte';
+    import type { Nav } from './nav';
     import SheetRows from './SheetRows.svelte';
-    let { c }: { c: GameController } = $props();
+    let { c, nav }: { c: GameController; nav: Nav } = $props();
     let w = $state(window.innerWidth);
     let h = $state(window.innerHeight);
     const scale = $derived(deskScale(w, h));
@@ -23,7 +24,7 @@
 <!-- The 1280×800 desk scaled to fit the window; .fit takes the scaled size so nothing scrolls. -->
 <div class="fit" style="width: {Math.floor(DESK_W * scale)}px; height: {Math.floor(DESK_H * scale)}px">
 <div class="desk" style="transform: scale({scale})">
-    <Header {c} />
+    <Header {c} {nav} />
     <div class="body">
         <main>
             <DiceTray {c} />

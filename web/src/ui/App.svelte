@@ -2,23 +2,56 @@
     import { onMount } from 'svelte';
     import { createEngine } from '../engine/client';
     import { GameController } from '../game/controller.svelte';
+    import { ExplorerController } from '../game/explorer.svelte';
     import { keyAction } from '../game/keys';
+    import { parseRoute, type Route } from '../game/route';
     import Desktop from './Desktop.svelte';
+    import ExplorerDesktop from './ExplorerDesktop.svelte';
+    import ExplorerPhone from './ExplorerPhone.svelte';
+    import type { Nav } from './nav';
     import Phone from './Phone.svelte';
 
     const store = { get: (k: string) => { try { return localStorage.getItem(k); } catch { return null; } },
         set: (k: string, v: string) => { try { localStorage.setItem(k, v); } catch { /* storage unavailable */ } } };
-    const c = new GameController(createEngine(), store);
+    // One worker for both: the game and the explorer share the engine.
+    const engine = createEngine();
+    const c = new GameController(engine, store);
+    const x = new ExplorerController(engine, store);
     // Spec "Implementation notes · Window sizes": below ~1100 px wide or in portrait, the phone layout.
     const mq = window.matchMedia('(max-width: 1099px), (orientation: portrait)');
     let phone = $state(mq.matches);
     // The phone's bot/log drawer (bound from Phone): page-wide keys must not reach the game under it.
     let drawer = $state(false);
+    let route = $state<Route>({ view: 'play' });
+
+    // A link (`?p=`) loads once, then the address becomes plain #/explore so
+    // a reload keeps your edits instead of reloading the link.
+    function sync() {
+        const r = parseRoute(location.hash);
+        if (r.view === 'explore' && r.code !== null) {
+            x.loadCode(r.code);
+            history.replaceState(null, '', '#/explore');
+            route = { view: 'explore', code: null };
+        } else route = r;
+        c.menuOpen = false;
+        x.picker = null;
+    }
+    const nav: Nav = {
+        get current() { return route.view; },
+        play: () => { history.pushState(null, '', location.pathname + location.search); sync(); },
+        explorer: () => { location.hash = '#/explore'; },
+        exploreThis: () => { if (c.view) x.loadView(c.view); location.hash = '#/explore'; },
+    };
+
     onMount(() => {
         c.init();
+        x.init();
+        sync();
         const f = () => { phone = mq.matches; if (!phone) drawer = false; };
         mq.addEventListener('change', f);
-        return () => mq.removeEventListener('change', f);
+        window.addEventListener('hashchange', sync);
+        window.addEventListener('popstate', sync);
+        return () => { mq.removeEventListener('change', f); window.removeEventListener('hashchange', sync); window.removeEventListener('popstate', sync); };
     });
     $effect(() => { document.documentElement.dataset.theme = c.theme; });
 
@@ -32,14 +65,16 @@
         const t = e.target instanceof Element ? e.target : null;
         const field = !!t?.closest('select, input, textarea');
         const keyboardFocus = !!t && t !== document.body && focusVisible(t);
-        const action = keyAction(e.key, { field, keyboardFocus, modal: (phone && drawer) || c.menuOpen }, c.view?.phase);
+        const action = keyAction(e.key, { field, keyboardFocus, modal: (phone && drawer) || c.menuOpen, explore: route.view === 'explore' }, c.view?.phase);
         if (action && action !== 'clear' && action !== 'close') e.preventDefault();
         if (action === 'confirm') c.confirm();
         else if (action === 'roll') c.roll();
         else if (action === 'clear') c.clearSelection();
-        else if (action === 'close') { if (c.menuOpen) c.menuOpen = false; else drawer = false; }
+        else if (action === 'close') { if (c.menuOpen) c.menuOpen = false; else if (x.picker !== null) x.picker = null; else drawer = false; }
     }
 </script>
 
 <svelte:window onkeydown={onKey} />
-{#if phone}<Phone {c} bind:drawer />{:else}<Desktop {c} />{/if}
+{#if route.view === 'explore'}
+    {#if phone}<ExplorerPhone {c} {x} {nav} />{:else}<ExplorerDesktop {c} {x} {nav} />{/if}
+{:else if phone}<Phone {c} {nav} bind:drawer />{:else}<Desktop {c} {nav} />{/if}
