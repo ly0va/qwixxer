@@ -54,7 +54,7 @@ describe('ExplorerController', () => {
         expect(calls).toHaveLength(2);
     });
 
-    it('remembers the position and restores it', async () => {
+    it('remembers the position and restores it', () => {
         const store = memStore();
         const { engine } = manualEngine();
         const x = new ExplorerController(engine, store);
@@ -97,6 +97,27 @@ describe('ExplorerController', () => {
         await x.copyLink('https://e.x/qwixxer/');
         expect(copied[0]).toBe(`https://e.x/qwixxer/#/explore?p=${encode(emptyPosition())}`);
         expect(x.notice).toBe('Link copied');
+    });
+
+    it('evaluates an edit made during a failing call', async () => {
+        const calls: Position[] = [];
+        let reject!: (e: Error) => void;
+        const engine = {
+            explore: vi.fn((pos: Position) => {
+                calls.push(structuredClone(pos));
+                return calls.length === 1 ? new Promise<Answer>((_, rej) => { reject = rej; }) : Promise.resolve(answer(0.7));
+            }),
+        } as unknown as Engine;
+        const x = new ExplorerController(engine, memStore());
+        x.init();
+        x.tapSquare('you', 2, 0);
+        reject(new Error('boom'));
+        await flush();
+        expect(calls).toHaveLength(2);
+        expect(calls[1].you.marks[2][0]).toBe(true);
+        expect(x.answer?.eval.p_win).toBe(0.7);
+        expect(x.error).toBe('');
+        expect(x.pending).toBe(false);
     });
 
     it('shows an engine failure and recovers on the next edit', async () => {

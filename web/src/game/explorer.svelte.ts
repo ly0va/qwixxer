@@ -117,14 +117,17 @@ export class ExplorerController {
         try {
             do {
                 this.dirty = false;
-                const a = await this.engine.explore(P.toEngine(this.pos));
-                if (!this.dirty) {
-                    this.answer = a;
-                    this.error = '';
+                try {
+                    const a = await this.engine.explore(P.toEngine(this.pos));
+                    if (!this.dirty) {
+                        this.answer = a;
+                        this.error = '';
+                    }
+                } catch (err) {
+                    // Keep the last answer: the error shows under it.
+                    if (!this.dirty) this.error = err instanceof Error ? err.message : String(err);
                 }
             } while (this.dirty);
-        } catch (err) {
-            this.error = err instanceof Error ? err.message : String(err);
         } finally {
             this.inflight = false;
             this.pending = false;
