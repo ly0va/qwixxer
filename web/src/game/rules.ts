@@ -56,7 +56,8 @@ export function sheetModel(view: View, who: 'you' | 'bot', ui: SheetUi): RowMode
         const last = ink.lastIndexOf(true);
         const pencilHere = pencils.filter((p) => p.row === r).length;
         const lockable = ink.filter(Boolean).length + pencilHere >= 5;
-        const locked = view.locked[r];
+        const term = numbers(r)[10];
+        const locked = view.locked[r] && !ui.hidden.includes(`you:${r}:${term}`) && !ui.hidden.includes(`bot:${r}:${term}`);
         const cells: CellModel[] = numbers(r).map((n, i) => {
             const sq = { row: r, n };
             const isPencil = has(pencils, sq);
@@ -65,6 +66,7 @@ export function sheetModel(view: View, who: 'you' | 'bot', ui: SheetUi): RowMode
             const canClick = isYou && !ink[i] && clickable(view, ui.sel, ui.strikeSel, sq);
             let look: CellLook = 'normal';
             if (locked && !ink[i]) look = 'out';
+            else if (canClick) look = 'legal';
             else if (i < last && !ink[i]) look = 'skipped';
             else if (i === 10 && mark === 'none' && !lockable) look = 'skipped';
             else if (choosing && mark === 'none') look = canClick ? 'legal' : 'soft';

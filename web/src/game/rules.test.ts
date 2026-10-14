@@ -77,6 +77,29 @@ describe('sheetModel', () => {
     });
 });
 
+describe('fix round 1', () => {
+    it('keeps a row open while the mark that locks it is hidden', () => {
+        const v = view({ phase: 'bot_to_roll', options: null, locked: [true, false, false, false] });
+        mark(v, 'bot', 0, [0, 1, 2, 3, 4, 10]);
+        const h = ui({ hidden: ['bot:0:12'] });
+        for (const who of ['you', 'bot'] as const) {
+            const r = sheetModel(v, who, h)[0];
+            expect(r.band).toBe('normal');
+            expect(r.cells[5].look).not.toBe('out');
+            expect(r.lock).not.toBe('locked_other');
+        }
+        expect(sheetModel(v, 'bot', h)[0].cells[10].mark).toBe('none');
+        expect(sheetModel(v, 'you', ui())[0].band).toBe('locked');
+    });
+    it('lets the legal cue win over terminal greying', () => {
+        const v = view({ options: { selections: [[{ row: 0, n: 7 }, { row: 0, n: 12 }]], strike: true, pass: false } });
+        mark(v, 'you', 0, [0, 1, 2, 3]);
+        const c = sheetModel(v, 'you', ui())[0].cells[10];
+        expect(c.clickable).toBe(true);
+        expect(c.look).toBe('legal');
+    });
+});
+
 describe('log', () => {
     it('puts the roller first and adds lock and strike chips', () => {
         const e = logEntry(7, { roller: 'bot', you: [], you_strike: false, bot_white: { row: 0, n: 12 }, bot_colour: null, bot_strike: false, locked: [0] });
