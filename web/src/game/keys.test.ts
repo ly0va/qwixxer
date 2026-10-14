@@ -28,4 +28,23 @@ describe('keyAction', () => {
     it('ignores other keys', () => {
         expect(keyAction('a', mouse, 'active')).toBe(null);
     });
+    describe('with the drawer open', () => {
+        const mModal = { ...mouse, modal: true };
+        const kModal = { ...kbd, modal: true };
+        const fModal = { ...field, modal: true };
+        it('closes the drawer on Escape instead of clearing', () => {
+            expect(keyAction('Escape', mModal, 'active')).toBe('close');
+            expect(keyAction('Escape', fModal, 'active')).toBe('close');
+        });
+        it('never confirms or rolls underneath', () => {
+            expect(keyAction('Enter', mModal, 'active')).toBe('swallow');
+            expect(keyAction(' ', mModal, 'you_to_roll')).toBe('swallow');
+        });
+        it('leaves keyboard-focused drawer controls and fields native', () => {
+            expect(keyAction('Enter', kModal, 'active')).toBe(null);
+            expect(keyAction(' ', kModal, 'you_to_roll')).toBe(null);
+            expect(keyAction('Enter', fModal, 'active')).toBe(null);
+            expect(keyAction('a', mModal, 'active')).toBe(null);
+        });
+    });
 });
