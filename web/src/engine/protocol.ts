@@ -26,7 +26,22 @@ export interface RollRecord {
     locked: number[];
 }
 export interface Step { view: View; record: RollRecord }
+/**
+ * Why an engine call failed: `snapshot` when `restore` rejected the saved
+ * game itself (bad JSON or values), `engine` for anything else (the wasm or
+ * the worker failed to load, or a game call failed).
+ */
+export type EngineErrorKind = 'snapshot' | 'engine';
+export class EngineError extends Error {
+    kind: EngineErrorKind;
+    constructor(message: string, kind: EngineErrorKind) {
+        super(message);
+        this.kind = kind;
+    }
+}
 export interface Engine {
+    /** Drop the current worker and start over with a fresh one (the game in it is lost). */
+    reset(): void;
     start(bot: BotKind, seed: number): Promise<View>;
     restore(bot: BotKind, snapshot: string, seed: number): Promise<View>;
     snapshot(): Promise<string>;

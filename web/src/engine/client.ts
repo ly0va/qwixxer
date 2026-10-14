@@ -1,38 +1,58 @@
-import type { BotKind, Engine, Sq, Step, View } from './protocol';
+import { EngineError, type BotKind, type Engine, type EngineErrorKind, type Sq, type Step, type View } from './protocol';
 
 type Pending = { resolve: (v: any) => void; reject: (e: Error) => void };
+type Reply = { id: number; ok: boolean; result?: any; error?: string; kind?: EngineErrorKind };
 
 /** Promise RPC to engine.worker.ts. One worker owns the whole game. */
 export class WorkerEngine implements Engine {
     private next = 1;
     private pending = new Map<number, Pending>();
     private dead: Error | null = null;
+    private worker!: Worker;
+    private spawn: () => Worker;
 
-    constructor(private worker: Worker) {
-        worker.onmessage = (e: MessageEvent<{ id: number; ok: boolean; result?: any; error?: string }>) => {
+    constructor(spawn: () => Worker) {
+        this.spawn = spawn;
+        this.attach();
+    }
+
+    private attach() {
+        const w = (this.worker = this.spawn());
+        this.dead = null;
+        w.onmessage = (e: MessageEvent<Reply>) => {
+            if (w !== this.worker) return;
             const p = this.pending.get(e.data.id);
             if (!p) return;
             this.pending.delete(e.data.id);
             if (e.data.ok) p.resolve(e.data.result);
-            else p.reject(new Error(e.data.error));
+            else p.reject(new EngineError(e.data.error ?? 'engine error', e.data.kind ?? 'engine'));
         };
-        worker.onerror = (e) => this.fail(new Error(e.message || 'engine failed to load'));
-        worker.onmessageerror = () => this.fail(new Error('engine message could not be decoded'));
+        w.onerror = (e) => w === this.worker && this.fail(new EngineError(e.message || 'engine failed to load', 'engine'));
+        w.onmessageerror = () => w === this.worker && this.fail(new EngineError('engine message could not be decoded', 'engine'));
     }
 
-    /** The worker is unusable: reject everything pending and every later call. */
+    /** The worker is unusable: reject everything pending and every later call until `reset`. */
     private fail(err: Error) {
         this.dead = err;
         for (const p of this.pending.values()) p.reject(err);
         this.pending.clear();
     }
 
+    reset() {
+        this.worker.terminate();
+        this.fail(new EngineError('engine was reset', 'engine'));
+        this.attach();
+    }
+
     private call<T>(cmd: string, ...args: unknown[]): Promise<T> {
         if (this.dead) return Promise.reject(this.dead);
+        // Plain data only: callers may pass Svelte state Proxies, which
+        // postMessage can't clone (DataCloneError).
+        const plain = JSON.parse(JSON.stringify(args)) as unknown[];
         const id = this.next++;
         return new Promise<T>((resolve, reject) => {
             this.pending.set(id, { resolve, reject });
-            this.worker.postMessage({ id, cmd, args });
+            this.worker.postMessage({ id, cmd, args: plain });
         });
     }
 
@@ -46,6 +66,5 @@ export class WorkerEngine implements Engine {
 }
 
 export function createEngine(): Engine {
-    const worker = new Worker(new URL('./engine.worker.ts', import.meta.url), { type: 'module' });
-    return new WorkerEngine(worker);
+    return new WorkerEngine(() => new Worker(new URL('./engine.worker.ts', import.meta.url), { type: 'module' }));
 }

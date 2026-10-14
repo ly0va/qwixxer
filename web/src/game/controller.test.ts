@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { Engine, Step, View } from '../engine/protocol';
+import { EngineError, type Engine, type Step, type View } from '../engine/protocol';
 import { GameController, type Store } from './controller.svelte';
 
 const empty = () => ({ marks: [0, 1, 2, 3].map(() => Array(11).fill(false)), strikes: 0, score: 0, row_points: [0, 0, 0, 0] });
@@ -9,8 +9,12 @@ const v = (p: Partial<View>): View => ({
 });
 const rec = (p: Partial<Step['record']> = {}): Step['record'] => ({ roller: 'you', you: [], you_strike: false, bot_white: null, bot_colour: null, bot_strike: false, locked: [], ...p });
 
+/**
+ * Every call's arguments go through structuredClone, as postMessage does in
+ * WorkerEngine: Svelte state Proxies would throw a DataCloneError here.
+ */
 function fakeEngine(over: Partial<Record<keyof Engine, any>> = {}): Engine {
-    return {
+    const impl: Record<string, any> = {
         start: vi.fn(async () => v({})),
         restore: vi.fn(async () => v({ phase: 'you_to_roll' })),
         snapshot: vi.fn(async () => '{"snap":1}'),
@@ -19,7 +23,14 @@ function fakeEngine(over: Partial<Record<keyof Engine, any>> = {}): Engine {
         youRoll: vi.fn(async () => v({ phase: 'active', dice: [1, 2, 3, 4, 5, 6], options: { selections: [[{ row: 0, n: 3 }]], strike: true, pass: false } })),
         submitActive: vi.fn(async () => ({ view: v({ phase: 'bot_to_roll' }), record: rec() })),
         ...over,
-    } as Engine;
+    };
+    const e: Record<string, any> = { reset: vi.fn() };
+    for (const [k, f] of Object.entries(impl)) {
+        e[k] = vi.fn((...args: unknown[]) => f(...structuredClone(args)));
+        // Keep the test's own mock reachable for implementation-specific checks.
+        (e[k] as any).impl = f;
+    }
+    return e as Engine;
 }
 function memStore(init: Record<string, string> = {}): Store & { data: Record<string, string> } {
     const data = { ...init };
@@ -28,6 +39,33 @@ function memStore(init: Record<string, string> = {}): Store & { data: Record<str
 const instant = async () => {};
 
 describe('GameController', () => {
+    it('runs with client-compiled runes ($state arrays are Proxies)', async () => {
+        const e = fakeEngine({ restore: vi.fn(async () => v({ phase: 'active', dice: [1, 2, 3, 4, 5, 6], options: { selections: [[{ row: 0, n: 3 }]], strike: true, pass: false } })) });
+        const c = new GameController(e, memStore({ 'qwixxer.save.v1': JSON.stringify({ snapshot: '{}', log: [], rollNo: 3, bot: 'master', nextBot: 'master' }) }), instant, () => 1);
+        await c.init();
+        c.tapSquare({ row: 0, n: 3 });
+        // If this stops throwing, the test environment no longer matches the browser.
+        expect(() => structuredClone(c.sel)).toThrow();
+    });
+
+    it('plays a whole roll of each kind through a postMessage-like engine', async () => {
+        const e = fakeEngine({ restore: vi.fn(async () => v({ phase: 'you_to_roll' })) });
+        const c = new GameController(e, memStore({ 'qwixxer.save.v1': JSON.stringify({ snapshot: '{}', log: [], rollNo: 2, bot: 'master', nextBot: 'master' }) }), instant, () => 1);
+        await c.init();
+        await c.roll();
+        expect(c.view?.phase).toBe('active');
+        c.tapSquare({ row: 0, n: 3 });
+        await c.confirm(); // submitActive, then the bot's roll lands in passive
+        expect(c.error).toBe('');
+        expect(e.submitActive).toHaveBeenCalledWith([{ row: 0, n: 3 }], false);
+        expect(c.view?.phase).toBe('passive');
+        c.tapSquare({ row: 0, n: 3 });
+        await c.confirm(); // submitPassive with your white-sum square
+        expect(c.error).toBe('');
+        expect(e.submitPassive).toHaveBeenCalledWith({ row: 0, n: 3 });
+        expect(c.view?.phase).toBe('you_to_roll');
+    });
+
     it('starts a new game with the bot rolling first', async () => {
         const e = fakeEngine();
         const c = new GameController(e, memStore(), instant, () => 1);
@@ -110,7 +148,7 @@ describe('GameController', () => {
 
     it('discards a corrupt saved game and starts a new one', async () => {
         const store = memStore({ 'qwixxer.save.v1': JSON.stringify({ snapshot: 'old', log: [], rollNo: 2, bot: 'master', nextBot: 'master' }) });
-        const e = fakeEngine({ restore: vi.fn(async () => { throw new Error('bad snapshot'); }) });
+        const e = fakeEngine({ restore: vi.fn(async () => { throw new EngineError('bad snapshot', 'snapshot'); }) });
         const c = new GameController(e, store, instant, () => 1);
         await c.init();
         expect(e.restore).toHaveBeenCalledOnce();
@@ -208,5 +246,119 @@ describe('GameController', () => {
         expect(c.pendingDice).toBe(null);
         expect(c.view?.phase).toBe('active');
         expect(waits.length).toBe(2);
+    });
+
+    it('keeps the save when the engine fails to load, after one retry on a fresh worker', async () => {
+        const saved = JSON.stringify({ snapshot: '{"s":1}', log: [], rollNo: 5, bot: 'master', nextBot: 'master' });
+        const store = memStore({ 'qwixxer.save.v1': saved });
+        const e = fakeEngine({ restore: vi.fn(async () => { throw new EngineError('engine failed to load: fetch', 'engine'); }) });
+        const c = new GameController(e, store, instant, () => 1);
+        await c.init();
+        expect(e.restore).toHaveBeenCalledTimes(2);
+        expect(e.reset).toHaveBeenCalledOnce();
+        expect(e.start).not.toHaveBeenCalled();
+        expect(store.data['qwixxer.save.v1']).toBe(saved);
+        expect(c.error).toContain('engine failed to load');
+        expect(c.busy).toBe(false);
+        // New game (the error button) recreates the worker before starting.
+        await c.newGame();
+        expect(e.reset).toHaveBeenCalledTimes(2);
+        expect(e.start).toHaveBeenCalledOnce();
+        expect(c.error).toBe('');
+        expect(c.view?.phase).toBe('passive');
+    });
+
+    it('resumes the save when the retry on a fresh worker loads', async () => {
+        let calls = 0;
+        const restore = vi.fn(async () => {
+            if (calls++ === 0) throw new EngineError('engine failed to load: fetch', 'engine');
+            return v({ phase: 'you_to_roll' });
+        });
+        const e = fakeEngine({ restore });
+        const c = new GameController(e, memStore({ 'qwixxer.save.v1': JSON.stringify({ snapshot: '{}', log: [], rollNo: 5, bot: 'master', nextBot: 'master' }) }), instant, () => 1);
+        await c.init();
+        expect(e.reset).toHaveBeenCalledOnce();
+        expect(e.start).not.toHaveBeenCalled();
+        expect(c.error).toBe('');
+        expect(c.rollNo).toBe(5);
+        expect(c.view?.phase).toBe('you_to_roll');
+    });
+
+    it('recreates the engine on New game after a failed call', async () => {
+        let calls = 0;
+        const e = fakeEngine({ start: vi.fn(async () => {
+            if (calls++ === 0) throw new EngineError('engine failed to load', 'engine');
+            return v({});
+        }) });
+        const c = new GameController(e, memStore(), instant, () => 1);
+        await c.init();
+        expect(c.error).toContain('engine failed to load');
+        expect(e.reset).not.toHaveBeenCalled();
+        await c.newGame();
+        expect(e.reset).toHaveBeenCalledOnce();
+        expect(c.error).toBe('');
+        expect(c.view?.phase).toBe('passive');
+        await c.newGame(); // healthy again: no more resets
+        expect(e.reset).toHaveBeenCalledOnce();
+    });
+
+    it('lets the stored preference win over the saved game for the next bot', async () => {
+        const e = fakeEngine();
+        const c = new GameController(e, memStore({
+            'qwixxer.prefs.v1': JSON.stringify({ theme: 'dark', nextBot: 'student' }),
+            'qwixxer.save.v1': JSON.stringify({ snapshot: '{}', log: [], rollNo: 2, bot: 'master', nextBot: 'master' }),
+        }), instant, () => 1);
+        await c.init();
+        expect(c.bot).toBe('master');
+        expect(c.nextBot).toBe('student');
+    });
+
+    it('saves the rolled game as soon as the engine has rolled, before the think ends', async () => {
+        const waits: { ms: number; done: () => void }[] = [];
+        const sleep = (ms: number) => new Promise<void>((r) => waits.push({ ms, done: r }));
+        const flush = () => new Promise((r) => setTimeout(r, 0));
+        let rolled = false;
+        const e = fakeEngine({
+            youRoll: vi.fn(async () => { rolled = true; return v({ phase: 'active', dice: [1, 2, 3, 4, 5, 6], options: { selections: [[{ row: 0, n: 3 }]], strike: true, pass: false } }); }),
+            snapshot: vi.fn(async () => (rolled ? '{"after":1}' : '{"before":1}')),
+        });
+        const store = memStore({ 'qwixxer.save.v1': JSON.stringify({ snapshot: '{}', log: [], rollNo: 2, bot: 'master', nextBot: 'master' }) });
+        const c = new GameController(e, store, sleep, () => 1);
+        await c.init();
+        const pending = c.roll();
+        await flush();
+        expect(waits.map((w) => w.ms)).toEqual([600]); // still tumbling
+        const early = JSON.parse(store.data['qwixxer.save.v1']);
+        expect(early).toMatchObject({ snapshot: '{"after":1}', rollNo: 3 });
+        waits[0].done();
+        await flush();
+        expect(c.thinking).toBe(true);
+        waits[1].done();
+        await pending;
+        expect(JSON.parse(store.data['qwixxer.save.v1'])).toMatchObject({ snapshot: '{"after":1}', rollNo: 3 });
+        expect(c.rollNo).toBe(3);
+    });
+
+    it('says to unselect first when another legal square conflicts with the selection', async () => {
+        const opts = { selections: [[{ row: 0, n: 3 }], [{ row: 1, n: 9 }]], strike: true, pass: false };
+        const e = fakeEngine({ restore: vi.fn(async () => v({ phase: 'active', dice: [1, 2, 3, 4, 5, 6], options: opts })) });
+        const c = new GameController(e, memStore({ 'qwixxer.save.v1': JSON.stringify({ snapshot: '{}', log: [], rollNo: 1, bot: 'master', nextBot: 'master' }) }), instant, () => 1);
+        await c.init();
+        c.tapSquare({ row: 0, n: 3 });
+        c.tapSquare({ row: 1, n: 9 });
+        expect(c.tip).toBe('Tap your selected square to unselect it first.');
+        c.tapSquare({ row: 2, n: 5 }); // not legal at all
+        expect(c.tip).toBe('That square isn’t available with this roll.');
+    });
+
+    it('says to unselect first when switching white-sum squares on the bot’s turn', async () => {
+        const e = fakeEngine({ restore: vi.fn(async () => v({ phase: 'passive', dice: [1, 2, 3, 4, 5, 6], passive: [{ row: 0, n: 3 }, { row: 3, n: 3 }] })) });
+        const c = new GameController(e, memStore({ 'qwixxer.save.v1': JSON.stringify({ snapshot: '{}', log: [], rollNo: 1, bot: 'master', nextBot: 'master' }) }), instant, () => 1);
+        await c.init();
+        c.tapSquare({ row: 0, n: 3 });
+        c.tapSquare({ row: 3, n: 3 });
+        expect(c.tip).toBe('Tap your selected square to unselect it first.');
+        c.tapSquare({ row: 2, n: 8 });
+        expect(c.tip).toContain('you may only mark the white sum (3)');
     });
 });

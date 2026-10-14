@@ -1,4 +1,4 @@
-import type { BotKind, Engine, Sq, Step, View } from '../engine/protocol';
+import { EngineError, type BotKind, type Engine, type Sq, type Step, type View } from '../engine/protocol';
 import { clickable, confirmState, has, isTerminal, logEntry, NAME, sqKey, strikeOpen, type LogEntry } from './rules';
 
 /** Spec "Pacing": minimum durations in ms. */
@@ -40,6 +40,8 @@ export class GameController {
     private store: Store;
     private sleep: (ms: number) => Promise<void>;
     private seed: () => number;
+    /** An engine call failed: New game starts over with a fresh worker. */
+    private stale = false;
 
     constructor(
         engine: Engine,
@@ -68,33 +70,48 @@ export class GameController {
             this.nextBot = prefs.nextBot ?? 'master_plus';
         }
         const saved = this.read<Saved>(SAVE);
-        if (saved && (await this.resume(saved))) return;
+        if (saved && (await this.resume(saved, prefs?.nextBot))) return;
         return this.newGame();
     }
 
     /**
-     * Restore a saved game. If the engine rejects the snapshot (corrupt or
-     * old format), discard the save and report false so a new game starts;
-     * otherwise a bad save would break every page load.
+     * Restore a saved game. If the engine rejects the snapshot itself
+     * (corrupt or old format), discard the save and report false so a new
+     * game starts; otherwise a bad save would break every page load. If the
+     * engine fails to load, retry once on a fresh worker, then keep the save
+     * and show the error (true: no new game overwrites the save).
      */
-    private async resume(saved: Saved): Promise<boolean> {
-        let view: View;
+    private async resume(saved: Saved, prefBot: BotKind | undefined): Promise<boolean> {
+        let view: View | null = null;
         this.busy = true; // block newGame/confirm while the engine restores
         try {
-            view = await this.engine.restore(saved.bot, saved.snapshot, this.seed());
-        } catch {
-            this.store.set(SAVE, '');
-            return false;
+            for (let attempt = 0; !view; attempt++) {
+                try {
+                    view = await this.engine.restore(saved.bot, saved.snapshot, this.seed());
+                } catch (e) {
+                    if (e instanceof EngineError && e.kind === 'snapshot') {
+                        this.store.set(SAVE, '');
+                        return false;
+                    }
+                    if (attempt > 0) {
+                        this.error = `${e instanceof Error ? e.message : String(e)}. Your saved game is kept: reload the page to continue it.`;
+                        this.stale = true;
+                        return true;
+                    }
+                    this.engine.reset();
+                }
+            }
         } finally {
             this.busy = false;
         }
+        const restored = view;
         await this.guard(async () => {
             this.bot = saved.bot;
-            this.nextBot = saved.nextBot;
+            this.nextBot = prefBot ?? saved.nextBot;
             this.log = saved.log;
             this.rollNo = saved.rollNo;
-            this.view = view;
-            if (view.phase === 'bot_to_roll') await this.botTurn();
+            this.view = restored;
+            if (restored.phase === 'bot_to_roll') await this.botTurn();
         });
         return true;
     }
@@ -102,6 +119,10 @@ export class GameController {
     async newGame() {
         if (this.busy) return;
         await this.guard(async () => {
+            if (this.stale) {
+                this.engine.reset();
+                this.stale = false;
+            }
             this.bot = this.nextBot;
             this.thinking = false;
             this.pendingDice = null;
@@ -122,9 +143,12 @@ export class GameController {
         if (this.busy || this.view?.phase !== 'you_to_roll') return;
         await this.guard(async () => {
             this.fresh = {};
+            const rollNo = this.rollNo + 1;
             const result = this.engine.youRoll();
             let failed = false;
-            result.catch(() => (failed = true));
+            // The engine has rolled: save now, so a reload during the tumble
+            // or the bot's think restores these dice instead of a fresh roll.
+            result.then(() => this.save(rollNo), () => (failed = true));
             // Tumble, then the bot thinks for at least PACE.think while the
             // engine computes; the last tumble faces stay up until the real
             // dice arrive, so the tray never falls back to blank.
@@ -140,7 +164,7 @@ export class GameController {
             this.view = v;
             this.pendingDice = null;
             this.shownDice = null;
-            this.rollNo += 1;
+            this.rollNo = rollNo;
             this.save();
         });
     }
@@ -165,7 +189,9 @@ export class GameController {
             return;
         }
         const name = NAME[s.row].toLowerCase();
+        const alone = v.phase === 'passive' ? has(v.passive, s) : !!v.options?.selections.some((x) => has(x, s));
         if (this.strikeSel) this.tip = 'Clear the strike first to mark a square.';
+        else if (this.sel.length === 1 && alone) this.tip = 'Tap your selected square to unselect it first.';
         else if (v.phase === 'active' && v.bot_white && isTerminal(v.bot_white) && v.bot_white.row === s.row)
             this.tip = `${NAME[s.row]} is locking: the bot marked ${name} ${v.bot_white.n}. Your white sum may still go in ${name}; a colour mark can’t.`;
         else if (v.phase === 'passive')
@@ -204,7 +230,7 @@ export class GameController {
             return;
         }
         await this.guard(async () => {
-            const picks = this.sel;
+            const picks = $state.snapshot(this.sel); // plain data for the worker
             const strike = this.strikeSel;
             this.committing = true;
             const step = await this.engine.submitActive(picks, strike);
@@ -247,7 +273,7 @@ export class GameController {
     /** Your white-sum mark inks at once; the bot thinks, draws its white sum, then its colour mark. */
     private async resolvePassive() {
         await this.guard(async () => {
-            const pick = this.sel[0] ?? null;
+            const pick = $state.snapshot(this.sel[0]) ?? null; // plain data for the worker
             this.committing = true;
             this.thinking = true;
             const [step] = await Promise.all([this.engine.submitPassive(pick), this.sleep(PACE.think)]);
@@ -311,6 +337,7 @@ export class GameController {
             await work();
         } catch (e) {
             this.error = e instanceof Error ? e.message : String(e);
+            this.stale = true;
             this.thinking = false;
             this.rolling = false;
             this.pendingDice = null;
@@ -321,9 +348,9 @@ export class GameController {
         }
     }
 
-    private save() {
+    private save(rollNo = this.rollNo) {
         if (!this.view) return;
-        const meta = { log: this.log, rollNo: this.rollNo, bot: this.bot, nextBot: this.nextBot };
+        const meta = { log: this.log, rollNo, bot: this.bot, nextBot: this.nextBot };
         this.engine
             .snapshot()
             .then((snapshot) => this.store.set(SAVE, JSON.stringify({ snapshot, ...meta })))

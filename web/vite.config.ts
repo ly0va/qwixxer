@@ -7,5 +7,11 @@ export default defineConfig({
     worker: { format: 'es' },
     build: { outDir: 'dist', assetsInlineLimit: 0 },
     server: { fs: { allow: ['.'] } },
-    test: { environment: 'node', include: ['src/**/*.test.ts'] },
+    test: {
+        // Client-compiled runes: `$state` values are Proxies, as in the browser,
+        // so a test engine that structuredClones its arguments (like
+        // postMessage) catches state leaking into the worker RPC.
+        environment: './src/test/client-env.ts',
+        include: ['src/**/*.test.ts'],
+    },
 });
