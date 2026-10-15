@@ -562,10 +562,18 @@ mod tests {
             inputs: positions(),
             outcome: 1.0,
         };
-        // Different widths: distinct nets even if a parallel test reseeds
-        // the backend's global RNG between `seed` and `init`.
+        // A fresh net's logits are ~1e-3, so two random nets can give
+        // near-identical targets: train the old one towards P = 0.9 first.
         let device = Default::default();
-        let old = ManualWinNet::from_model(&WinModelConfig::new().with_width(16).init::<MyBackend>(&device));
+        let leaning: Vec<_> = chain.inputs.iter().map(|x| (*x, 0.9)).collect();
+        let (old, _) = train_epochs(
+            WinModelConfig::new().with_width(16).init::<Ad>(&device),
+            &leaning,
+            50,
+            1e-2,
+            1,
+        );
+        let old = ManualWinNet::from_model(&old.valid());
         let new = net(2);
         let t_old = fresh_targets(&old, &[&chain]);
         let t_new = fresh_targets(&new, &[&chain]);
@@ -577,7 +585,7 @@ mod tests {
             assert!((t - e).abs() < 1e-6);
         }
         assert!(
-            t_old.iter().zip(&t_new).any(|(a, b)| (a.1 - b.1).abs() > 1e-4),
+            t_old.iter().zip(&t_new).any(|(a, b)| (a.1 - b.1).abs() > 1e-2),
             "targets ignored the net"
         );
     }
