@@ -29,6 +29,10 @@ enum BotType {
     PairAlt,
     /// Production pair-search on the `QWIXXER_ALT_MODEL` checkpoint.
     PairSearchAlt,
+    /// Static win net (2-player only), from `win_model/`.
+    Win,
+    /// Production pair-search driven by the win net (2-player only).
+    WinSearch,
     Mcts,
     Opportunist,
     Conservative,
@@ -46,6 +50,8 @@ impl std::fmt::Display for BotType {
             BotType::PairSearchExpB => write!(f, "PAIR-SEARCH-B[{}]", exp_search_config("QWIXXER_SEARCH_B")),
             BotType::PairAlt => write!(f, "PAIR({})", alt_model_dir()),
             BotType::PairSearchAlt => write!(f, "PAIR-SEARCH({})", alt_model_dir()),
+            BotType::Win => write!(f, "WIN"),
+            BotType::WinSearch => write!(f, "WIN-SEARCH"),
             BotType::Mcts => write!(f, "MCTS"),
             BotType::Opportunist => write!(f, "Opportunist"),
             BotType::Conservative => write!(f, "Conservative"),
@@ -75,6 +81,10 @@ fn make_strategy(bot: &BotType) -> Box<dyn strategy::Strategy> {
             dqn::pair::PairStrategy::load("pair_model"),
             exp_search_config(exp_env(bot)),
         )),
+        BotType::Win => Box::new(dqn::win::WinStrategy::load("win_model")),
+        BotType::WinSearch => Box::new(strategy::search::SearchBot::new(dqn::win::WinStrategy::load(
+            "win_model",
+        ))),
         BotType::Mcts => {
             let champion =
                 bot::DNA::load_weights("champion.txt", genes).expect("No champion.txt found. Run `train ga` first.");
@@ -111,6 +121,7 @@ struct StrategyTemplates {
     dqn: Option<dqn::DqnStrategy>,
     pair: Option<dqn::pair::PairStrategy>,
     pair_alt: Option<dqn::pair::PairStrategy>,
+    win: Option<dqn::win::WinStrategy>,
     champion: Option<bot::DNA>,
 }
 
@@ -126,6 +137,7 @@ impl StrategyTemplates {
         let needs_pair_alt = bots
             .iter()
             .any(|b| matches!(b, BotType::PairAlt | BotType::PairSearchAlt));
+        let needs_win = bots.iter().any(|b| matches!(b, BotType::Win | BotType::WinSearch));
         let needs_champion = bots.iter().any(|b| matches!(b, BotType::Ga | BotType::Mcts));
         let genes = Arc::new(bot::default_genes());
         StrategyTemplates {
@@ -141,6 +153,11 @@ impl StrategyTemplates {
             },
             pair_alt: if needs_pair_alt {
                 Some(dqn::pair::PairStrategy::load(&alt_model_dir()))
+            } else {
+                None
+            },
+            win: if needs_win {
+                Some(dqn::win::WinStrategy::load("win_model"))
             } else {
                 None
             },
@@ -188,6 +205,8 @@ impl StrategyTemplates {
                     t.device.clone(),
                 )))
             }
+            BotType::Win => Box::new(self.win.as_ref().unwrap().clone()),
+            BotType::WinSearch => Box::new(strategy::search::SearchBot::new(self.win.as_ref().unwrap().clone())),
             BotType::Mcts => Box::new(mcts::MonteCarlo::with_ga(200, self.champion.as_ref().unwrap().clone())),
             BotType::Opportunist => Box::<strategy::Opportunist>::default(),
             BotType::Conservative => Box::<strategy::Conservative>::default(),

@@ -244,6 +244,20 @@ consistency); color permutations are applied in the batcher to both blocks.
 Passive skips are recorded (the old recorder dropped them). Model dir:
 `pair_model/`. Design doc: `docs/superpowers/specs/2026-06-10-pair-network-design.md`.
 
+**Win net** (`src/dqn/win.rs`, `src/dqn/win_train.rs`; experimental,
+2-player only) predicts P(win) directly. Inputs are the pair net's two
+board blocks regrouped as 4 row tokens (a row's 4 features for each
+player) and 9 globals. A shared row encoder sums within the colour pairs,
+a shared pair encoder sums over both pairs, and a head outputs g(me, opp);
+the logit is z = g(me, opp) − g(opp, me), so P(a ahead) + P(b ahead) = 1
+and the 8 colour relabellings leave z unchanged, both exactly. Trained from
+scratch by TD(λ = 0.8) self-play on win/loss (tie ½) with targets rebuilt
+by the current net every iteration (`win-train`); `win-fit` checks the
+width against today's P(win). `WinStrategy` reports values in probit units
+(Φ⁻¹ of its P(win)) so the search's gate and blend apply unchanged. Bench
+bots `win` / `win-search`, model dir `win_model/`. Design doc:
+`docs/superpowers/specs/2026-10-15-win-net-design.md`.
+
 ### Pair-Search (`strategy/search.rs`, `strategy/sim.rs`)
 
 Decision-time search on top of the pair network. At gated active decisions
