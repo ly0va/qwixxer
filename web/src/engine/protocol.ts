@@ -35,6 +35,8 @@ export interface Eval { p_win: number; margin: number; sigma: number }
 export interface MoveOut { marks: Sq[]; strike: boolean; pass: boolean; p_win: number; bots: BotKind[]; note: 'rolled_out' | 'rule' | null }
 /** `opponent_white`: on your roll, the opponent's predicted simultaneous white-sum mark (`mark: null` = pass). */
 export interface Answer { over: { you: number; opponent: number } | null; eval: Eval; moves: MoveOut[] | null; opponent_white: { mark: Sq | null } | null }
+/** Mirrors explorer.rs `Analysis`: play-out totals of one batch (or a running sum). */
+export interface Analysis { games: number; wins: number; ties: number; diff_sum: number; diff_sq_sum: number }
 /**
  * Why an engine call failed: `snapshot` when `restore` rejected the saved
  * game itself (bad JSON or values), `engine` for anything else (the wasm or
@@ -59,5 +61,7 @@ export interface Engine {
     youRoll(): Promise<View>;
     submitActive(picks: Sq[], strike: boolean): Promise<Step>;
     explore(position: Position): Promise<Answer>;
+    /** Play-out games `start .. start + count` of the position (its dice ignored). */
+    analyze(position: Position, start: number, count: number): Promise<Analysis>;
 }
 export const BOT_NAMES: Record<BotKind, string> = { master_plus: 'Master+', master: 'Master', student: 'Student', newbie: 'Newbie' };

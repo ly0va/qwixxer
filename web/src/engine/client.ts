@@ -1,4 +1,4 @@
-import { EngineError, type Answer, type BotKind, type Engine, type EngineErrorKind, type Position, type Sq, type Step, type View } from './protocol';
+import { EngineError, type Analysis, type Answer, type BotKind, type Engine, type EngineErrorKind, type Position, type Sq, type Step, type View } from './protocol';
 
 type Pending = { resolve: (v: any) => void; reject: (e: Error) => void };
 type Reply = { id: number; ok: boolean; result?: any; error?: string; kind?: EngineErrorKind };
@@ -64,6 +64,7 @@ export class WorkerEngine implements Engine {
     youRoll() { return this.call<View>('youRoll'); }
     submitActive(picks: Sq[], strike: boolean) { return this.call<Step>('submitActive', picks, strike); }
     explore(position: Position) { return this.call<Answer>('explore', position); }
+    analyze(position: Position, start: number, count: number) { return this.call<Analysis>('analyze', position, start, count); }
 }
 
 export function createEngine(): Engine {

@@ -65,6 +65,9 @@ export function serve(wasm: Wasm, post: (r: Reply) => void): (req: Request) => P
                 // Created on first use and kept: the game and the explorer share the worker.
                 explorer ??= new wasm.WasmExplorer();
                 return JSON.parse(explorer.explore(JSON.stringify(args[0])));
+            case 'analyze':
+                explorer ??= new wasm.WasmExplorer();
+                return JSON.parse(explorer.analyze(JSON.stringify(args[0]), args[1], args[2]));
             default:
                 throw new Error(`unknown command ${cmd}`);
         }
