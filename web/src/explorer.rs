@@ -219,18 +219,19 @@ pub fn bot_turn(
 
 /// Your turn after the phase-1 mark `w`, with the opponent's simultaneous
 /// mark `opp_white`: locks propagate, then (unless two rows are closed) the
-/// bot's phase 2 against the opponent's marked sheet; nothing marked is a
-/// strike. Also returns whether a meta-rule forced phase 2.
-fn finish_turn(
-    bot: &mut dyn Strategy,
+/// phase-2 decision `phase2(you, opponent, has_marked)` against the
+/// opponent's marked sheet; nothing marked is a strike. Also returns whether
+/// a meta-rule forced phase 2 and whether `phase2` reported a search.
+fn finish_turn_with(
     you: &State,
     opp: &State,
     opp_white: Option<Mark>,
     dice: [u8; 6],
     w: Option<Mark>,
-) -> (Turn, bool) {
+    mut phase2: impl FnMut(&State, &State, bool) -> (Option<Mark>, bool),
+) -> (Turn, bool, bool) {
     let mut marks: Vec<Mark> = w.into_iter().collect();
-    let mut forced = false;
+    let (mut forced, mut searched) = (false, false);
     let mut y = *you;
     if let Some(m) = w {
         y.apply_mark(m);
@@ -247,12 +248,27 @@ fn finish_turn(
             active_phase2_choices(&y, from_ref(&o), dice, w.is_some()),
             Decision::Forced(Some(_))
         );
-        if let Some(c) = bot.active_phase2(&y, from_ref(&o), dice, w.is_some()) {
-            marks.push(c);
-        }
+        let (c, s) = phase2(&y, &o, w.is_some());
+        searched = s;
+        marks.extend(c);
     }
     let strike = marks.is_empty() && active_options(you, opp, opp_white, dice).strike;
-    (Turn { marks, strike }, forced)
+    (Turn { marks, strike }, forced, searched)
+}
+
+/// [`finish_turn_with`] for any bot: its own `active_phase2`.
+fn finish_turn(
+    bot: &mut dyn Strategy,
+    you: &State,
+    opp: &State,
+    opp_white: Option<Mark>,
+    dice: [u8; 6],
+    w: Option<Mark>,
+) -> (Turn, bool) {
+    let (turn, forced, _) = finish_turn_with(you, opp, opp_white, dice, w, |y, o, hm| {
+        (bot.active_phase2(y, from_ref(o), dice, hm), false)
+    });
+    (turn, forced)
 }
 
 pub struct Explorer {
@@ -381,17 +397,23 @@ impl Explorer {
             .collect();
 
         // Each bot's pick, and the note its row gets if it isn't first.
-        let (plus_turn, plus_forced2) = match roller {
-            Roller::You => finish_turn(&mut self.plus, you, opp, opp_white, dice, explained.pick),
+        // Master+'s colour mark may come from a search of its own.
+        let plus = &mut self.plus;
+        let (plus_turn, plus_forced2, plus_searched2) = match roller {
+            Roller::You => finish_turn_with(you, opp, opp_white, dice, explained.pick, |y, o, hm| {
+                let e = plus.explain_active_phase2(y, from_ref(o), dice, hm);
+                (e.pick, !e.searched.is_empty())
+            }),
             Roller::Opponent => (
                 Turn {
                     marks: explained.pick.into_iter().collect(),
                     strike: false,
                 },
                 false,
+                false,
             ),
         };
-        let plus_note = if !explained.searched.is_empty() {
+        let plus_note = if !explained.searched.is_empty() || plus_searched2 {
             Some("rolled_out")
         } else if explained.forced || plus_forced2 {
             Some("rule")
@@ -552,6 +574,21 @@ mod tests {
         assert!(Explorer::new().explore(&p).is_err());
     }
 
+    /// A reported position: Master prefers the strike, Master+'s colour-mark
+    /// search prefers yellow 7, so Master+'s row (second) explains itself.
+    #[test]
+    fn master_plus_off_rank_one_by_its_colour_search_gets_a_note() {
+        let mut p = pos(Some([1, 3, 1, 4, 1, 1]), Roller::You);
+        for i in [0, 2, 3] {
+            p.you.marks[0][i] = true; // red 2, 4, 5
+        }
+        p.you.marks[1][3] = true; // yellow 5
+        let moves = Explorer::new().explore(&p).unwrap().moves.unwrap();
+        let plus = moves.iter().position(|m| m.bots.contains(&"master_plus")).unwrap();
+        assert!(plus > 0, "{moves:?}");
+        assert_eq!(moves[plus].note, Some("rolled_out"));
+    }
+
     /// Spec "Edge cases": arbitrary (unreachable) marks never panic, and
     /// every bot's pick is one of the listed moves.
     #[test]
@@ -588,6 +625,11 @@ mod tests {
                 assert!(moves
                     .iter()
                     .all(|m| m.note.is_none() || m.bots.iter().any(|b| *b == "master_plus" || *b == "master")));
+                // Master+ is first unless its search or a rule moved it.
+                let plus = moves.iter().position(|m| m.bots.contains(&"master_plus")).unwrap();
+                if plus != 0 && moves[plus].bots[0] == "master_plus" {
+                    assert!(moves[plus].note.is_some(), "Master+ off rank 1 without a note: {p:?}");
+                }
                 // Master (the static net) is first unless a rule moved it.
                 let master = moves.iter().position(|m| m.bots.contains(&"master")).unwrap();
                 if master != 0 && moves[master].note.is_none() {

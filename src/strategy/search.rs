@@ -962,12 +962,15 @@ impl<B: WinProb> SearchBot<B> {
     }
 }
 
-impl<B: WinProb> Strategy for SearchBot<B> {
-    fn active_phase1(&mut self, state: &State, opp_states: &[State], dice: [u8; 6]) -> Option<Mark> {
-        self.explain_active_phase1(state, opp_states, dice).pick
-    }
-
-    fn active_phase2(&mut self, state: &State, opp_states: &[State], dice: [u8; 6], has_marked: bool) -> Option<Mark> {
+impl<B: WinProb> SearchBot<B> {
+    /// `Strategy::active_phase2` with its evidence (see [`Explanation`]).
+    pub fn explain_active_phase2(
+        &mut self,
+        state: &State,
+        opp_states: &[State],
+        dice: [u8; 6],
+        has_marked: bool,
+    ) -> Explanation {
         if let Some(stats) = &self.stats {
             stats.borrow_mut().active_decisions += 1;
         }
@@ -980,7 +983,7 @@ impl<B: WinProb> Strategy for SearchBot<B> {
                 let opp_best = opp_states.iter().map(|s| s.count_points()).max().unwrap_or(0);
                 let marks = state.generate_color_moves(dice);
                 let rule_free = mark_choices_with(state, &marks, baseline, opp_best, false);
-                return self.adjudicate_lock(
+                return Explanation::forced(self.adjudicate_lock(
                     state,
                     lock,
                     rule_free,
@@ -990,9 +993,9 @@ impl<B: WinProb> Strategy for SearchBot<B> {
                     |_, post| phase2_entry(post, opp_states),
                     context_seed(state, opp_states, dice),
                     1 % (opp_states.len() + 1),
-                );
+                ));
             }
-            Decision::Forced(m) => return m,
+            Decision::Forced(m) => return Explanation::forced(m),
             Decision::Choices(c) => c,
         };
         let states: Vec<State> = choices.iter().map(|(_, s)| *s).collect();
@@ -1013,7 +1016,7 @@ impl<B: WinProb> Strategy for SearchBot<B> {
         } else {
             self.gate_and_record(&cands, state, opp_states)
         }) else {
-            return cands[0].mark;
+            return Explanation::unsearched(cands[0].mark);
         };
 
         // Entry per candidate: post state + lock propagation; turn is then over.
@@ -1021,9 +1024,23 @@ impl<B: WinProb> Strategy for SearchBot<B> {
         let entries: Vec<(Vec<State>, bool)> = shortlist.iter().map(|c| phase2_entry(c.post, opp_states)).collect();
 
         let seed = context_seed(state, opp_states, dice);
-        let (pick, _) = self.search_pick(shortlist, entries, seed, 1 % (opp_states.len() + 1));
+        let (pick, scores) = self.search_pick(shortlist, entries, seed, 1 % (opp_states.len() + 1));
         self.record_search_result(close || endgame, pick != 0);
-        shortlist[pick].mark
+        Explanation {
+            pick: shortlist[pick].mark,
+            forced: false,
+            searched: shortlist.iter().map(|c| c.mark).zip(scores).collect(),
+        }
+    }
+}
+
+impl<B: WinProb> Strategy for SearchBot<B> {
+    fn active_phase1(&mut self, state: &State, opp_states: &[State], dice: [u8; 6]) -> Option<Mark> {
+        self.explain_active_phase1(state, opp_states, dice).pick
+    }
+
+    fn active_phase2(&mut self, state: &State, opp_states: &[State], dice: [u8; 6], has_marked: bool) -> Option<Mark> {
+        self.explain_active_phase2(state, opp_states, dice, has_marked).pick
     }
 
     fn passive_phase1(
@@ -1213,6 +1230,12 @@ mod tests {
                 bot.explain_active_phase1(&state, &opps, dice).pick,
                 bot.active_phase1(&state, &opps, dice)
             );
+            for has_marked in [false, true] {
+                assert_eq!(
+                    bot.explain_active_phase2(&state, &opps, dice, has_marked).pick,
+                    bot.active_phase2(&state, &opps, dice, has_marked)
+                );
+            }
             assert_eq!(
                 bot.explain_passive_phase1(&state, &opps, dice, 0).pick,
                 bot.passive_phase1(&state, &opps, dice, 0)
