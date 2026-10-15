@@ -7,10 +7,14 @@
 use super::pair::board_features;
 use super::MyBackend;
 use crate::state::State;
+use crate::strategy::search::WinProb;
+use crate::strategy::Bot;
 use burn::{
     nn::{Linear, LinearConfig, Relu},
     prelude::*,
+    record::CompactRecorder,
 };
+use std::sync::Arc;
 
 /// Row-token width: a row's 4 features for me, then the same 4 for the opponent.
 pub const TOKEN: usize = 8;
@@ -137,6 +141,240 @@ pub fn model_logits(model: &WinModel<MyBackend>, rows: &[[f32; WIN_INPUTS]]) -> 
     let swapped: Vec<_> = rows.iter().map(swap_input).collect();
     let z = model.forward(input_tensor(rows, &device), input_tensor(&swapped, &device));
     z.into_data().to_vec::<f32>().unwrap()
+}
+
+// ---- Manual inference path ----
+
+/// One dense layer, weights input-major as burn stores them:
+/// `w[i * d_out..][..d_out]` are input i's weights to every output.
+struct Dense {
+    w: Vec<f32>,
+    b: Vec<f32>,
+    d_out: usize,
+}
+
+impl Dense {
+    fn from_linear(layer: &Linear<MyBackend>) -> Self {
+        let d_out = layer.weight.shape().dims[1];
+        Dense {
+            w: layer.weight.val().into_data().to_vec::<f32>().unwrap(),
+            b: layer.bias.as_ref().unwrap().val().into_data().to_vec::<f32>().unwrap(),
+            d_out,
+        }
+    }
+
+    /// `out = b + x · w`, then ReLU when `relu`. Zero inputs are skipped.
+    fn apply(&self, x: &[f32], out: &mut Vec<f32>, relu: bool) {
+        out.clear();
+        out.extend_from_slice(&self.b);
+        for (i, &xi) in x.iter().enumerate() {
+            if xi != 0.0 {
+                for (o, &wv) in out.iter_mut().zip(&self.w[i * self.d_out..(i + 1) * self.d_out]) {
+                    *o += xi * wv;
+                }
+            }
+        }
+        if relu {
+            for o in out.iter_mut() {
+                *o = o.max(0.0);
+            }
+        }
+    }
+}
+
+/// Plain-array copy of a [`WinModel`] for inference (burn's per-call
+/// overhead dominates at these sizes, as for `ManualPairNet`). Numerics
+/// match burn to a tolerance, not bit for bit.
+pub struct ManualWinNet {
+    width: usize,
+    row1: Dense,
+    row2: Dense,
+    pair: Dense,
+    head1: Dense,
+    head2: Dense,
+    out: Dense,
+}
+
+impl ManualWinNet {
+    pub fn from_model(model: &WinModel<MyBackend>) -> Self {
+        ManualWinNet {
+            width: model.row1.weight.shape().dims[1],
+            row1: Dense::from_linear(&model.row1),
+            row2: Dense::from_linear(&model.row2),
+            pair: Dense::from_linear(&model.pair),
+            head1: Dense::from_linear(&model.head1),
+            head2: Dense::from_linear(&model.head2),
+            out: Dense::from_linear(&model.out),
+        }
+    }
+
+    fn g(&self, x: &[f32; WIN_INPUTS]) -> f32 {
+        let w = self.width;
+        let (mut h, mut e) = (Vec::with_capacity(2 * w), Vec::with_capacity(w));
+        let mut pooled = [vec![0.0f32; w], vec![0.0f32; w]];
+        for r in 0..4 {
+            self.row1.apply(&x[TOKEN * r..TOKEN * (r + 1)], &mut h, true);
+            self.row2.apply(&h, &mut e, true);
+            for (p, v) in pooled[r / 2].iter_mut().zip(&e) {
+                *p += v;
+            }
+        }
+        let mut cat = vec![0.0f32; w];
+        for p in &pooled {
+            self.pair.apply(p, &mut e, true);
+            for (c, v) in cat.iter_mut().zip(&e) {
+                *c += v;
+            }
+        }
+        cat.extend_from_slice(&x[4 * TOKEN..]);
+        self.head1.apply(&cat, &mut h, true);
+        self.head2.apply(&h, &mut e, true);
+        self.out.apply(&e, &mut h, false);
+        h[0]
+    }
+
+    /// Antisymmetric logit z = g(x) − g(swap x).
+    pub fn logit(&self, x: &[f32; WIN_INPUTS]) -> f32 {
+        self.g(x) - self.g(&swap_input(x))
+    }
+
+    pub fn logits(&self, xs: &[[f32; WIN_INPUTS]]) -> Vec<f32> {
+        xs.iter().map(|x| self.logit(x)).collect()
+    }
+}
+
+pub fn sigmoid(z: f32) -> f32 {
+    1.0 / (1.0 + (-z).exp())
+}
+
+/// Φ⁻¹(sigmoid(z)): the probit z-score of the logit's probability, the
+/// value unit the search's gate and blend assume. Computed from the smaller
+/// tail in f64 so it stays finite and strictly monotone for large |z|.
+pub fn probit_of_logit(z: f32) -> f32 {
+    let tail = 1.0 / (1.0 + (z.abs() as f64).exp()); // sigmoid(-|z|) ≤ ½
+    let x = probit_lower(tail.max(f64::MIN_POSITIVE)); // ≤ 0
+    (if z >= 0.0 { -x } else { x }) as f32
+}
+
+/// Φ⁻¹(p) for 0 < p ≤ ½ (Acklam's rational approximation, relative error
+/// < 1.2e-9).
+fn probit_lower(p: f64) -> f64 {
+    const A: [f64; 6] = [
+        -3.969683028665376e+01,
+        2.209460984245205e+02,
+        -2.759285104469687e+02,
+        1.383577518672690e+02,
+        -3.066479806614716e+01,
+        2.506628277459239e+00,
+    ];
+    const B: [f64; 5] = [
+        -5.447609879822406e+01,
+        1.615858368580409e+02,
+        -1.556989798598866e+02,
+        6.680131188771972e+01,
+        -1.328068155288572e+01,
+    ];
+    const C: [f64; 6] = [
+        -7.784894002430293e-03,
+        -3.223964580411365e-01,
+        -2.400758277161838e+00,
+        -2.549732539343734e+00,
+        4.374664141464968e+00,
+        2.938163982698783e+00,
+    ];
+    const D: [f64; 4] = [
+        7.784695709041462e-03,
+        3.224671290700398e-01,
+        2.445134137142996e+00,
+        3.754408661907416e+00,
+    ];
+    if p < 0.02425 {
+        let q = (-2.0 * p.ln()).sqrt();
+        (((((C[0] * q + C[1]) * q + C[2]) * q + C[3]) * q + C[4]) * q + C[5])
+            / ((((D[0] * q + D[1]) * q + D[2]) * q + D[3]) * q + 1.0)
+    } else {
+        let q = p - 0.5;
+        let r = q * q;
+        (((((A[0] * r + A[1]) * r + A[2]) * r + A[3]) * r + A[4]) * r + A[5]) * q
+            / (((((B[0] * r + B[1]) * r + B[2]) * r + B[3]) * r + B[4]) * r + 1.0)
+    }
+}
+
+// ---- Strategy ----
+
+#[derive(Clone)]
+pub struct WinStrategy {
+    pub net: Arc<ManualWinNet>,
+}
+
+impl std::fmt::Debug for WinStrategy {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "WinStrategy")
+    }
+}
+
+impl WinStrategy {
+    pub fn from_model(model: &WinModel<MyBackend>) -> Self {
+        WinStrategy {
+            net: Arc::new(ManualWinNet::from_model(model)),
+        }
+    }
+
+    /// Load `dir/config.json` (the width) and `dir/model.mpk`.
+    pub fn load(dir: &str) -> Self {
+        let device = Default::default();
+        let cfg = WinModelConfig::load(format!("{dir}/config.json")).expect("Failed to load win model config");
+        let model = cfg
+            .init::<MyBackend>(&device)
+            .load_file(format!("{dir}/model"), &CompactRecorder::new(), &device)
+            .expect("Failed to load win model");
+        Self::from_model(&model)
+    }
+
+    /// The single opponent; an empty board when there is none (solo is
+    /// unsupported, as for the pair bot).
+    fn opponent(opps: &[State]) -> State {
+        assert!(
+            opps.len() <= 1,
+            "the win net is 2-player only (got {} opponents)",
+            opps.len()
+        );
+        opps.first().copied().unwrap_or_default()
+    }
+}
+
+impl Bot for WinStrategy {
+    fn evaluate(&self, our_state: &State, opp_states: &[State]) -> f32 {
+        self.evaluate_batch(&[*our_state], opp_states)[0]
+    }
+
+    fn evaluate_batch(&self, candidates: &[State], opp_states: &[State]) -> Vec<f32> {
+        self.evaluate_batch_multi(&[(candidates, opp_states)]).pop().unwrap()
+    }
+
+    /// Probit-unit values (see [`probit_of_logit`]); move order equals the
+    /// order of P(win).
+    fn evaluate_batch_multi(&self, groups: &[(&[State], &[State])]) -> Vec<Vec<f32>> {
+        groups
+            .iter()
+            .map(|(candidates, opps)| {
+                let opp = Self::opponent(opps);
+                candidates
+                    .iter()
+                    .map(|c| probit_of_logit(self.net.logit(&win_input(c, &opp))))
+                    .collect()
+            })
+            .collect()
+    }
+}
+
+impl WinProb for WinStrategy {
+    fn win_prob_multi(&self, groups: &[(&State, &[State])]) -> Vec<f32> {
+        groups
+            .iter()
+            .map(|(our, opps)| sigmoid(self.net.logit(&win_input(our, &Self::opponent(opps)))))
+            .collect()
+    }
 }
 
 #[cfg(test)]
@@ -269,5 +507,84 @@ mod tests {
         let (a, _) = boards();
         let z = model_logits(&model, &[win_input(&a, &a)])[0];
         assert!(z.abs() < 1e-6, "z = {z}");
+    }
+
+    use crate::strategy::search::{phi, WinProb};
+    use crate::strategy::Bot;
+
+    #[test]
+    fn manual_net_matches_the_burn_model() {
+        for width in [16, 32] {
+            let model = random_model(11, width);
+            let net = ManualWinNet::from_model(&model);
+            let xs = random_inputs(32, 2);
+            for (a, b) in model_logits(&model, &xs).into_iter().zip(net.logits(&xs)) {
+                assert!((a - b).abs() < 1e-4, "width {width}: burn {a} vs manual {b}");
+            }
+        }
+    }
+
+    #[test]
+    fn probit_of_logit_matches_phi_inverse_of_sigmoid() {
+        for i in -80..=80 {
+            let z = i as f32 / 10.0;
+            let v = probit_of_logit(z);
+            assert!((phi(v) - sigmoid(z)).abs() < 1e-4, "z {z}: phi({v}) vs {}", sigmoid(z));
+        }
+        assert_eq!(probit_of_logit(0.0), 0.0);
+    }
+
+    #[test]
+    fn probit_of_logit_is_finite_and_monotone_at_extremes() {
+        let zs = [-60.0f32, -40.0, -25.0, -20.0, -10.0, 0.0, 10.0, 20.0, 25.0, 40.0, 60.0];
+        let vs: Vec<f32> = zs.iter().map(|&z| probit_of_logit(z)).collect();
+        assert!(vs.iter().all(|v| v.is_finite()), "{vs:?}");
+        assert!(vs.windows(2).all(|w| w[0] < w[1]), "not strictly increasing: {vs:?}");
+    }
+
+    #[test]
+    fn evaluate_is_the_probit_of_win_prob() {
+        let bot = WinStrategy::from_model(&random_model(12, 32));
+        let (a, b) = boards();
+        let mut c = a;
+        c.apply_mark(Mark { row: 1, number: 3 });
+        let candidates = [a, b, c];
+        let values = bot.evaluate_batch(&candidates, &[b]);
+        let groups: Vec<(&State, &[State])> = candidates.iter().map(|s| (s, std::slice::from_ref(&b))).collect();
+        let probs = bot.win_prob_multi(&groups);
+        for (v, p) in values.iter().zip(&probs) {
+            assert!((phi(*v) - p).abs() < 1e-4, "phi({v}) vs {p}");
+        }
+        // Same order by value as by probability.
+        let mut by_v: Vec<usize> = (0..3).collect();
+        by_v.sort_by(|&i, &j| values[i].partial_cmp(&values[j]).unwrap());
+        let mut by_p: Vec<usize> = (0..3).collect();
+        by_p.sort_by(|&i, &j| probs[i].partial_cmp(&probs[j]).unwrap());
+        assert_eq!(by_v, by_p);
+    }
+
+    #[test]
+    fn win_prob_of_identical_boards_is_one_half() {
+        let bot = WinStrategy::from_model(&random_model(13, 32));
+        let (a, _) = boards();
+        let p = bot.win_prob_multi(&[(&a, std::slice::from_ref(&a))])[0];
+        assert!((p - 0.5).abs() < 1e-6, "p = {p}");
+    }
+
+    #[test]
+    fn no_opponent_falls_back_to_empty_board() {
+        let bot = WinStrategy::from_model(&random_model(14, 32));
+        let (a, _) = boards();
+        let solo = bot.evaluate(&a, &[]);
+        let vs_empty = bot.evaluate(&a, &[State::default()]);
+        assert_eq!(solo, vs_empty);
+    }
+
+    #[test]
+    #[should_panic(expected = "2-player only")]
+    fn two_opponents_panic() {
+        let bot = WinStrategy::from_model(&random_model(15, 32));
+        let (a, b) = boards();
+        bot.evaluate(&a, &[b, b]);
     }
 }
