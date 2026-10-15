@@ -1,4 +1,4 @@
-import type { Position, Roller, SheetSnap, View } from '../engine/protocol';
+import type { Analysis, Position, Roller, SheetSnap, View } from '../engine/protocol';
 import { NAME, numbers, ROWS, type CellLook, type CellModel, type LockLook, type RowModel } from './rules';
 
 /** The explorer's two sides (spec "The position"). */
@@ -154,3 +154,41 @@ export function overText(o: { you: number; opponent: number }): string {
     if (o.you < o.opponent) return `Opponent wins ${o.opponent} – ${o.you}`;
     return `Draw ${o.you} – ${o.opponent}`;
 }
+
+/** Spec "Controller": analysis restarts when this changes (dice don't count). */
+export const analysisKey = (p: ExPosition) => JSON.stringify([p.you, p.opponent, p.locked, p.roller]);
+
+/** Four strikes on a sheet or two closed rows: nothing to play out. */
+export const isOver = (p: ExPosition) =>
+    p.you.strikes >= 4 || p.opponent.strikes >= 4 || closedRows(p).filter(Boolean).length >= 2;
+
+export const ZERO_ANALYSIS: Analysis = { games: 0, wins: 0, ties: 0, diff_sum: 0, diff_sq_sum: 0 };
+
+export const addAnalysis = (a: Analysis, b: Analysis): Analysis => ({
+    games: a.games + b.games,
+    wins: a.wins + b.wins,
+    ties: a.ties + b.ties,
+    diff_sum: a.diff_sum + b.diff_sum,
+    diff_sq_sum: a.diff_sq_sum + b.diff_sq_sum,
+});
+
+/** Ties count half; ± is 1.96 standard errors. */
+export function winChance(t: Analysis): { p: number; pm: number } {
+    const p = (t.wins + t.ties / 2) / t.games;
+    return { p, pm: 1.96 * Math.sqrt((p * (1 - p)) / t.games) };
+}
+
+/** Mean final score difference and its spread, for `marginText`. */
+export function analysisMargin(t: Analysis): { margin: number; sigma: number } {
+    const mean = t.diff_sum / t.games;
+    return { margin: mean, sigma: Math.sqrt(Math.max(0, t.diff_sq_sum / t.games - mean * mean)) };
+}
+
+/** Whole percent until ± < 0.5 points, then one decimal. */
+export const chanceText = (w: { p: number; pm: number }) => percent(w.p, w.pm < 0.005 ? 1 : 0);
+
+export const gamesText = (w: { p: number; pm: number }, games: number) =>
+    `± ${(w.pm * 100).toFixed(1)} · ${games.toLocaleString('en-US')} ${games === 1 ? 'game' : 'games'}`;
+
+/** The move list's number: the net's P(win) as a score out of 1000. */
+export const score = (p: number) => Math.round(p * 1000);

@@ -3,6 +3,7 @@ import type { View } from '../engine/protocol';
 import {
     clearSheet, closedRows, emptyPosition, exploreSheet, fromView, marginText, nextUnsetDie, overText, percent, randomDice,
     setDie, sheetTotal, swapSides, tapStrike, toEngine, toggleLock, toggleSquare,
+    addAnalysis, analysisKey, analysisMargin, chanceText, gamesText, isOver, score, winChance, ZERO_ANALYSIS,
 } from './position';
 
 const markRed = (idx: number[]) => idx.reduce((p, i) => toggleSquare(p, 'you', 0, i), emptyPosition());
@@ -106,5 +107,51 @@ describe('sheet model and text', () => {
         expect(overText({ you: 41, opponent: 33 })).toBe('You win 41 – 33');
         expect(overText({ you: 30, opponent: 33 })).toBe('Opponent wins 33 – 30');
         expect(overText({ you: 20, opponent: 20 })).toBe('Draw 20 – 20');
+    });
+});
+
+describe('analysis numbers', () => {
+    const t = (games: number, wins: number, ties: number, diff_sum = 0, diff_sq_sum = 0) => ({ games, wins, ties, diff_sum, diff_sq_sum });
+
+    it('analysisKey ignores dice only', () => {
+        const p = emptyPosition();
+        const withDice = { ...p, dice: [1, 2, 3, 4, 5, 6] };
+        expect(analysisKey(withDice)).toBe(analysisKey(p));
+        expect(analysisKey(toggleSquare(p, 'you', 0, 0))).not.toBe(analysisKey(p));
+        expect(analysisKey({ ...p, roller: 'opponent' })).not.toBe(analysisKey(p));
+        expect(analysisKey({ ...p, locked: [true, false, false, false] })).not.toBe(analysisKey(p));
+        expect(analysisKey(swapSides(toggleSquare(p, 'you', 0, 0)))).not.toBe(analysisKey(toggleSquare(p, 'you', 0, 0)));
+    });
+
+    it('isOver: four strikes or two closed rows', () => {
+        const p = emptyPosition();
+        expect(isOver(p)).toBe(false);
+        expect(isOver({ ...p, opponent: { ...p.opponent, strikes: 4 } })).toBe(true);
+        expect(isOver({ ...p, locked: [true, false, false, false] })).toBe(false);
+        expect(isOver({ ...p, locked: [true, false, true, false] })).toBe(true);
+    });
+
+    it('adds batches and derives the win chance, ± and margin', () => {
+        const s = addAnalysis(addAnalysis(ZERO_ANALYSIS, t(100, 50, 10, 200, 10000)), t(300, 170, 20, 600, 30000));
+        expect(s).toEqual(t(400, 220, 30, 800, 40000));
+        const w = winChance(s);
+        expect(w.p).toBeCloseTo((220 + 15) / 400);
+        expect(w.pm).toBeCloseTo(1.96 * Math.sqrt(w.p * (1 - w.p) / 400));
+        const m = analysisMargin(s);
+        expect(m.margin).toBe(2);
+        expect(m.sigma).toBeCloseTo(Math.sqrt(100 - 4));
+    });
+
+    it('formats: whole percent until ± < 0.5 points, then one decimal', () => {
+        expect(chanceText({ p: 0.5432, pm: 0.012 })).toBe('54%');
+        expect(chanceText({ p: 0.5432, pm: 0.0049 })).toBe('54.3%');
+        expect(gamesText({ p: 0.54, pm: 0.012 }, 3200)).toBe('± 1.2 · 3,200 games');
+        expect(gamesText({ p: 0.54, pm: 0.3 }, 1)).toBe('± 30.0 · 1 game');
+    });
+
+    it('score is P(win) × 1000, rounded', () => {
+        expect(score(0.5464)).toBe(546);
+        expect(score(0)).toBe(0);
+        expect(score(1)).toBe(1000);
     });
 });
