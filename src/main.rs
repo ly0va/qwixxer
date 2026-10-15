@@ -346,6 +346,9 @@ enum Commands {
         /// Learning rate at the last iteration (cosine decay from --lr; set equal to --lr for constant)
         #[arg(long, default_value = "4e-5")]
         lr_end: f64,
+        /// Lowest exploration rate (ε decays 0.2·0.95^iteration down to this)
+        #[arg(long, default_value = "0.07")]
+        epsilon_floor: f32,
         /// Encoder width W (pick it with `win-fit`)
         #[arg(long, default_value = "32")]
         width: usize,
@@ -844,6 +847,7 @@ fn main() {
             bench,
             lr,
             lr_end,
+            epsilon_floor,
             width,
             buffer,
             start_iteration,
@@ -859,6 +863,7 @@ fn main() {
                 start_iteration,
                 lr,
                 lr_end,
+                epsilon_floor,
                 pair_dir: "pair_model".into(),
             });
         }

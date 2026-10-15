@@ -85,6 +85,12 @@ pub fn bce_logits<B: Backend>(z: Tensor<B, 2>, t: Tensor<B, 2>) -> Tensor<B, 1> 
     (t.clone() * pos + t.neg().add_scalar(1.0) * neg).mean().neg()
 }
 
+/// Exploration rate for iteration `it` (0-based): 0.2·0.95^it, never below
+/// `floor` (the pair trainer's schedule at floor 0.07).
+pub fn epsilon_at(it: usize, floor: f32) -> f32 {
+    (0.2 * 0.95f32.powi(it as i32)).max(floor)
+}
+
 /// Learning rate for iteration `it` (0-based) of a `total`-iteration run:
 /// cosine from `lr` at the first iteration to `lr_end` at the last.
 pub fn lr_at(it: usize, total: usize, lr: f64, lr_end: f64) -> f64 {
@@ -302,6 +308,8 @@ pub struct WinTrainCfg {
     /// the last (`start_iteration + iterations - 1`).
     pub lr: f64,
     pub lr_end: f64,
+    /// Lowest ε the exploration schedule decays to.
+    pub epsilon_floor: f32,
     /// Master's model dir, for the per-iteration bench.
     pub pair_dir: String,
 }
@@ -353,7 +361,7 @@ pub fn self_play_train(cfg: &WinTrainCfg) -> WinStrategy {
     let total = cfg.start_iteration + cfg.iterations;
     for it in cfg.start_iteration..total {
         let lr = lr_at(it, total, cfg.lr, cfg.lr_end);
-        let epsilon = (0.2 * 0.95f32.powi(it as i32)).max(0.07);
+        let epsilon = epsilon_at(it, cfg.epsilon_floor);
         let net = Arc::new(ManualWinNet::from_model(&model.valid()));
         let chains: Vec<Chain> = (0..cfg.games)
             .into_par_iter()
@@ -633,6 +641,7 @@ mod tests {
             start_iteration: 0,
             lr: 4e-4,
             lr_end: 4e-5,
+            epsilon_floor: 0.07,
             pair_dir: "pair_model".into(),
         };
         let trained = self_play_train(&cfg);
@@ -689,6 +698,19 @@ mod tests {
         assert_eq!(lr_at(0, 1, lr, end), lr);
     }
 
+    #[test]
+    fn epsilon_decays_from_point_two_to_the_floor() {
+        assert_eq!(epsilon_at(0, 0.07), 0.2);
+        assert!((epsilon_at(1, 0.07) - 0.19).abs() < 1e-6);
+        // Today's schedule: on the 0.07 floor from iteration 21 on.
+        assert!(epsilon_at(19, 0.07) > 0.07);
+        assert_eq!(epsilon_at(21, 0.07), 0.07);
+        // A lower floor keeps decaying past it, down to the new floor.
+        assert!(epsilon_at(40, 0.02) < 0.07 && epsilon_at(40, 0.02) > 0.02);
+        assert_eq!(epsilon_at(159, 0.02), 0.02);
+        assert_eq!(epsilon_at(500, 0.0), 0.2 * 0.95f32.powi(500));
+    }
+
     fn smoke_cfg(dir: &str) -> WinTrainCfg {
         WinTrainCfg {
             dir: dir.to_string(),
@@ -701,6 +723,7 @@ mod tests {
             start_iteration: 0,
             lr: 4e-4,
             lr_end: 4e-5,
+            epsilon_floor: 0.07,
             pair_dir: "pair_model".into(),
         }
     }
