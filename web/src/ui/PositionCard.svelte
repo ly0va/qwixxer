@@ -1,24 +1,30 @@
 <script lang="ts">
     import type { ExplorerController } from '../game/explorer.svelte';
-    import { marginText, overText, percent } from '../game/position';
+    import { analysisKey, analysisMargin, chanceText, gamesText, marginText, overText, winChance } from '../game/position';
     let { x, compact = false }: { x: ExplorerController; compact?: boolean } = $props();
     const a = $derived(x.answer);
+    const t = $derived(x.analysis?.totals ?? null);
+    // Numbers for an older position stay, faded, until the first batch for this one.
+    const fresh = $derived(x.analysis?.key === analysisKey(x.pos));
+    const w = $derived(t ? winChance(t) : null);
+    const m = $derived(t ? marginText(analysisMargin(t)) : '');
 </script>
 
-<section class="card" class:compact class:stale={x.pending} aria-label="Position" aria-busy={x.pending}>
+<section class="card" class:compact class:stale={!fresh} aria-label="Position" aria-busy={!fresh}>
     {#if a?.over}
         <h2>Game over</h2>
         <b class="big">{overText(a.over)}</b>
-    {:else if a}
+    {:else if t && w}
         {#if !compact}<div class="top"><h2>Position</h2><span class="muted">before the roll</span></div>{/if}
-        <div class="line"><b class="big">{percent(a.eval.p_win, 0)}</b><span class="what">chance you win</span>
-            {#if !compact}<span class="margin">{marginText(a.eval)}</span>{/if}</div>
-        <div class="bar" role="img" aria-label="You {percent(a.eval.p_win, 0)}"><span style="width: {a.eval.p_win * 100}%"></span></div>
-        {#if compact}<span class="margin">{marginText(a.eval)} · before the roll</span>{/if}
+        <div class="line"><b class="big">{chanceText(w)}</b><span class="what">chance you win</span>
+            {#if !compact}<span class="margin">{m}</span>{/if}</div>
+        <div class="bar" role="img" aria-label="You {chanceText(w)}"><span style="width: {w.p * 100}%"></span></div>
+        <span class="games">{#if x.analysing && fresh}<span class="dot" aria-hidden="true"></span>{/if}{gamesText(w, t.games)}</span>
+        {#if compact}<span class="margin">{m} · before the roll</span>{/if}
     {:else}
-        <span class="muted">{x.error ? `Something went wrong: ${x.error}` : 'Thinking…'}</span>
+        <span class="muted">{x.error ? `Something went wrong: ${x.error}` : '…'}</span>
     {/if}
-    {#if a && x.error}<span class="err">Something went wrong: {x.error}</span>{/if}
+    {#if (t || a) && x.error}<span class="err">Something went wrong: {x.error}</span>{/if}
 </section>
 
 <style>
@@ -38,4 +44,8 @@
     .bar { display: flex; height: 10px; border-radius: 5px; overflow: hidden; background: var(--btn-muted-bg); }
     .compact .bar { height: 8px; }
     .bar span { background: var(--ink); }
+    .games { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
+    .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ink); animation: pulse 1.2s ease-in-out infinite; }
+    @keyframes pulse { 50% { opacity: 0.25; } }
+    @media (prefers-reduced-motion: reduce) { .dot { animation: none; } }
 </style>

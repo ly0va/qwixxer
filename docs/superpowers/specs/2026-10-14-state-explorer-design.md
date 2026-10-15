@@ -76,6 +76,8 @@ faded, until the new one arrives.
 
 ## Evaluation (always shown)
 
+Superseded by `2026-10-15-explorer-analysis-design.md`: the position's numbers come from play-outs.
+
 - "**38%** chance you win" with a bar, and "Opponent ahead by about 9 (± 15)"
   (or "You ahead by…", "Level (± 15)"). Under it, "before the roll".
 - Numbers come from the pair net (Master's and Master+'s evaluator): P(win)
@@ -88,7 +90,7 @@ faded, until the new one arrives.
 
 ## Moves (dice set)
 
-- Header "Best moves", "*N* legal · your chance to win after each".
+- Header "Best moves", "*N* legal · score after each, out of 1000".
 - **Your roll:** every legal full turn from the game's rules (the same set
   the game offers: white only, colour only, white then colour), plus
   "Strike" (or "Pass" when the game's rules make a pass legal). The
@@ -99,8 +101,8 @@ faded, until the new one arrives.
   "Opponent likely marks [chip]" or "Opponent likely passes".
 - **Opponent's roll:** each legal white-sum mark, plus "Pass".
 - Each row: rank, the marks as row-coloured chips (strike chip / "Pass"
-  text), the bot tags, and your chance to win after the move with a bar.
-- **The chance to win** is the pair net's P(win) for your sheet after the
+  text), the bot tags, and the score after the move with a bar.
+- **The score** is the pair net's P(win) × 1000 for your sheet after the
   move, judged as Master judges it: against the opponent's sheet with its
   predicted white-sum mark on your roll, against their sheet on theirs.
   Moves are listed highest to lowest; on a tie Master+'s move, then

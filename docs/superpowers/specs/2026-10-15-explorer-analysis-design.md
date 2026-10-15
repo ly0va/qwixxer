@@ -1,6 +1,6 @@
 # Web: explorer position analysis
 
-**Status:** designed. Builds on the state explorer
+**Status:** implemented (branch `explorer-analysis`). Builds on the state explorer
 (`2026-10-14-state-explorer-design.md`); where the two differ, this spec
 wins.
 

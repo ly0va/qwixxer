@@ -9,7 +9,7 @@ export const BAD_LINK = "That link doesn't hold a valid position.";
 /** Spec "Controller": each analysis batch aims at about this long, within these sizes. */
 export const BATCH_MS = 100;
 export const MIN_BATCH = 8;
-export const MAX_BATCH = 2048;
+export const MAX_BATCH = 512;
 
 /** Spec "Web: state explorer": the position being explored and its answer. */
 export class ExplorerController {

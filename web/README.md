@@ -12,9 +12,10 @@ TypeScript on Vite. Design and turn flow:
 in a game, "Explore this position") sets up any two-sheet position and asks
 the engine about it. Spec: `docs/superpowers/specs/2026-10-14-state-explorer-design.md`.
 
-- `src/explorer.rs` (`WasmExplorer` in `src/lib.rs`): the pair net's P(win)
-  and margin for the position, and for a roll every legal move of yours
-  ranked by the pair net's P(win) after it, judged as Master judges it
+- `src/explorer.rs` (`WasmExplorer` in `src/lib.rs`): a play-out win chance
+  and margin for the position that keeps refining while the explorer is open
+  (`analyze`, run in batches by the controller), and for a roll every legal
+  move of yours ranked by the pair net's score (P(win) × 1000) after it, judged as Master judges it
   (with the opponent's predicted white-sum mark on your roll, which every bot
   also sees), tagged with the move each bot would make in your seat; an (i)
   tooltip explains Master+'s or Master's move when it isn't first. Runs as the `explore` command of the same worker as the game.
@@ -68,6 +69,9 @@ The Rust session tests: `cd web && cargo test --release`.
 Plays 10 games against random legal human choices and reports per-decision
 latency of the bot (`master_plus`, `master` or `student`). Results are recorded
 in `docs/ARCHITECTURE.md` ("Web bot latency").
+
+`node web/scripts/analyze-bench.mjs` (after `./web/build.sh`) measures the
+explorer's play-out throughput (games/s), which sets its batch sizes.
 
 ## Deploy to GitHub Pages
 

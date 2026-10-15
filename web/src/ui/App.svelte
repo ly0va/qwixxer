@@ -40,7 +40,10 @@
         if (route.view === 'explore') x.refresh();
         c.menuOpen = false;
         x.picker = null;
+        activity();
     }
+    // Spec "Controller · Pause": analysis runs only while the explorer is on screen.
+    const activity = () => x.setActive(route.view === 'explore' && document.visibilityState === 'visible');
     const nav: Nav = {
         get current() { return route.view; },
         play: () => { if (route.view === 'play') return; history.pushState(null, '', location.pathname + location.search); sync(); },
@@ -56,7 +59,8 @@
         mq.addEventListener('change', f);
         window.addEventListener('hashchange', sync);
         window.addEventListener('popstate', sync);
-        return () => { mq.removeEventListener('change', f); window.removeEventListener('hashchange', sync); window.removeEventListener('popstate', sync); };
+        document.addEventListener('visibilitychange', activity);
+        return () => { mq.removeEventListener('change', f); window.removeEventListener('hashchange', sync); window.removeEventListener('popstate', sync); document.removeEventListener('visibilitychange', activity); };
     });
     $effect(() => { document.documentElement.dataset.theme = c.theme; });
 

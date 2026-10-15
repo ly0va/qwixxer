@@ -1,7 +1,7 @@
 <script lang="ts">
     import { BOT_NAMES, type MoveOut } from '../engine/protocol';
     import type { ExplorerController } from '../game/explorer.svelte';
-    import { percent } from '../game/position';
+    import { score } from '../game/position';
     import { chipsFor } from '../game/rules';
     import ChipView from './Chip.svelte';
     let { x, compact = false }: { x: ExplorerController; compact?: boolean } = $props();
@@ -39,7 +39,7 @@
 <section class="card" class:compact class:stale={x.pending} aria-label="Moves">
     <div class="top">
         <h2>Best moves</h2>
-        {#if moves}<span class="muted">{moves.length} legal · your chance to win after each</span>{/if}
+        {#if moves}<span class="muted">{moves.length} legal · score after each, out of 1000</span>{/if}
     </div>
     {#if noDice}
         <div class="empty">
@@ -60,7 +60,7 @@
                         {#if compact && m.bots.length}<div class="tags">{@render tags(m, i)}</div>{/if}
                     </div>
                     <div class="pct">
-                        <b>{percent(m.p_win, 1)}</b>
+                        <b>{score(m.p_win)}</b>
                         <span class="bar"><span style="width: {m.p_win * 100}%"></span></span>
                     </div>
                 </li>
