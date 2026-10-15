@@ -85,6 +85,16 @@ pub fn bce_logits<B: Backend>(z: Tensor<B, 2>, t: Tensor<B, 2>) -> Tensor<B, 1> 
     (t.clone() * pos + t.neg().add_scalar(1.0) * neg).mean().neg()
 }
 
+/// Learning rate for iteration `it` (0-based) of a `total`-iteration run:
+/// cosine from `lr` at the first iteration to `lr_end` at the last.
+pub fn lr_at(it: usize, total: usize, lr: f64, lr_end: f64) -> f64 {
+    if total <= 1 {
+        return lr;
+    }
+    let t = it.min(total - 1) as f64 / (total - 1) as f64;
+    lr_end + 0.5 * (lr - lr_end) * (1.0 + (std::f64::consts::PI * t).cos())
+}
+
 /// Train on (input, soft target) pairs: Adam, batches of 1024, a seeded
 /// shuffle per epoch. Returns the model and the last epoch's mean loss.
 pub fn train_epochs(
@@ -256,7 +266,11 @@ pub fn bench_vs_pair(win: &WinStrategy, pair_dir: &str, games: usize) -> f64 {
                 let (pair_idx, rot) = ((i / 2) as u64, i % 2);
                 let dice = |seat: u64| Box::new(SmallRng::seed_from_u64(BENCH_SEED.wrapping_add(pair_idx * 2 + seat)));
                 let w: Box<dyn Strategy> = Box::new(win.clone());
-                let p: Box<dyn Strategy> = Box::new(PairStrategy::from_shared(pair.model.clone(), pair.device.clone()));
+                let p: Box<dyn Strategy> = Box::new(PairStrategy {
+                    model: pair.model.clone(),
+                    device: pair.device.clone(),
+                    net: pair.net.clone(),
+                });
                 let players = if rot == 0 {
                     vec![Player::new(w, dice(0)), Player::new(p, dice(1))]
                 } else {
@@ -284,7 +298,10 @@ pub struct WinTrainCfg {
     pub buffer: usize,
     /// Resume: load `dir`'s model and continue the ε schedule from here.
     pub start_iteration: usize,
+    /// Learning rate at the first iteration; cosine-decays to `lr_end` at
+    /// the last (`start_iteration + iterations - 1`).
     pub lr: f64,
+    pub lr_end: f64,
     /// Master's model dir, for the per-iteration bench.
     pub pair_dir: String,
 }
@@ -327,13 +344,15 @@ pub fn self_play_train(cfg: &WinTrainCfg) -> WinStrategy {
     } else {
         let mcfg = WinModelConfig::new().with_width(cfg.width);
         mcfg.save(&config_path).expect("Failed to save win model config");
-        std::fs::write(&log_path, "iteration,games,loss,share_vs_master,elapsed_s\n").expect("Failed to write log");
+        std::fs::write(&log_path, "iteration,games,lr,loss,share_vs_master,elapsed_s\n").expect("Failed to write log");
         mcfg.init::<Ad>(&device)
     };
     let start = std::time::Instant::now();
     let mut buffer: std::collections::VecDeque<Vec<Chain>> = std::collections::VecDeque::new();
 
-    for it in cfg.start_iteration..cfg.start_iteration + cfg.iterations {
+    let total = cfg.start_iteration + cfg.iterations;
+    for it in cfg.start_iteration..total {
+        let lr = lr_at(it, total, cfg.lr, cfg.lr_end);
         let epsilon = (0.2 * 0.95f32.powi(it as i32)).max(0.07);
         let net = Arc::new(ManualWinNet::from_model(&model.valid()));
         let chains: Vec<Chain> = (0..cfg.games)
@@ -349,7 +368,7 @@ pub fn self_play_train(cfg: &WinTrainCfg) -> WinStrategy {
         }
         let refs: Vec<&Chain> = buffer.iter().flatten().collect();
         let data = fresh_targets(&net, &refs);
-        let (trained, loss) = train_epochs(model, &data, cfg.epochs, cfg.lr, TRAIN_SEED.wrapping_add(it as u64));
+        let (trained, loss) = train_epochs(model, &data, cfg.epochs, lr, TRAIN_SEED.wrapping_add(it as u64));
         model = trained;
 
         let inference = model.valid();
@@ -377,7 +396,7 @@ pub fn self_play_train(cfg: &WinTrainCfg) -> WinStrategy {
             .map(|s| format!("{:.1}%", s * 100.0))
             .unwrap_or_else(|| "-".into());
         println!(
-            "Iteration {:>3}: ε {epsilon:.3}, {} positions, loss {loss:.4}, vs Master {share_text}, {elapsed}s",
+            "Iteration {:>3}: ε {epsilon:.3}, lr {lr:.1e}, {} positions, loss {loss:.4}, vs Master {share_text}, {elapsed}s",
             it + 1,
             data.len()
         );
@@ -388,7 +407,7 @@ pub fn self_play_train(cfg: &WinTrainCfg) -> WinStrategy {
             .open(&log_path)
             .expect("Failed to open log");
         let share_csv = share.map(|s| format!("{s:.4}")).unwrap_or_default();
-        writeln!(f, "{},{},{loss:.5},{share_csv},{elapsed}", it + 1, cfg.games).ok();
+        writeln!(f, "{},{},{lr:.3e},{loss:.5},{share_csv},{elapsed}", it + 1, cfg.games).ok();
     }
     WinStrategy::from_model(&model.valid())
 }
@@ -613,6 +632,7 @@ mod tests {
             buffer: 3,
             start_iteration: 0,
             lr: 4e-4,
+            lr_end: 4e-5,
             pair_dir: "pair_model".into(),
         };
         let trained = self_play_train(&cfg);
@@ -654,6 +674,21 @@ mod tests {
         assert!(mean_abs_error(&n, &off) > 0.05);
     }
 
+    #[test]
+    fn lr_schedule_is_cosine_from_lr_to_lr_end() {
+        let (lr, end) = (4e-4, 4e-5);
+        assert!((lr_at(0, 160, lr, end) - lr).abs() < 1e-12);
+        assert!((lr_at(159, 160, lr, end) - end).abs() < 1e-12);
+        // Halfway between the iterations, halfway between the rates.
+        assert!((lr_at(0, 3, lr, end) - lr).abs() < 1e-12);
+        assert!((lr_at(1, 3, lr, end) - (lr + end) / 2.0).abs() < 1e-12);
+        // Monotone non-increasing.
+        assert!((1..160).all(|i| lr_at(i, 160, lr, end) <= lr_at(i - 1, 160, lr, end)));
+        // lr_end = lr is the constant schedule; a 1-iteration run uses lr.
+        assert!((0..10).all(|i| lr_at(i, 10, lr, lr) == lr));
+        assert_eq!(lr_at(0, 1, lr, end), lr);
+    }
+
     fn smoke_cfg(dir: &str) -> WinTrainCfg {
         WinTrainCfg {
             dir: dir.to_string(),
@@ -665,6 +700,7 @@ mod tests {
             buffer: 3,
             start_iteration: 0,
             lr: 4e-4,
+            lr_end: 4e-5,
             pair_dir: "pair_model".into(),
         }
     }

@@ -338,8 +338,14 @@ enum Commands {
         #[arg(long, default_value = "2")]
         epochs: usize,
         /// Bench games against Master per iteration (0 to disable)
-        #[arg(long, default_value = "400")]
+        #[arg(long, default_value = "200000")]
         bench: usize,
+        /// Learning rate at the first iteration
+        #[arg(long, default_value = "4e-4")]
+        lr: f64,
+        /// Learning rate at the last iteration (cosine decay from --lr; set equal to --lr for constant)
+        #[arg(long, default_value = "4e-5")]
+        lr_end: f64,
         /// Encoder width W (pick it with `win-fit`)
         #[arg(long, default_value = "32")]
         width: usize,
@@ -836,6 +842,8 @@ fn main() {
             games,
             epochs,
             bench,
+            lr,
+            lr_end,
             width,
             buffer,
             start_iteration,
@@ -849,7 +857,8 @@ fn main() {
                 width,
                 buffer,
                 start_iteration,
-                lr: 4e-4,
+                lr,
+                lr_end,
                 pair_dir: "pair_model".into(),
             });
         }
