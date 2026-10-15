@@ -50,8 +50,8 @@ impl std::fmt::Display for BotType {
             BotType::PairSearchExpB => write!(f, "PAIR-SEARCH-B[{}]", exp_search_config("QWIXXER_SEARCH_B")),
             BotType::PairAlt => write!(f, "PAIR({})", alt_model_dir()),
             BotType::PairSearchAlt => write!(f, "PAIR-SEARCH({})", alt_model_dir()),
-            BotType::Win => write!(f, "WIN"),
-            BotType::WinSearch => write!(f, "WIN-SEARCH"),
+            BotType::Win => write!(f, "WIN({})", win_model_dir()),
+            BotType::WinSearch => write!(f, "WIN-SEARCH({})", win_model_dir()),
             BotType::Mcts => write!(f, "MCTS"),
             BotType::Opportunist => write!(f, "Opportunist"),
             BotType::Conservative => write!(f, "Conservative"),
@@ -81,9 +81,9 @@ fn make_strategy(bot: &BotType) -> Box<dyn strategy::Strategy> {
             dqn::pair::PairStrategy::load("pair_model"),
             exp_search_config(exp_env(bot)),
         )),
-        BotType::Win => Box::new(dqn::win::WinStrategy::load("win_model")),
+        BotType::Win => Box::new(dqn::win::WinStrategy::load(&win_model_dir())),
         BotType::WinSearch => Box::new(strategy::search::SearchBot::new(dqn::win::WinStrategy::load(
-            "win_model",
+            &win_model_dir(),
         ))),
         BotType::Mcts => {
             let champion =
@@ -100,6 +100,11 @@ fn make_strategy(bot: &BotType) -> Box<dyn strategy::Strategy> {
 fn alt_model_dir() -> String {
     std::env::var("QWIXXER_ALT_MODEL")
         .expect("pair-alt / pair-search-alt need QWIXXER_ALT_MODEL=<dir containing model.mpk>")
+}
+
+/// Model directory for `win` / `win-search`: `QWIXXER_WIN_MODEL`, else `win_model`.
+fn win_model_dir() -> String {
+    std::env::var("QWIXXER_WIN_MODEL").unwrap_or_else(|_| "win_model".into())
 }
 
 /// Env var holding the `SearchConfig` spec of an experimental pair-search.
@@ -157,7 +162,7 @@ impl StrategyTemplates {
                 None
             },
             win: if needs_win {
-                Some(dqn::win::WinStrategy::load("win_model"))
+                Some(dqn::win::WinStrategy::load(&win_model_dir()))
             } else {
                 None
             },
@@ -374,6 +379,9 @@ enum Commands {
         /// Widths to try
         #[arg(long, value_delimiter = ',', default_value = "16,32,64")]
         widths: Vec<usize>,
+        /// Save each fitted net to <SAVE>/w<W> (bench it with QWIXXER_WIN_MODEL=<SAVE>/w<W> ... bench win pair)
+        #[arg(long)]
+        save: Option<String>,
     },
 }
 
@@ -873,6 +881,7 @@ fn main() {
             test,
             epochs,
             widths,
+            save,
         }) => {
             dqn::win_train::capacity_check(&dqn::win_train::FitCfg {
                 train,
@@ -880,6 +889,7 @@ fn main() {
                 epochs,
                 widths,
                 lr: 1e-3,
+                save,
             });
         }
         None => {

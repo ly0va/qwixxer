@@ -469,13 +469,16 @@ pub struct FitCfg {
     pub epochs: usize,
     pub widths: Vec<usize>,
     pub lr: f64,
+    /// Save each fitted net as a loadable model dir `<save>/w<W>`.
+    pub save: Option<String>,
 }
 
 /// Held-out MAE at which a width counts as big enough (spec "Capacity check").
 pub const FIT_MAE: f32 = 0.02;
 
 /// Spec "Capacity check": fit each width to today's P(win) on Master
-/// positions and report held-out MAE; the fitted nets are discarded.
+/// positions and report held-out MAE. The fitted nets are discarded unless
+/// `cfg.save` is set (they can then be benched as `win` bots).
 pub fn capacity_check(cfg: &FitCfg) -> Vec<(usize, f32)> {
     let device = Default::default();
     println!("Generating {} training and {} held-out positions…", cfg.train, cfg.test);
@@ -486,7 +489,19 @@ pub fn capacity_check(cfg: &FitCfg) -> Vec<(usize, f32)> {
         <Ad as Backend>::seed(&device, TRAIN_SEED);
         let model = WinModelConfig::new().with_width(w).init::<Ad>(&device);
         let (model, loss) = train_epochs(model, &train, cfg.epochs, cfg.lr, TRAIN_SEED);
-        let mae = mean_abs_error(&ManualWinNet::from_model(&model.valid()), &test);
+        let inference = model.valid();
+        let mae = mean_abs_error(&ManualWinNet::from_model(&inference), &test);
+        if let Some(save) = &cfg.save {
+            let dir = format!("{save}/w{w}");
+            std::fs::create_dir_all(&dir).expect("Failed to create the fit model dir");
+            WinModelConfig::new()
+                .with_width(w)
+                .save(format!("{dir}/config.json"))
+                .expect("Failed to save win model config");
+            inference
+                .save_file(format!("{dir}/model"), &CompactRecorder::new())
+                .expect("Failed to save fitted win model");
+        }
         println!("  W = {w:>3}: train loss {loss:.4}, held-out MAE {mae:.4}");
         results.push((w, mae));
     }
@@ -709,6 +724,29 @@ mod tests {
         assert!(epsilon_at(40, 0.02) < 0.07 && epsilon_at(40, 0.02) > 0.02);
         assert_eq!(epsilon_at(159, 0.02), 0.02);
         assert_eq!(epsilon_at(500, 0.0), 0.2 * 0.95f32.powi(500));
+    }
+
+    #[test]
+    fn capacity_check_saves_each_fitted_net_as_a_loadable_model() {
+        let dir = std::env::temp_dir().join(format!("qwixxer-win-fit-{}", std::process::id()));
+        let dir = dir.to_str().unwrap().to_string();
+        std::fs::remove_dir_all(&dir).ok();
+        let cfg = FitCfg {
+            train: 200,
+            test: 50,
+            epochs: 1,
+            widths: vec![8, 12],
+            lr: 1e-3,
+            save: Some(dir.clone()),
+        };
+        let results = capacity_check(&cfg);
+        let test = master_positions(cfg.test, TRAIN_SEED ^ 0x7E57_0000_0000, "pair_model");
+        for (w, mae) in results {
+            let bot = WinStrategy::load(&format!("{dir}/w{w}"));
+            // The saved (half-precision) net is the fitted one.
+            assert!((mean_abs_error(&bot.net, &test) - mae).abs() < 1e-2, "W = {w}");
+        }
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     fn smoke_cfg(dir: &str) -> WinTrainCfg {
