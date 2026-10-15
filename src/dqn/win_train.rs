@@ -3,8 +3,10 @@
 //!
 //! Design: docs/superpowers/specs/2026-10-15-win-net-design.md
 
+use crate::dqn::pair::PairStrategy;
+use crate::dqn::win::WinModelConfig;
 use crate::dqn::win::{input_tensor, sigmoid, swap_input, win_input, ManualWinNet, WinModel, WinStrategy, WIN_INPUTS};
-use crate::dqn::MyBackend;
+use crate::dqn::{MyBackend, TRAIN_SEED};
 use crate::game::{Game, Player};
 use crate::state::{Mark, State};
 use crate::strategy::{active_phase1_impl, active_phase2_impl, passive_phase1_impl, Bot, Strategy};
@@ -13,6 +15,7 @@ use burn::{
     module::AutodiffModule,
     optim::{AdamConfig, GradientsParams, Optimizer},
     prelude::*,
+    record::CompactRecorder,
     tensor::{activation::log_sigmoid, ElementConversion},
 };
 use rand::{rngs::SmallRng, seq::SliceRandom, Rng, SeedableRng};
@@ -236,6 +239,138 @@ pub fn self_play_game(net: &Arc<ManualWinNet>, epsilon: f32, seed: u64) -> [Chai
     })
 }
 
+// ---- Bench and self-play loop ----
+
+/// Fixed paired game set (same pattern as the pair trainer's GA bench).
+const BENCH_SEED: u64 = 0xB54C;
+
+/// The win bot's share against Master (`pair_dir`) over `games` paired
+/// 2-player games: seats alternate and each pair shares its dice; ties ½.
+pub fn bench_vs_pair(win: &WinStrategy, pair_dir: &str, games: usize) -> f64 {
+    let points: f64 = (0..games)
+        .into_par_iter()
+        .map_init(
+            || PairStrategy::load(pair_dir),
+            |pair, i| {
+                let (pair_idx, rot) = ((i / 2) as u64, i % 2);
+                let dice = |seat: u64| Box::new(SmallRng::seed_from_u64(BENCH_SEED.wrapping_add(pair_idx * 2 + seat)));
+                let w: Box<dyn Strategy> = Box::new(win.clone());
+                let p: Box<dyn Strategy> = Box::new(PairStrategy::from_shared(pair.model.clone(), pair.device.clone()));
+                let players = if rot == 0 {
+                    vec![Player::new(w, dice(0)), Player::new(p, dice(1))]
+                } else {
+                    vec![Player::new(p, dice(0)), Player::new(w, dice(1))]
+                };
+                let mut game = Game::new(players);
+                game.play();
+                let s: Vec<isize> = game.players.iter().map(|p| p.state.count_points()).collect();
+                outcome(s[rot], s[1 - rot]) as f64
+            },
+        )
+        .sum();
+    points / games.max(1) as f64
+}
+
+pub struct WinTrainCfg {
+    pub dir: String,
+    pub iterations: usize,
+    pub games: usize,
+    pub epochs: usize,
+    /// Bench games against Master per iteration (0 = none).
+    pub bench: usize,
+    pub width: usize,
+    /// Iterations of games kept in the replay buffer.
+    pub buffer: usize,
+    /// Resume: load `dir`'s model and continue the ε schedule from here.
+    pub start_iteration: usize,
+    pub lr: f64,
+}
+
+/// Spec "Training": per iteration, play `games` self-play games with the
+/// current net, rebuild every buffered chain's targets with it, train
+/// `epochs` epochs, save `model.mpk` and `iter-N.mpk`, bench against Master
+/// and append to `training.csv`. Returns the final bot.
+pub fn self_play_train(cfg: &WinTrainCfg) -> WinStrategy {
+    let device = Default::default();
+    <Ad as Backend>::seed(&device, TRAIN_SEED);
+    std::fs::create_dir_all(&cfg.dir).expect("Failed to create the model dir");
+    let config_path = format!("{}/config.json", cfg.dir);
+    let log_path = format!("{}/training.csv", cfg.dir);
+    let mut model: WinModel<Ad> = if cfg.start_iteration > 0 {
+        WinModelConfig::load(&config_path)
+            .expect("Failed to load win model config")
+            .init::<Ad>(&device)
+            .load_file(format!("{}/model", cfg.dir), &CompactRecorder::new(), &device)
+            .expect("Failed to load win model to resume")
+    } else {
+        let mcfg = WinModelConfig::new().with_width(cfg.width);
+        mcfg.save(&config_path).expect("Failed to save win model config");
+        std::fs::write(&log_path, "iteration,games,loss,share_vs_master,elapsed_s\n").expect("Failed to write log");
+        mcfg.init::<Ad>(&device)
+    };
+    let start = std::time::Instant::now();
+    let mut buffer: std::collections::VecDeque<Vec<Chain>> = std::collections::VecDeque::new();
+
+    for it in cfg.start_iteration..cfg.start_iteration + cfg.iterations {
+        let epsilon = (0.2 * 0.95f32.powi(it as i32)).max(0.07);
+        let net = Arc::new(ManualWinNet::from_model(&model.valid()));
+        let chains: Vec<Chain> = (0..cfg.games)
+            .into_par_iter()
+            .flat_map_iter(|g| {
+                let seed = TRAIN_SEED.wrapping_add(((it * cfg.games + g) as u64).wrapping_mul(1000));
+                self_play_game(&net, epsilon, seed)
+            })
+            .collect();
+        buffer.push_back(chains);
+        while buffer.len() > cfg.buffer {
+            buffer.pop_front();
+        }
+        let refs: Vec<&Chain> = buffer.iter().flatten().collect();
+        let data = fresh_targets(&net, &refs);
+        let (trained, loss) = train_epochs(model, &data, cfg.epochs, cfg.lr, TRAIN_SEED.wrapping_add(it as u64));
+        model = trained;
+
+        let inference = model.valid();
+        inference
+            .clone()
+            .save_file(format!("{}/model", cfg.dir), &CompactRecorder::new())
+            .expect("Failed to save win model");
+        std::fs::copy(
+            format!("{}/model.mpk", cfg.dir),
+            format!("{}/iter-{}.mpk", cfg.dir, it + 1),
+        )
+        .expect("Failed to save checkpoint");
+
+        let share = if cfg.bench > 0 {
+            Some(bench_vs_pair(
+                &WinStrategy::from_model(&inference),
+                "pair_model",
+                cfg.bench,
+            ))
+        } else {
+            None
+        };
+        let elapsed = start.elapsed().as_secs();
+        let share_text = share
+            .map(|s| format!("{:.1}%", s * 100.0))
+            .unwrap_or_else(|| "-".into());
+        println!(
+            "Iteration {:>3}: ε {epsilon:.3}, {} positions, loss {loss:.4}, vs Master {share_text}, {elapsed}s",
+            it + 1,
+            data.len()
+        );
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .create(true)
+            .open(&log_path)
+            .expect("Failed to open log");
+        let share_csv = share.map(|s| format!("{s:.4}")).unwrap_or_default();
+        writeln!(f, "{},{},{loss:.5},{share_csv},{elapsed}", it + 1, cfg.games).ok();
+    }
+    WinStrategy::from_model(&model.valid())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -358,5 +493,39 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn tiny_training_run_writes_and_reloads_a_model() {
+        let dir = std::env::temp_dir().join(format!("qwixxer-win-smoke-{}", std::process::id()));
+        let dir = dir.to_str().unwrap().to_string();
+        std::fs::remove_dir_all(&dir).ok();
+        let cfg = WinTrainCfg {
+            dir: dir.clone(),
+            iterations: 2,
+            games: 20,
+            epochs: 1,
+            bench: 4,
+            width: 16,
+            buffer: 3,
+            start_iteration: 0,
+            lr: 4e-4,
+        };
+        let trained = self_play_train(&cfg);
+        for f in ["config.json", "model.mpk", "iter-1.mpk", "iter-2.mpk", "training.csv"] {
+            assert!(std::path::Path::new(&format!("{dir}/{f}")).exists(), "missing {f}");
+        }
+        let log = std::fs::read_to_string(format!("{dir}/training.csv")).unwrap();
+        assert_eq!(log.lines().count(), 3, "{log}");
+        // The half-precision file must still be (nearly) the trained net.
+        let loaded = WinStrategy::load(&dir);
+        let xs: Vec<_> = (0..4)
+            .flat_map(|s| self_play_game(&loaded.net, 0.0, s))
+            .flat_map(|c| c.inputs)
+            .collect();
+        for (a, b) in trained.net.logits(&xs).into_iter().zip(loaded.net.logits(&xs)) {
+            assert!((sigmoid(a) - sigmoid(b)).abs() < 1e-2, "trained {a} vs loaded {b}");
+        }
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

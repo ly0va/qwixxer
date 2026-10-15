@@ -306,6 +306,31 @@ enum Commands {
         #[arg(long)]
         distill_passive: bool,
     },
+    /// Win-net self-play training (2-player TD(λ) on win/loss, fresh targets)
+    #[cfg(feature = "dqn")]
+    WinTrain {
+        /// Number of iterations
+        #[arg(long, default_value = "160")]
+        iterations: usize,
+        /// Games per iteration
+        #[arg(long, default_value = "5000")]
+        games: usize,
+        /// Training epochs per iteration over the replay buffer
+        #[arg(long, default_value = "2")]
+        epochs: usize,
+        /// Bench games against Master per iteration (0 to disable)
+        #[arg(long, default_value = "400")]
+        bench: usize,
+        /// Encoder width W (pick it with `win-fit`)
+        #[arg(long, default_value = "32")]
+        width: usize,
+        /// Iterations of games kept in the replay buffer
+        #[arg(long, default_value = "3")]
+        buffer: usize,
+        /// Resume from win_model/ at this iteration (continues the ε schedule)
+        #[arg(long, default_value = "0")]
+        start_iteration: usize,
+    },
 }
 
 fn run_play(bots: Vec<BotType>, verbose: bool) {
@@ -770,6 +795,28 @@ fn main() {
                 passive: distill_passive,
             },
         ),
+        #[cfg(feature = "dqn")]
+        Some(Commands::WinTrain {
+            iterations,
+            games,
+            epochs,
+            bench,
+            width,
+            buffer,
+            start_iteration,
+        }) => {
+            dqn::win_train::self_play_train(&dqn::win_train::WinTrainCfg {
+                dir: "win_model".into(),
+                iterations,
+                games,
+                epochs,
+                bench,
+                width,
+                buffer,
+                start_iteration,
+                lr: 4e-4,
+            });
+        }
         None => {
             // Default: play against MCTS
             run_play(vec![BotType::Mcts], false);
