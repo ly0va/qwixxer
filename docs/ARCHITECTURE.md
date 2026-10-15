@@ -157,7 +157,7 @@ pub trait Strategy: std::fmt::Debug {
 
 **Random** -- Picks a uniformly random legal move. Baseline for benchmarking.
 
-**Conservative** -- Minimizes new blanks. Only accepts moves that skip at most `max_new_blanks` (default 3; 0 on the opponent's roll) numbers. Among qualifying moves, picks the one creating the fewest blanks, then the highest score. Strikes if nothing qualifies. The web's Newbie.
+**Conservative** -- Minimizes new blanks. A `Bot` on the shared pipeline (so it weighs whole turns, with the meta-rules and pruning) whose value is fewest blanks, then highest score, with a strike costing slightly more than `max_new_blanks` (default 3) blanks; on the opponent's roll the free skip means it marks only without skipping. The web's Newbie. (Before it joined the pipeline it chose the white-sum mark and the colour mark separately and won ~25% vs GA; now ~34%.)
 
 **Opportunist** -- Probability-maximizing with blank discipline. Always locks when possible. Caps blanks (2 on active, 1 on passive), then picks the move maximizing `State::probability()` (the chance of getting a useful white sum on future opponent turns). The strongest hand-crafted strategy.
 

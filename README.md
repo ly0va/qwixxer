@@ -14,7 +14,7 @@ A bot framework for the dice game [Qwixx](https://en.wikipedia.org/wiki/Qwixx): 
 | **GA Champion** | Student | Genetically evolved 4-weight heuristic | baseline |
 | **MCTS** | | Monte Carlo tree search with GA rollouts | ~GA level |
 | **Opportunist** | | Max weighted probability, blank caps, always lock | ~30% |
-| **Conservative** | Newbie | Fewest skipped numbers (at most 3 per mark, none on the opponent's roll) | ~25% |
+| **Conservative** | Newbie | Fewest skipped numbers over the whole turn (strike rather than skip 4+; none on the opponent's roll) | ~34% |
 | **Random** | | Uniform random legal move | ~0% |
 
 Win rates are from deterministic paired-dice benches; the full history is in `docs/EXPERIMENTS.md`.
