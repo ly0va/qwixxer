@@ -12,7 +12,7 @@ qwixxer/
     main.rs            -- CLI entry point (clap subcommands: play, bench, solo, evolve, dqn-train, dqn-selfplay)
     state.rs           -- Game state, rows, marks, moves, scoring, display
     game.rs            -- Game loop, players, DiceSource trait
-    strategy/mod.rs    -- Strategy trait + Interactive, Conservative, Opportunist (+ PrunedOpportunist), Random
+    strategy/mod.rs    -- Strategy trait + Interactive, Conservative (+ PrunedConservative), Opportunist, Random
     bot.rs             -- Genetic algorithm: DNA, genes, Population, evolution
     dqn/
       mod.rs           -- DQN model, feature extraction, DqnStrategy, P(win) ranking helpers
@@ -157,9 +157,9 @@ pub trait Strategy: std::fmt::Debug {
 
 **Random** -- Picks a uniformly random legal move. Baseline for benchmarking.
 
-**Conservative** -- Minimizes new blanks. Only accepts moves that skip at most `max_new_blanks` (default 2) numbers. Among qualifying moves, picks the one creating the fewest blanks. Strikes if nothing qualifies.
+**Conservative** -- Minimizes new blanks. Only accepts moves that skip at most `max_new_blanks` (default 3; 0 on the opponent's roll) numbers. Among qualifying moves, picks the one creating the fewest blanks, then the highest score. Strikes if nothing qualifies. `PrunedConservative` (the web's Newbie) first drops marks whose post-state another available mark dominates (the shared pipeline's `prune_dominated`; fewest-blanks alone can pick one on dense sheets, where a lock zeroes a row's blanks); the CLI's `conservative` stays unpruned.
 
-**Opportunist** -- Probability-maximizing with blank discipline. Always locks when possible. Caps blanks (2 on active, 1 on passive), then picks the move maximizing `State::probability()` (the chance of getting a useful white sum on future opponent turns). The strongest hand-crafted strategy. `PrunedOpportunist` (the web's Newbie) first drops marks whose post-state another available mark dominates (the shared pipeline's `prune_dominated`), so it never skips squares for nothing; the CLI's `opportunist` stays unpruned.
+**Opportunist** -- Probability-maximizing with blank discipline. Always locks when possible. Caps blanks (2 on active, 1 on passive), then picks the move maximizing `State::probability()` (the chance of getting a useful white sum on future opponent turns). The strongest hand-crafted strategy.
 
 **Interactive** -- Terminal-based human player. Shows the board, dice, numbered move list, and reads input. Groups moves into "Single" and "Both" sections for readability.
 
@@ -420,7 +420,7 @@ default) = pair-search over the pair net with `SearchConfig::parse(MASTER_PLUS_S
 where `MASTER_PLUS_SPEC = ""` is the native production config (see the latency
 table below); **Master** (`master`) = the static pair net; **Student**
 (`student`) = the GA champion; **Newbie** (`newbie`) = the hand-written
-Opportunist with pruning (`PrunedOpportunist`). The header's "⋯" menu (`Menu.svelte`, both layouts) holds New
+Conservative with pruning (`PrunedConservative`). The header's "⋯" menu (`Menu.svelte`, both layouts) holds New
 game (two clicks mid-game), Explore this position, Explorer (Back to game in
 the explorer) and the dark-mode switch. `champion.txt` and `pair_model/model.mpk` are
 embedded at compile time via `include_bytes!`, so rebuild after changing them.

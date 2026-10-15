@@ -283,15 +283,16 @@ impl Strategy for Opportunist {
     }
 }
 
-/// The Opportunist with the shared pipeline's pruning: it never picks a mark
-/// whose post-state another available mark dominates (e.g. yellow 7 when
-/// yellow 5 is on offer). The web's Newbie; the CLI's `opportunist` (and
-/// its recorded benchmarks) stay unpruned.
+/// The Conservative with the shared pipeline's pruning: it never picks a
+/// mark whose post-state another available mark dominates (Conservative's
+/// fewest-blanks rule can, e.g. when a lock zeroes a row's blanks). The web's
+/// Newbie; the CLI's `conservative` (and its recorded benchmarks) stay
+/// unpruned.
 #[derive(Debug, Default, Clone)]
-pub struct PrunedOpportunist;
+pub struct PrunedConservative(Conservative);
 
-impl PrunedOpportunist {
-    fn best_mark(state: &State, marks: &[Mark], max_new_blanks: u8) -> Option<Mark> {
+impl PrunedConservative {
+    fn best_mark(&self, state: &State, marks: &[Mark], max_new_blanks: u8) -> Option<Mark> {
         let mut cands: Vec<(Mark, State)> = marks
             .iter()
             .map(|&m| {
@@ -302,14 +303,14 @@ impl PrunedOpportunist {
             .collect();
         bot_impl::prune_dominated(&mut cands, |(_, s)| s);
         let kept: Vec<Mark> = cands.into_iter().map(|(m, _)| m).collect();
-        Opportunist::best_mark(state, &kept, max_new_blanks)
+        Conservative::best_mark(state, &kept, max_new_blanks)
     }
 }
 
-impl Strategy for PrunedOpportunist {
+impl Strategy for PrunedConservative {
     fn active_phase1(&mut self, state: &State, _opp_states: &[State], dice: [u8; 6]) -> Option<Mark> {
         let marks = state.generate_white_moves(dice[0] + dice[1]);
-        Self::best_mark(state, &marks, 2)
+        self.best_mark(state, &marks, self.0.max_new_blanks)
     }
 
     fn active_phase2(
@@ -320,7 +321,7 @@ impl Strategy for PrunedOpportunist {
         _has_marked: bool,
     ) -> Option<Mark> {
         let marks = state.generate_color_moves(dice);
-        Self::best_mark(state, &marks, 2)
+        self.best_mark(state, &marks, self.0.max_new_blanks)
     }
 
     fn passive_phase1(
@@ -331,7 +332,7 @@ impl Strategy for PrunedOpportunist {
         _active_player: usize,
     ) -> Option<Mark> {
         let marks = state.generate_white_moves(dice[0] + dice[1]);
-        Self::best_mark(state, &marks, 1)
+        self.best_mark(state, &marks, 0)
     }
 }
 
@@ -417,38 +418,41 @@ mod tests {
     }
 
     #[test]
-    fn pruned_opportunist_never_picks_a_dominated_mark() {
+    fn pruned_conservative_never_picks_a_dominated_mark() {
         let mut rng = SmallRng::seed_from_u64(3);
-        let (mut plain_dominated, mut colour_decisions) = (0, 0);
-        for _ in 0..3000 {
+        let mut plain_dominated = 0;
+        for i in 0..6000 {
+            // Dense sheets too, so locks (which zero a row's blanks) come up.
+            let density = [0.2, 0.45, 0.7][i % 3];
             let mut marks = [[false; 11]; 4];
             for row in marks.iter_mut() {
-                for m in row.iter_mut().take(9) {
-                    *m = rng.gen_bool(0.2);
+                for m in row.iter_mut().take(10) {
+                    *m = rng.gen_bool(density);
                 }
             }
             let state = State::from_marks(&marks, 0);
             let dice: [u8; 6] = core::array::from_fn(|_| rng.gen_range(1..=6));
             let colour = state.generate_color_moves(dice);
-            if colour.len() < 2 {
-                continue;
-            }
-            colour_decisions += 1;
-            if let Some(m) = PrunedOpportunist.active_phase2(&state, &[], dice, false) {
+            let white = state.generate_white_moves(dice[0] + dice[1]);
+            let mut pruned = PrunedConservative::default();
+            let mut plain = Conservative::default();
+            if let Some(m) = pruned.active_phase2(&state, &[], dice, false) {
                 assert!(!dominated(&state, &colour, m), "{m:?} from {colour:?}");
             }
-            if let Some(m) = Opportunist.active_phase2(&state, &[], dice, false) {
+            if let Some(m) = pruned.active_phase1(&state, &[], dice) {
+                assert!(!dominated(&state, &white, m), "{m:?} from {white:?}");
+            }
+            if let Some(m) = pruned.passive_phase1(&state, &[], dice, 1) {
+                assert!(!dominated(&state, &white, m), "{m:?} from {white:?}");
+            }
+            if let Some(m) = plain.active_phase2(&state, &[], dice, false) {
                 plain_dominated += dominated(&state, &colour, m) as usize;
             }
-            let white = state.generate_white_moves(dice[0] + dice[1]);
-            if let Some(m) = PrunedOpportunist.active_phase1(&state, &[], dice) {
-                assert!(!dominated(&state, &white, m));
+            if let Some(m) = plain.active_phase1(&state, &[], dice) {
+                plain_dominated += dominated(&state, &white, m) as usize;
             }
         }
-        // The plain Opportunist does pick dominated marks, so the test bites.
-        assert!(
-            colour_decisions > 500 && plain_dominated > 0,
-            "{colour_decisions} {plain_dominated}"
-        );
+        // The plain Conservative does pick dominated marks, so the test bites.
+        assert!(plain_dominated > 0);
     }
 }
