@@ -1,9 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { Answer, Engine, Position } from '../engine/protocol';
 import type { Store } from './controller.svelte';
-import { BAD_LINK, ExplorerController } from './explorer.svelte';
+import { BAD_LINK, ExplorerController, MAX_BATCH, MIN_BATCH } from './explorer.svelte';
 import { encode } from './link';
-import { emptyPosition, toggleSquare } from './position';
+import { analysisKey, emptyPosition, toggleSquare } from './position';
 
 const answer = (p_win: number): Answer => ({ over: null, eval: { p_win, margin: 0, sigma: 10 }, moves: null, opponent_white: null });
 function memStore(init: Record<string, string> = {}): Store & { data: Record<string, string> } {
@@ -164,5 +164,141 @@ describe('ExplorerController', () => {
         await flush();
         expect(x.error).toBe('');
         expect(x.answer?.eval.p_win).toBe(0.4);
+    });
+});
+describe('ExplorerController analysis', () => {
+    type Call = { kind: 'explore' | 'analyze'; pos: Position; start?: number; count?: number; resolve: (v: any) => void; reject: (e: Error) => void };
+    function loopEngine() {
+        const calls: Call[] = [];
+        const push = (kind: Call['kind'], pos: Position, start?: number, count?: number) =>
+            new Promise((resolve, reject) => calls.push({ kind, pos: structuredClone(pos), start, count, resolve, reject }));
+        const engine = {
+            explore: vi.fn((pos: Position) => push('explore', pos)),
+            analyze: vi.fn((pos: Position, start: number, count: number) => push('analyze', pos, start, count)),
+        } as unknown as Engine;
+        const reply = (games: number, wins: number) => {
+            const c = calls.filter((c) => c.kind === 'analyze').at(-1)!;
+            c.resolve({ games, wins, ties: 0, diff_sum: games, diff_sq_sum: games * 4 });
+        };
+        return { engine, calls, reply, analyses: () => calls.filter((c) => c.kind === 'analyze') };
+    }
+    const setup = (t = { now: 0 }) => {
+        const e = loopEngine();
+        const x = new ExplorerController(e.engine, memStore(), undefined, undefined, () => t.now);
+        x.init();
+        return { ...e, x, t };
+    };
+
+    it('does nothing until active, then accumulates batches from the running game count', async () => {
+        const { x, analyses, reply } = setup();
+        x.tapSquare('you', 0, 0);
+        expect(analyses()).toHaveLength(0);
+        x.setActive(true);
+        expect(analyses()).toHaveLength(1);
+        expect(analyses()[0]).toMatchObject({ start: 0, count: MIN_BATCH });
+        expect(analyses()[0].pos.dice).toBeNull();
+        reply(MIN_BATCH, 5);
+        await flush();
+        expect(x.analysis?.totals.games).toBe(MIN_BATCH);
+        expect(x.analysing).toBe(true);
+        expect(analyses()[1].start).toBe(MIN_BATCH);
+        reply(analyses()[1].count!, 1);
+        await flush();
+        expect(x.analysis?.totals.wins).toBe(6);
+    });
+
+    it('a mark edit restarts at zero and discards the stale reply; a dice edit does not restart', async () => {
+        const { x, analyses, reply } = setup();
+        x.setActive(true);
+        reply(MIN_BATCH, 3);
+        await flush();
+        x.openPicker(0);
+        x.pickFace(4);
+        reply(analyses()[1].count!, 2);
+        await flush();
+        expect(x.analysis?.totals.wins).toBe(5); // dice-only: kept accumulating
+        x.tapSquare('you', 0, 0);
+        reply(analyses()[2].count!, 7); // started before the edit: stale
+        await flush();
+        expect(x.analysis?.totals.wins).toBe(5);
+        expect(x.analysis?.key).not.toBe(analysisKey(x.pos)); // old numbers stay (faded) until fresh ones arrive
+        expect(analyses()[3].start).toBe(0);
+        reply(analyses()[3].count!, 1);
+        await flush();
+        expect(x.analysis).toMatchObject({ key: analysisKey(x.pos), totals: { wins: 1 } });
+    });
+
+    it('never has two batches in flight, and an explore call goes before the next batch', async () => {
+        const { x, calls, analyses, reply } = setup();
+        x.setActive(true);
+        x.tapSquare('you', 0, 0);
+        x.tapSquare('you', 0, 1);
+        x.setActive(true);
+        expect(analyses()).toHaveLength(1);
+        reply(MIN_BATCH, 0);
+        await flush();
+        const kinds = calls.map((c) => c.kind);
+        expect(kinds.indexOf('explore')).toBeLessThan(kinds.lastIndexOf('analyze'));
+        expect(analyses()).toHaveLength(2);
+    });
+
+    it('pauses when inactive and resumes with its totals', async () => {
+        const { x, analyses, reply } = setup();
+        x.setActive(true);
+        x.setActive(false);
+        reply(MIN_BATCH, 2);
+        await flush();
+        expect(x.analysis?.totals.games).toBe(MIN_BATCH); // the in-flight batch still counts
+        expect(analyses()).toHaveLength(1);
+        expect(x.analysing).toBe(false);
+        x.setActive(true);
+        expect(analyses()).toHaveLength(2);
+        expect(analyses()[1].start).toBe(MIN_BATCH);
+    });
+
+    it('sends nothing for a finished game, and restarts when edited back to a live one', async () => {
+        const { x, analyses, reply } = setup();
+        x.tapStrike('opponent', 3); // 4 strikes
+        x.setActive(true);
+        expect(analyses()).toHaveLength(0);
+        x.tapStrike('opponent', 3); // back to 3
+        expect(analyses()).toHaveLength(1);
+        reply(MIN_BATCH, 1);
+        await flush();
+        expect(x.analysis?.totals.games).toBe(MIN_BATCH);
+    });
+
+    it('stops quietly on an engine error and starts again on the next edit', async () => {
+        const { x, analyses } = setup();
+        x.setActive(true);
+        analyses()[0].reject(new Error('engine was reset'));
+        await flush();
+        expect(x.analysing).toBe(false);
+        expect(x.error).toBe('');
+        expect(analyses()).toHaveLength(1);
+        x.tapSquare('you', 0, 0);
+        expect(analyses()).toHaveLength(2);
+    });
+
+    it('adapts the batch size toward 100 ms within bounds', async () => {
+        const t = { now: 0 };
+        const { x, analyses, reply } = setup(t);
+        x.setActive(true);
+        t.now += 10; // 8 games in 10 ms → 80 next
+        reply(MIN_BATCH, 0);
+        await flush();
+        expect(analyses()[1].count).toBe(80);
+        t.now += 1000; // 80 games in 1 s → 8 next
+        reply(80, 0);
+        await flush();
+        expect(analyses()[2].count).toBe(MIN_BATCH);
+        t.now += 1; // 8 games in 1 ms → 800
+        reply(MIN_BATCH, 0);
+        await flush();
+        expect(analyses()[3].count).toBe(Math.min(800, MAX_BATCH));
+        t.now += 1; // that many games in 1 ms → far over the cap
+        reply(analyses()[3].count!, 0);
+        await flush();
+        expect(analyses()[4].count).toBe(MAX_BATCH);
     });
 });

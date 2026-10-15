@@ -1,4 +1,4 @@
-import type { Answer, Engine, Roller, View } from '../engine/protocol';
+import type { Analysis, Answer, Engine, Roller, View } from '../engine/protocol';
 import type { Store } from './controller.svelte';
 import { decode, encode } from './link';
 import * as P from './position';
@@ -6,6 +6,10 @@ import type { ExPosition, Who } from './position';
 
 const SAVE = 'qwixxer.explorer.v1';
 export const BAD_LINK = "That link doesn't hold a valid position.";
+/** Spec "Controller": each analysis batch aims at about this long, within these sizes. */
+export const BATCH_MS = 100;
+export const MIN_BATCH = 8;
+export const MAX_BATCH = 2048;
 
 /** Spec "Web: state explorer": the position being explored and its answer. */
 export class ExplorerController {
@@ -16,6 +20,10 @@ export class ExplorerController {
     notice = $state('');
     picker = $state<number | null>(null);
     showAll = $state(false);
+    /** Play-out totals and the position (dice aside) they belong to. */
+    analysis = $state<{ key: string; totals: Analysis } | null>(null);
+    /** A batch loop is running. */
+    analysing = $state(false);
 
     private engine: Engine;
     private store: Store;
@@ -24,17 +32,23 @@ export class ExplorerController {
     private inflight = false;
     private dirty = false;
     private noticeId = 0;
+    private now: () => number;
+    private active = false;
+    private looping = false;
+    private batch = MIN_BATCH;
 
     constructor(
         engine: Engine,
         store: Store,
         clipboard: (text: string) => Promise<void> = (t) => navigator.clipboard.writeText(t),
         later: (f: () => void, ms: number) => void = (f, ms) => void setTimeout(f, ms),
+        now: () => number = () => performance.now(),
     ) {
         this.engine = engine;
         this.store = store;
         this.clipboard = clipboard;
         this.later = later;
+        this.now = now;
     }
 
     /**
@@ -56,6 +70,12 @@ export class ExplorerController {
     refresh() {
         if (this.pending || (this.answer && !this.error)) return;
         void this.evaluate();
+    }
+
+    /** The explorer is the visible view (route and tab): analysis runs only then. */
+    setActive(on: boolean) {
+        this.active = on;
+        void this.analyse();
     }
 
     loadCode(code: string): boolean {
@@ -109,6 +129,7 @@ export class ExplorerController {
         this.showAll = false;
         try { this.store.set(SAVE, encode(p)); } catch { /* storage unavailable */ }
         void this.evaluate();
+        void this.analyse();
     }
 
     /**
@@ -140,6 +161,38 @@ export class ExplorerController {
         } finally {
             this.inflight = false;
             this.pending = false;
+        }
+    }
+
+    /**
+     * Spec "Controller": one batch in flight while active; each reply adds
+     * to the totals of the position it was asked for, and is dropped if
+     * the position (dice aside) changed meanwhile. Errors stop the loop
+     * quietly; the next edit or activation starts it again.
+     */
+    private async analyse() {
+        if (this.looping || !this.active || P.isOver(this.pos)) return;
+        this.looping = true;
+        this.analysing = true;
+        try {
+            while (this.active && !P.isOver(this.pos)) {
+                const key = P.analysisKey(this.pos);
+                const prev = this.analysis?.key === key ? this.analysis.totals : P.ZERO_ANALYSIS;
+                const count = this.batch;
+                const t0 = this.now();
+                const r = await this.engine.analyze(P.toEngine(this.pos), prev.games, count);
+                const ms = this.now() - t0;
+                this.batch = Math.min(MAX_BATCH, Math.max(MIN_BATCH, Math.round((count * BATCH_MS) / Math.max(ms, 1))));
+                const cur = this.analysis?.key === key ? this.analysis.totals : P.ZERO_ANALYSIS;
+                if (P.analysisKey(this.pos) === key && cur.games === prev.games) {
+                    this.analysis = { key, totals: P.addAnalysis(cur, r) };
+                }
+            }
+        } catch {
+            // Stop quietly: the move list shows engine errors.
+        } finally {
+            this.looping = false;
+            this.analysing = false;
         }
     }
 }
