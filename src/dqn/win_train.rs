@@ -285,6 +285,8 @@ pub struct WinTrainCfg {
     /// Resume: load `dir`'s model and continue the ε schedule from here.
     pub start_iteration: usize,
     pub lr: f64,
+    /// Master's model dir, for the per-iteration bench.
+    pub pair_dir: String,
 }
 
 /// Spec "Training": per iteration, play `games` self-play games with the
@@ -292,6 +294,25 @@ pub struct WinTrainCfg {
 /// `epochs` epochs, save `model.mpk` and `iter-N.mpk`, bench against Master
 /// and append to `training.csv`. Returns the final bot.
 pub fn self_play_train(cfg: &WinTrainCfg) -> WinStrategy {
+    // Fail before any work: a long run must not die at its first bench, nor
+    // a fresh start silently overwrite a finished one.
+    if cfg.bench > 0 {
+        assert!(
+            std::path::Path::new(&format!("{}/model.mpk", cfg.pair_dir)).exists(),
+            "pair model not found at {}/model.mpk (needed for the bench; use --bench 0 to skip)",
+            cfg.pair_dir
+        );
+    }
+    if cfg.start_iteration == 0 {
+        let taken = ["model.mpk", "training.csv"]
+            .iter()
+            .any(|f| std::path::Path::new(&format!("{}/{f}", cfg.dir)).exists());
+        assert!(
+            !taken,
+            "{} already holds a run: move it aside, or resume with --start-iteration",
+            cfg.dir
+        );
+    }
     let device = Default::default();
     <Ad as Backend>::seed(&device, TRAIN_SEED);
     std::fs::create_dir_all(&cfg.dir).expect("Failed to create the model dir");
@@ -345,7 +366,7 @@ pub fn self_play_train(cfg: &WinTrainCfg) -> WinStrategy {
         let share = if cfg.bench > 0 {
             Some(bench_vs_pair(
                 &WinStrategy::from_model(&inference),
-                "pair_model",
+                &cfg.pair_dir,
                 cfg.bench,
             ))
         } else {
@@ -592,6 +613,7 @@ mod tests {
             buffer: 3,
             start_iteration: 0,
             lr: 4e-4,
+            pair_dir: "pair_model".into(),
         };
         let trained = self_play_train(&cfg);
         for f in ["config.json", "model.mpk", "iter-1.mpk", "iter-2.mpk", "training.csv"] {
@@ -630,5 +652,42 @@ mod tests {
         assert!(mean_abs_error(&n, &data) < 1e-6);
         let off: Vec<_> = data.iter().map(|(x, p)| (*x, (p + 0.1).min(1.0))).collect();
         assert!(mean_abs_error(&n, &off) > 0.05);
+    }
+
+    fn smoke_cfg(dir: &str) -> WinTrainCfg {
+        WinTrainCfg {
+            dir: dir.to_string(),
+            iterations: 1,
+            games: 4,
+            epochs: 1,
+            bench: 0,
+            width: 16,
+            buffer: 3,
+            start_iteration: 0,
+            lr: 4e-4,
+            pair_dir: "pair_model".into(),
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "already holds a run")]
+    fn fresh_start_refuses_to_overwrite_an_existing_run() {
+        let dir = std::env::temp_dir().join(format!("qwixxer-win-guard-{}", std::process::id()));
+        let dir = dir.to_str().unwrap().to_string();
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(format!("{dir}/model.mpk"), b"precious").unwrap();
+        self_play_train(&smoke_cfg(&dir));
+    }
+
+    #[test]
+    #[should_panic(expected = "pair model not found")]
+    fn missing_pair_model_fails_before_any_training() {
+        let dir = std::env::temp_dir().join(format!("qwixxer-win-nopair-{}", std::process::id()));
+        let dir = dir.to_str().unwrap().to_string();
+        std::fs::remove_dir_all(&dir).ok();
+        let mut cfg = smoke_cfg(&dir);
+        cfg.bench = 4;
+        cfg.pair_dir = "no_such_pair_model".into();
+        self_play_train(&cfg);
     }
 }

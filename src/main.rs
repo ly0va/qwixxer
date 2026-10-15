@@ -850,6 +850,7 @@ fn main() {
                 buffer,
                 start_iteration,
                 lr: 4e-4,
+                pair_dir: "pair_model".into(),
             });
         }
         #[cfg(feature = "dqn")]
