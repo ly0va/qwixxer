@@ -38,6 +38,7 @@
                     <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 4v16M7 20l-3-3M7 20l3-3M17 20V4M17 4l-3 3M17 4l3 3"></path></svg>
                     Swap sides
                 </button>
+                <button type="button" class="btn small" disabled={!c.view} onclick={() => c.view && x.loadView(c.view)}>Explore current game</button>
                 <span class="hint">Tap squares, locks and strike boxes to set up any position.</span>
             </div>
             <ExSheet {x} who="opponent" />
@@ -64,6 +65,7 @@
     .body { display: flex; gap: 24px; flex: 1; min-height: 0; }
     main { width: 640px; display: flex; flex-direction: column; gap: 10px; }
     .mid { display: flex; align-items: center; gap: 10px; }
+    .btn:disabled { opacity: 0.5; cursor: default; }
     .hint { font-size: 13px; color: var(--muted); }
     aside { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 12px; min-height: 0; }
     .moves { flex: 1; min-height: 0; overflow-y: auto; border-radius: 14px; }

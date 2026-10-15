@@ -19,7 +19,8 @@ a link and opens identically.
 - Two sheets, "You" and "Opponent", both editable. 1 v 1 only, like the game.
 - Position evaluation always; with dice set, a ranked list of your legal
   moves and each bot's pick.
-- Entry: by hand, from the game ("Explore this position"), from a link.
+- Entry: by hand, from the game (the explorer's "Explore current game"
+  button), from a link.
 - Out of scope: developer numbers (μ, σ, z, rollout counts). They were in an
   earlier mockup and were dropped. Ranking more than two players, move trees
   ("what if the opponent then…"), playing on from a position.
@@ -33,12 +34,14 @@ a link and opens identically.
   to the "Qwixxer" wordmark, on both views.
 - **Phone:** no tabs. The game header keeps "Qwixxer"; the explorer header
   shows "Explorer" in the same place, then a copy-link button and "⋯".
-- The "⋯" menu, game: New game · Explore this position · Explorer · Dark mode
+- The "⋯" menu, game: New game · Explorer · Dark mode
   · Rules · Source code (+ notice). Explorer: Back to game · Dark mode · Rules
   · Source code (+ notice). On desktop the tabs replace "Explorer" and "Back
   to game", so the menu leaves them out.
-- "Explore this position" copies the game; "Explorer" opens the explorer's
-  last position. Neither changes the game in progress, and "Back to game" (or
+- "Explore current game", a button beside "Swap sides" (on the phone, a
+  full-width button under "Swap sides" / "Clear sheets"), copies the game;
+  "Explorer" opens the explorer's last position. It is disabled before a
+  game exists. Neither changes the game in progress, and "Back to game" (or
   the Play tab) returns to it exactly as it was. If the bot is mid-think when
   you switch, the game finishes that step in the background as usual.
 
@@ -131,10 +134,10 @@ Superseded by `2026-10-15-explorer-analysis-design.md`: the position's numbers c
   message "That link doesn't hold a valid position."
 - The explorer stores its current position in local storage (wrapped in
   try/catch like the game's save) and restores it when opened via
-  "Explorer" or the tab. Opening a link or "Explore this position" replaces
+  "Explorer" or the tab. Opening a link or "Explore current game" replaces
   it.
 
-## Explore this position (from the game)
+## Explore current game (from the explorer)
 
 Copies the game's current sheets (You → You, Bot → Opponent), closed rows,
 and, while a roll is being resolved, its dice and whose roll it is. The
@@ -192,7 +195,7 @@ explore(position_json) -> {
 - Swap sides twice returns the original position.
 - Bot tags: every pick maps to a listed move over many random positions
   (a native test like `wiring_check`).
-- Explore this position at each game phase, including during the bot's
+- Explore current game at each game phase, including during the bot's
   think; the game continues unchanged afterwards.
 
 ## Later

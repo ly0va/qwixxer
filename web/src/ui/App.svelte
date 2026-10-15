@@ -48,7 +48,6 @@
         get current() { return route.view; },
         play: () => { if (route.view === 'play') return; history.pushState(null, '', location.pathname + location.search); sync(); },
         explorer: () => { location.hash = '#/explore'; },
-        exploreThis: () => { if (c.view) x.loadView(c.view); location.hash = '#/explore'; },
     };
 
     onMount(() => {

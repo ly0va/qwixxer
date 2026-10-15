@@ -421,7 +421,7 @@ where `MASTER_PLUS_SPEC = ""` is the native production config (see the latency
 table below); **Master** (`master`) = the static pair net; **Student**
 (`student`) = the GA champion; **Newbie** (`newbie`) = the hand-written
 Conservative. The header's "⋯" menu (`Menu.svelte`, both layouts) holds New
-game (two clicks mid-game), Explore this position, Explorer (Back to game in
+game (two clicks mid-game), Explorer (Back to game in
 the explorer) and the dark-mode switch; on desktop, where the Play / Explore
 tabs switch views, it drops Explorer and Back to game. `champion.txt` and `pair_model/model.mpk` are
 embedded at compile time via `include_bytes!`, so rebuild after changing them.
@@ -528,8 +528,8 @@ answer never lands. Links are `#/explore?p=<code>`, where `game/link.ts`
 packs the position into 117 bits as a version character plus 20 base64url
 characters; the app loads a link once, then rewrites the address to
 `#/explore`. The position is remembered as a link code in
-`qwixxer.explorer.v1`. The ⋯ menu's "Explore this position" copies the game's
-current view into the explorer.
+`qwixxer.explorer.v1`. The explorer's "Explore current game" button (beside Swap
+sides) copies the game's current view into it.
 
 **Explorer analysis** (spec
 `docs/superpowers/specs/2026-10-15-explorer-analysis-design.md`). The

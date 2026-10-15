@@ -4,8 +4,8 @@
     // `tabs`: the desktop header's Play / Explore tabs already switch views.
     let { c, nav, tabs = false }: { c: GameController; nav: Nav; tabs?: boolean } = $props();
 
-    // The "⋯" header menu (all layouts). In the game: New game, Explore this
-    // position, and (phone) Explorer; in the explorer (phone): Back to game. Then, in both, dark
+    // The "⋯" header menu (all layouts). In the game: New game and (phone)
+    // Explorer; in the explorer (phone): Back to game. Then, in both, dark
     // mode, the rules PDF, the source repo and a trademark notice. Open state lives on the
     // controller so App's page-wide keys treat it as a modal.
     let trigger = $state<HTMLButtonElement>();
@@ -62,7 +62,6 @@
                 <button type="button" role="menuitem" class="item" class:armed aria-disabled={c.busy} onclick={newGame}>
                     {armed ? 'Abandon game?' : 'New game'}
                 </button>
-                <button type="button" role="menuitem" class="item" onclick={() => { c.menuOpen = false; nav.exploreThis(); }}>Explore this position</button>
                 {#if !tabs}<button type="button" role="menuitem" class="item" onclick={() => { c.menuOpen = false; nav.explorer(); }}>Explorer</button>{/if}
             {:else if !tabs}
                 <button type="button" role="menuitem" class="item" onclick={() => { c.menuOpen = false; nav.play(); }}>Back to game</button>

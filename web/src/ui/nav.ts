@@ -3,5 +3,4 @@ export interface Nav {
     current: 'play' | 'explore';
     play(): void;
     explorer(): void;
-    exploreThis(): void;
 }

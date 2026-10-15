@@ -46,6 +46,7 @@
     <div class="row">
         <button type="button" class="btn" onclick={() => x.swap()}>Swap sides</button>
         <button type="button" class="btn muted" onclick={() => x.clearAll()}>Clear sheets</button>
+        <button type="button" class="btn wide" disabled={!c.view} onclick={() => c.view && x.loadView(c.view)}>Explore current game</button>
     </div>
     <RollCard {x} compact />
     <MovesList {x} compact />
@@ -63,7 +64,9 @@
     .name { align-self: stretch; display: flex; align-items: baseline; justify-content: space-between; padding: 0 4px; }
     .name h2 { margin: 0; font-family: var(--cond); font-size: 19px; font-weight: 700; }
     .name b { font-family: var(--cond); font-weight: 800; font-size: 20px; }
-    .row { display: flex; gap: 8px; }
+    .row { display: flex; flex-wrap: wrap; gap: 8px; }
     .btn { flex: 1; height: 40px; border-radius: 10px; border: none; background: var(--paper); box-shadow: 0 1px 0 var(--edge); color: var(--ink); font-weight: 600; font-size: 14px; cursor: pointer; }
     .btn.muted { color: var(--muted); }
+    .btn.wide { flex-basis: 100%; }
+    .btn:disabled { opacity: 0.5; cursor: default; }
 </style>

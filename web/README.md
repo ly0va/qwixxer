@@ -8,8 +8,8 @@ TypeScript on Vite. Design and turn flow:
 
 ## State explorer
 
-`#/explore` (the desktop Play / Explore tabs, or the "⋯" menu's Explorer and,
-in a game, "Explore this position") sets up any two-sheet position and asks
+`#/explore` (the desktop Play / Explore tabs, or the phone's "⋯" menu
+Explorer; its "Explore current game" button copies the game) sets up any two-sheet position and asks
 the engine about it. Spec: `docs/superpowers/specs/2026-10-14-state-explorer-design.md`.
 
 - `src/explorer.rs` (`WasmExplorer` in `src/lib.rs`): a play-out win chance
