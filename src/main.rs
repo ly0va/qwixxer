@@ -331,6 +331,22 @@ enum Commands {
         #[arg(long, default_value = "0")]
         start_iteration: usize,
     },
+    /// Win-net capacity check: fit each width to today's P(win) on Master positions
+    #[cfg(feature = "dqn")]
+    WinFit {
+        /// Training positions
+        #[arg(long, default_value = "300000")]
+        train: usize,
+        /// Held-out positions
+        #[arg(long, default_value = "50000")]
+        test: usize,
+        /// Epochs per width
+        #[arg(long, default_value = "20")]
+        epochs: usize,
+        /// Widths to try
+        #[arg(long, value_delimiter = ',', default_value = "16,32,64")]
+        widths: Vec<usize>,
+    },
 }
 
 fn run_play(bots: Vec<BotType>, verbose: bool) {
@@ -815,6 +831,21 @@ fn main() {
                 buffer,
                 start_iteration,
                 lr: 4e-4,
+            });
+        }
+        #[cfg(feature = "dqn")]
+        Some(Commands::WinFit {
+            train,
+            test,
+            epochs,
+            widths,
+        }) => {
+            dqn::win_train::capacity_check(&dqn::win_train::FitCfg {
+                train,
+                test,
+                epochs,
+                widths,
+                lr: 1e-3,
             });
         }
         None => {

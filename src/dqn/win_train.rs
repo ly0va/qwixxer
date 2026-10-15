@@ -9,6 +9,7 @@ use crate::dqn::win::{input_tensor, sigmoid, swap_input, win_input, ManualWinNet
 use crate::dqn::{MyBackend, TRAIN_SEED};
 use crate::game::{Game, Player};
 use crate::state::{Mark, State};
+use crate::strategy::search::WinProb;
 use crate::strategy::{active_phase1_impl, active_phase2_impl, passive_phase1_impl, Bot, Strategy};
 use burn::{
     backend::Autodiff,
@@ -371,6 +372,83 @@ pub fn self_play_train(cfg: &WinTrainCfg) -> WinStrategy {
     WinStrategy::from_model(&model.valid())
 }
 
+// ---- Capacity check ----
+
+/// Post-move positions from Master-vs-Master games (both seats, no
+/// exploration), labelled with today's net's P(win). Games are seeded from
+/// `seed` in fixed blocks, so the result is deterministic.
+pub fn master_positions(count: usize, seed: u64, pair_dir: &str) -> Vec<([f32; WIN_INPUTS], f32)> {
+    const BLOCK: u64 = 256;
+    let mut out = Vec::with_capacity(count);
+    let mut block = 0u64;
+    while out.len() < count {
+        let chunk: Vec<Vec<([f32; WIN_INPUTS], f32)>> = (0..BLOCK)
+            .into_par_iter()
+            .map_init(
+                || PairStrategy::load(pair_dir),
+                |pair, g| {
+                    let mk = || PairStrategy::from_shared(pair.model.clone(), pair.device.clone());
+                    let game_seed = seed.wrapping_add((block * BLOCK + g).wrapping_mul(1000));
+                    let (snaps, _) = play_recorded([mk(), mk()], [0.0, 0.0], game_seed);
+                    let posts: Vec<(State, State)> = snaps.into_iter().flatten().collect();
+                    let groups: Vec<(&State, &[State])> =
+                        posts.iter().map(|(me, opp)| (me, std::slice::from_ref(opp))).collect();
+                    let ps = pair.win_prob_multi(&groups);
+                    posts
+                        .iter()
+                        .zip(ps)
+                        .map(|((me, opp), p)| (win_input(me, opp), p))
+                        .collect()
+                },
+            )
+            .collect();
+        out.extend(chunk.into_iter().flatten());
+        block += 1;
+    }
+    out.truncate(count);
+    out
+}
+
+/// Mean |sigmoid(logit) − target| over `data`.
+pub fn mean_abs_error(net: &ManualWinNet, data: &[([f32; WIN_INPUTS], f32)]) -> f32 {
+    let total: f32 = data.iter().map(|(x, p)| (sigmoid(net.logit(x)) - p).abs()).sum();
+    total / data.len().max(1) as f32
+}
+
+pub struct FitCfg {
+    pub train: usize,
+    pub test: usize,
+    pub epochs: usize,
+    pub widths: Vec<usize>,
+    pub lr: f64,
+}
+
+/// Held-out MAE at which a width counts as big enough (spec "Capacity check").
+pub const FIT_MAE: f32 = 0.02;
+
+/// Spec "Capacity check": fit each width to today's P(win) on Master
+/// positions and report held-out MAE; the fitted nets are discarded.
+pub fn capacity_check(cfg: &FitCfg) -> Vec<(usize, f32)> {
+    let device = Default::default();
+    println!("Generating {} training and {} held-out positions…", cfg.train, cfg.test);
+    let train = master_positions(cfg.train, TRAIN_SEED, "pair_model");
+    let test = master_positions(cfg.test, TRAIN_SEED ^ 0x7E57_0000_0000, "pair_model");
+    let mut results = Vec::new();
+    for &w in &cfg.widths {
+        <Ad as Backend>::seed(&device, TRAIN_SEED);
+        let model = WinModelConfig::new().with_width(w).init::<Ad>(&device);
+        let (model, loss) = train_epochs(model, &train, cfg.epochs, cfg.lr, TRAIN_SEED);
+        let mae = mean_abs_error(&ManualWinNet::from_model(&model.valid()), &test);
+        println!("  W = {w:>3}: train loss {loss:.4}, held-out MAE {mae:.4}");
+        results.push((w, mae));
+    }
+    match results.iter().find(|(_, mae)| *mae <= FIT_MAE) {
+        Some((w, _)) => println!("Smallest width with MAE ≤ {FIT_MAE}: W = {w}"),
+        None => println!("No width reached MAE ≤ {FIT_MAE}: decide before training"),
+    }
+    results
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -421,7 +499,11 @@ mod tests {
             inputs: positions(),
             outcome: 1.0,
         };
-        let (old, new) = (net(1), net(2));
+        // Different widths: distinct nets even if a parallel test reseeds
+        // the backend's global RNG between `seed` and `init`.
+        let device = Default::default();
+        let old = ManualWinNet::from_model(&WinModelConfig::new().with_width(16).init::<MyBackend>(&device));
+        let new = net(2);
         let t_old = fresh_targets(&old, &[&chain]);
         let t_new = fresh_targets(&new, &[&chain]);
         let ps: Vec<f32> = new.logits(&chain.inputs).into_iter().map(sigmoid).collect();
@@ -527,5 +609,26 @@ mod tests {
             assert!((sigmoid(a) - sigmoid(b)).abs() < 1e-2, "trained {a} vs loaded {b}");
         }
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn master_positions_are_labelled_with_todays_win_prob() {
+        let data = master_positions(300, 21, "pair_model");
+        assert_eq!(data.len(), 300);
+        assert!(data.iter().all(|(_, p)| (0.0..=1.0).contains(p)));
+        // Both sides of the game appear: labels on both sides of ½.
+        assert!(data.iter().any(|(_, p)| *p > 0.5) && data.iter().any(|(_, p)| *p < 0.5));
+        // Deterministic per seed.
+        assert_eq!(master_positions(300, 21, "pair_model")[17].1, data[17].1);
+    }
+
+    #[test]
+    fn mean_abs_error_is_zero_against_the_nets_own_predictions() {
+        let n = net(6);
+        let xs = positions();
+        let data: Vec<_> = xs.iter().map(|x| (*x, sigmoid(n.logit(x)))).collect();
+        assert!(mean_abs_error(&n, &data) < 1e-6);
+        let off: Vec<_> = data.iter().map(|(x, p)| (*x, (p + 0.1).min(1.0))).collect();
+        assert!(mean_abs_error(&n, &off) > 0.05);
     }
 }
