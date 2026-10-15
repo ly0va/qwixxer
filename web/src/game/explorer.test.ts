@@ -302,3 +302,41 @@ describe('ExplorerController analysis', () => {
         expect(analyses()[4].count).toBe(MAX_BATCH);
     });
 });
+
+describe('ExplorerController analysis fixes', () => {
+    function eng() {
+        const an: { count: number; resolve: (v: any) => void }[] = [];
+        const engine = {
+            explore: vi.fn(() => new Promise(() => {})),
+            analyze: vi.fn((_p: Position, _s: number, count: number) => new Promise((resolve) => an.push({ count, resolve }))),
+        } as unknown as Engine;
+        return { engine, an };
+    }
+
+    it('a finished game counts as settled, so its card is not faded', () => {
+        const { engine } = eng();
+        const x = new ExplorerController(engine, memStore());
+        x.init();
+        expect(x.settled).toBe(false); // nothing analysed yet
+        x.tapStrike('opponent', 3); // 4 strikes: game over
+        expect(x.settled).toBe(true);
+    });
+
+    it('a position edit restarts the batch size at the minimum', async () => {
+        const t = { now: 0 };
+        const { engine, an } = eng();
+        const x = new ExplorerController(engine, memStore(), undefined, undefined, () => t.now);
+        x.init();
+        x.setActive(true);
+        t.now += 1; // 8 games in 1 ms: the next batch grows
+        an[0].resolve({ games: MIN_BATCH, wins: 0, ties: 0, diff_sum: 0, diff_sq_sum: 0 });
+        await flush();
+        expect(an[1].count).toBeGreaterThan(MIN_BATCH);
+        expect(x.settled).toBe(true);
+        x.tapSquare('you', 0, 0);
+        expect(x.settled).toBe(false);
+        an[1].resolve({ games: an[1].count, wins: 0, ties: 0, diff_sum: 0, diff_sq_sum: 0 }); // stale
+        await flush();
+        expect(an[2].count).toBe(MIN_BATCH);
+    });
+});

@@ -36,6 +36,7 @@ export class ExplorerController {
     private active = false;
     private looping = false;
     private batch = MIN_BATCH;
+    private batchKey = '';
 
     constructor(
         engine: Engine,
@@ -70,6 +71,11 @@ export class ExplorerController {
     refresh() {
         if (this.pending || (this.answer && !this.error)) return;
         void this.evaluate();
+    }
+
+    /** The Position card's numbers are current: analysed for this position, or a finished game (shown as a result). */
+    get settled() {
+        return P.isOver(this.pos) || this.analysis?.key === P.analysisKey(this.pos);
     }
 
     /** The explorer is the visible view (route and tab): analysis runs only then. */
@@ -177,6 +183,11 @@ export class ExplorerController {
         try {
             while (this.active && !P.isOver(this.pos)) {
                 const key = P.analysisKey(this.pos);
+                // A new position's games may be much longer: start small again.
+                if (key !== this.batchKey) {
+                    this.batch = MIN_BATCH;
+                    this.batchKey = key;
+                }
                 const prev = this.analysis?.key === key ? this.analysis.totals : P.ZERO_ANALYSIS;
                 const count = this.batch;
                 const t0 = this.now();

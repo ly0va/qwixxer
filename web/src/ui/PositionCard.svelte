@@ -1,11 +1,11 @@
 <script lang="ts">
     import type { ExplorerController } from '../game/explorer.svelte';
-    import { analysisKey, analysisMargin, chanceText, gamesText, marginText, overText, winChance } from '../game/position';
+    import { analysisMargin, chanceText, gamesText, marginText, overText, winChance } from '../game/position';
     let { x, compact = false }: { x: ExplorerController; compact?: boolean } = $props();
     const a = $derived(x.answer);
     const t = $derived(x.analysis?.totals ?? null);
     // Numbers for an older position stay, faded, until the first batch for this one.
-    const fresh = $derived(x.analysis?.key === analysisKey(x.pos));
+    const fresh = $derived(x.settled);
     const w = $derived(t ? winChance(t) : null);
     const m = $derived(t ? marginText(analysisMargin(t)) : '');
 </script>
