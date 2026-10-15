@@ -14,12 +14,10 @@ A bot framework for the dice game [Qwixx](https://en.wikipedia.org/wiki/Qwixx): 
 | **GA Champion** | Student | Genetically evolved 4-weight heuristic | baseline |
 | **MCTS** | | Monte Carlo tree search with GA rollouts | ~GA level |
 | **Opportunist** | | Max weighted probability, blank caps, always lock | ~30% |
-| **Conservative** | Newbie* | Fewest skipped numbers (at most 3 per mark, none on the opponent's roll) | ~25% |
+| **Conservative** | Newbie | Fewest skipped numbers (at most 3 per mark, none on the opponent's roll) | ~25% |
 | **Random** | | Uniform random legal move | ~0% |
 
 Win rates are from deterministic paired-dice benches; the full history is in `docs/EXPERIMENTS.md`.
-
-\* The web's Newbie is the Conservative with the shared pipeline's pruning (it never picks a mark another available mark dominates); the win rate above is the unpruned CLI `conservative`.
 
 All non-trivial bots share one decision pipeline (`src/strategy/bot_impl.rs`) with **meta-rules**:
 - **Smart lock / smart strike**: end the game when it is won, never end it into a loss.

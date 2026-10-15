@@ -6,13 +6,12 @@
 //!
 //! Run from the repo root: `cargo run --release --manifest-path web/Cargo.toml --example wiring_check -- 400`
 //! Optional second argument: comma-separated bots for part 2 only, skipping
-//! part 1 (e.g. `-- 3000 newbie,conservative`; `conservative` is the unpruned
-//! CLI bot, for comparison with Newbie).
+//! part 1 (e.g. `-- 3000 newbie,student`).
 
 use qwixxer::dqn::pair::PairStrategy;
 use qwixxer::state::{Mark, State};
 use qwixxer::strategy::search::{SearchBot, SearchConfig};
-use qwixxer::strategy::{Conservative, Strategy};
+use qwixxer::strategy::Strategy;
 use qwixxer_web::bots::{make_bot, BotKind, MASTER_PLUS_SPEC};
 use qwixxer_web::session::{Phase, Session, SheetSnap, Snapshot, Sq};
 use rand::rngs::SmallRng;
@@ -109,20 +108,16 @@ fn advance(s: &mut Session, human: &mut Box<dyn Strategy>) {
 }
 
 /// The bots part 2 can measure: id, display name, constructor.
-const BOTS: [(&str, &str, fn() -> Box<dyn Strategy>); 5] = [
+const BOTS: [(&str, &str, fn() -> Box<dyn Strategy>); 4] = [
     ("master_plus", "Master+", || make_bot(BotKind::MasterPlus)),
     ("master", "Master", || make_bot(BotKind::Master)),
     ("student", "Student", || make_bot(BotKind::Student)),
     ("newbie", "Newbie", || make_bot(BotKind::Newbie)),
-    ("conservative", "Cons.", || Box::<Conservative>::default()),
 ];
 
 /// Part 2: bot vs GA (human seat) through the Session, `games` per bot.
 fn win_rates(games: usize, only: Option<&str>) {
-    let wanted = |id: &str| match only {
-        Some(list) => list.split(',').any(|x| x == id),
-        None => id != "conservative",
-    };
+    let wanted = |id: &str| only.map_or(true, |list| list.split(',').any(|x| x == id));
     for (_, name, make) in BOTS.into_iter().filter(|(id, _, _)| wanted(id)) {
         let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
         let per = games.div_ceil(threads);
