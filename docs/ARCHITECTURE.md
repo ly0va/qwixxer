@@ -540,7 +540,9 @@ play-outs), with game k's dice seeded from the position and k, so batches
 compose exactly and replay identically. It returns wins, ties and the sum and
 sum of squares of the final score difference. `ExplorerController` runs one
 `analyze` batch at a time while the explorer is on screen (route and tab
-visible), sizing batches toward 100 ms (8 to 512 games), adding replies to
+visible), sizing batches toward 100 ms (8 to 512 games, back to 8 on a new
+position), back to back until ± < 2 points (plus-four estimate), then resting
+as long as each batch took (half a core), adding replies to
 totals keyed by the position without its dice (a dice edit keeps them; any
 other edit restarts them; a reply for an older position is dropped). The win
 chance counts ties as half, with ± = 1.96 standard errors; it shows one

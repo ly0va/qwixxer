@@ -214,13 +214,14 @@ describe('ExplorerController analysis', () => {
         await flush();
         x.openPicker(0);
         x.pickFace(4);
-        reply(analyses()[1].count!, 2);
+        const c1 = analyses()[1].count!;
+        reply(c1, c1 / 2); // about even, so not yet precise enough to rest
         await flush();
-        expect(x.analysis?.totals.wins).toBe(5); // dice-only: kept accumulating
+        expect(x.analysis?.totals.wins).toBe(3 + c1 / 2); // dice-only: kept accumulating
         x.tapSquare('you', 0, 0);
         reply(analyses()[2].count!, 7); // started before the edit: stale
         await flush();
-        expect(x.analysis?.totals.wins).toBe(5);
+        expect(x.analysis?.totals.wins).toBe(3 + c1 / 2);
         expect(x.analysis?.key).not.toBe(analysisKey(x.pos)); // old numbers stay (faded) until fresh ones arrive
         expect(analyses()[3].start).toBe(0);
         reply(analyses()[3].count!, 1);
@@ -285,19 +286,19 @@ describe('ExplorerController analysis', () => {
         const { x, analyses, reply } = setup(t);
         x.setActive(true);
         t.now += 10; // 8 games in 10 ms → 80 next
-        reply(MIN_BATCH, 0);
+        reply(MIN_BATCH, 4);
         await flush();
         expect(analyses()[1].count).toBe(80);
         t.now += 1000; // 80 games in 1 s → 8 next
-        reply(80, 0);
+        reply(80, 40);
         await flush();
         expect(analyses()[2].count).toBe(MIN_BATCH);
         t.now += 1; // 8 games in 1 ms → 800
-        reply(MIN_BATCH, 0);
+        reply(MIN_BATCH, 4);
         await flush();
         expect(analyses()[3].count).toBe(Math.min(800, MAX_BATCH));
         t.now += 1; // that many games in 1 ms → far over the cap
-        reply(analyses()[3].count!, 0);
+        reply(analyses()[3].count!, analyses()[3].count! / 2);
         await flush();
         expect(analyses()[4].count).toBe(MAX_BATCH);
     });
@@ -338,5 +339,79 @@ describe('ExplorerController analysis fixes', () => {
         an[1].resolve({ games: an[1].count, wins: 0, ties: 0, diff_sum: 0, diff_sq_sum: 0 }); // stale
         await flush();
         expect(an[2].count).toBe(MIN_BATCH);
+    });
+});
+
+describe('ExplorerController analysis throttle', () => {
+    function setupRest() {
+        const t = { now: 0 };
+        const an: { start: number; resolve: (v: any) => void }[] = [];
+        const timers: { f: () => void; ms: number }[] = [];
+        const engine = {
+            explore: vi.fn(() => new Promise(() => {})),
+            analyze: vi.fn((_p: Position, start: number) => new Promise((resolve) => an.push({ start, resolve }))),
+        } as unknown as Engine;
+        const x = new ExplorerController(engine, memStore(), undefined, (f, ms) => void timers.push({ f, ms }), () => t.now);
+        x.init();
+        // 10,000 games at 50%: ± ≈ 0.98 points, below the 2-point threshold.
+        const precise = (games = 10000) => ({ games, wins: games / 2, ties: 0, diff_sum: 0, diff_sq_sum: 0 });
+        return { x, an, timers, t, precise };
+    }
+
+    it('runs back to back while ± ≥ 2 points', async () => {
+        const { x, an, timers } = setupRest();
+        x.setActive(true);
+        an[0].resolve({ games: 100, wins: 50, ties: 0, diff_sum: 0, diff_sq_sum: 0 }); // ± ≈ 9.8
+        await flush();
+        expect(an).toHaveLength(2);
+        expect(timers).toHaveLength(0);
+    });
+
+    it('below ± 2 points rests as long as the batch took (half a core)', async () => {
+        const { x, an, timers, t, precise } = setupRest();
+        x.setActive(true);
+        t.now += 90;
+        an[0].resolve(precise());
+        await flush();
+        expect(an).toHaveLength(1);
+        expect(timers.map((r) => r.ms)).toEqual([90]);
+        expect(x.analysing).toBe(true);
+        timers[0].f();
+        await flush();
+        expect(an).toHaveLength(2);
+        expect(an[1].start).toBe(10000);
+    });
+
+    it('an edit during the rest restarts at once, from zero', async () => {
+        const { x, an, precise } = setupRest();
+        x.setActive(true);
+        an[0].resolve(precise());
+        await flush();
+        x.tapSquare('you', 0, 0);
+        await flush();
+        expect(an).toHaveLength(2);
+        expect(an[1].start).toBe(0);
+    });
+
+    it('a small one-sided sample is not precise enough to rest', async () => {
+        const { x, an, timers } = setupRest();
+        x.setActive(true);
+        an[0].resolve({ games: 8, wins: 0, ties: 0, diff_sum: -80, diff_sq_sum: 800 }); // ± 0 by the plain formula
+        await flush();
+        expect(timers).toHaveLength(0);
+        expect(an).toHaveLength(2);
+    });
+
+    it('leaving during the rest sends nothing more', async () => {
+        const { x, an, timers, precise } = setupRest();
+        x.setActive(true);
+        an[0].resolve(precise());
+        await flush();
+        x.setActive(false);
+        await flush();
+        expect(x.analysing).toBe(false);
+        timers[0].f();
+        await flush();
+        expect(an).toHaveLength(1);
     });
 });

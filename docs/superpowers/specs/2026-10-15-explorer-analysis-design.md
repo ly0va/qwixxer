@@ -73,6 +73,11 @@ request and one reply per batch, like `explore`. No streaming messages.
 - **Pause:** no batch is sent while the explorer is not the active route
   or `document.visibilityState` is `hidden`. Returning resumes with the
   totals kept.
+- **Throttle:** once ± is below 2 points, the loop rests after each batch
+  as long as the batch took (half a core). Precision for this test uses the
+  plus-four estimate ((wins + ties/2 + 2) / (games + 4)), so a small
+  one-sided sample (plain ± = 0) never counts as precise. An edit or a pause
+  ends a rest at once; a new position starts at full speed.
 - **Game over:** no analysis.
 - Totals live in memory only.
 

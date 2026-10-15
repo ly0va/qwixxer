@@ -10,6 +10,19 @@ export const BAD_LINK = "That link doesn't hold a valid position.";
 export const BATCH_MS = 100;
 export const MIN_BATCH = 8;
 export const MAX_BATCH = 512;
+/** Once ± is below this (2 points), rest as long as each batch took: half a core. */
+export const REST_BELOW = 0.02;
+
+/**
+ * ± below REST_BELOW, judged with the plus-four estimate (two extra wins and
+ * two extra losses) so a small one-sided sample, whose plain ± is 0, never
+ * counts as precise.
+ */
+function precise(t: Analysis): boolean {
+    const n = t.games + 4;
+    const p = (t.wins + t.ties / 2 + 2) / n;
+    return 1.96 * Math.sqrt((p * (1 - p)) / n) < REST_BELOW;
+}
 
 /** Spec "Web: state explorer": the position being explored and its answer. */
 export class ExplorerController {
@@ -37,6 +50,8 @@ export class ExplorerController {
     private looping = false;
     private batch = MIN_BATCH;
     private batchKey = '';
+    /** Ends the current rest between batches early (an edit or a pause). */
+    private wake: (() => void) | null = null;
 
     constructor(
         engine: Engine,
@@ -81,6 +96,7 @@ export class ExplorerController {
     /** The explorer is the visible view (route and tab): analysis runs only then. */
     setActive(on: boolean) {
         this.active = on;
+        this.wake?.();
         void this.analyse();
     }
 
@@ -135,6 +151,7 @@ export class ExplorerController {
         this.showAll = false;
         try { this.store.set(SAVE, encode(p)); } catch { /* storage unavailable */ }
         void this.evaluate();
+        this.wake?.();
         void this.analyse();
     }
 
@@ -196,7 +213,9 @@ export class ExplorerController {
                 this.batch = Math.min(MAX_BATCH, Math.max(MIN_BATCH, Math.round((count * BATCH_MS) / Math.max(ms, 1))));
                 const cur = this.analysis?.key === key ? this.analysis.totals : P.ZERO_ANALYSIS;
                 if (P.analysisKey(this.pos) === key && cur.games === prev.games) {
-                    this.analysis = { key, totals: P.addAnalysis(cur, r) };
+                    const totals = P.addAnalysis(cur, r);
+                    this.analysis = { key, totals };
+                    if (precise(totals) && this.active) await this.rest(ms);
                 }
             }
         } catch {
@@ -205,5 +224,16 @@ export class ExplorerController {
             this.looping = false;
             this.analysing = false;
         }
+    }
+
+    private rest(ms: number) {
+        return new Promise<void>((done) => {
+            const end = () => {
+                if (this.wake === end) this.wake = null;
+                done();
+            };
+            this.wake = end;
+            this.later(end, ms);
+        });
     }
 }
