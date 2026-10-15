@@ -21,6 +21,9 @@ pub mod train;
 #[cfg(feature = "dqn")]
 pub mod pair_train;
 
+#[cfg(feature = "dqn")]
+pub mod win_train;
+
 pub mod pair;
 pub mod win;
 
