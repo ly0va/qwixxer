@@ -3,6 +3,7 @@
     import type { GameController } from '../game/controller.svelte';
     import { DESK_H, DESK_W, deskScale } from '../game/layout';
     import ExSheet from './ExSheet.svelte';
+    import Icon from './Icon.svelte';
     import Menu from './Menu.svelte';
     import MovesList from './MovesList.svelte';
     import type { Nav } from './nav';
@@ -39,7 +40,7 @@
                     Swap sides
                 </button>
                 <button type="button" class="btn small" disabled={!c.view} onclick={() => c.view && x.loadView(c.view)}>
-                    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12M7 10l5 5 5-5M4 15v4a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-4"></path></svg>
+                    <Icon name="die" size={16} />
                     Explore current game
                 </button>
                 <span class="hint">Tap squares, locks and strike boxes to set up any position.</span>

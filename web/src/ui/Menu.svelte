@@ -1,5 +1,6 @@
 <script lang="ts">
     import type { GameController } from '../game/controller.svelte';
+    import Icon from './Icon.svelte';
     import type { Nav } from './nav';
     // `tabs`: the desktop header's Play / Explore tabs already switch views.
     let { c, nav, tabs = false }: { c: GameController; nav: Nav; tabs?: boolean } = $props();
@@ -60,24 +61,24 @@
         <div class="pop" role="menu" aria-label="Menu">
             {#if nav.current === 'play'}
                 <button type="button" role="menuitem" class="item" class:armed aria-disabled={c.busy} onclick={newGame}>
-                    {armed ? 'Abandon game?' : 'New game'}
+                    <span class="lab"><Icon name="plus" />{armed ? 'Abandon game?' : 'New game'}</span>
                 </button>
-                {#if !tabs}<button type="button" role="menuitem" class="item" onclick={() => { c.menuOpen = false; nav.explorer(); }}>Explorer</button>{/if}
+                {#if !tabs}<button type="button" role="menuitem" class="item" onclick={() => { c.menuOpen = false; nav.explorer(); }}><span class="lab"><Icon name="search" />Explorer</span></button>{/if}
             {:else if !tabs}
-                <button type="button" role="menuitem" class="item" onclick={() => { c.menuOpen = false; nav.play(); }}>Back to game</button>
+                <button type="button" role="menuitem" class="item" onclick={() => { c.menuOpen = false; nav.play(); }}><span class="lab"><Icon name="die" />Back to game</span></button>
             {/if}
             <button type="button" role="menuitemcheckbox" class="item" aria-checked={c.theme === 'dark'} onclick={() => c.toggleTheme()}>
-                <span>Dark mode</span>
+                <span class="lab"><Icon name="moon" />Dark mode</span>
                 <span class="switch" class:on={c.theme === 'dark'} aria-hidden="true"><span></span></span>
             </button>
             <a role="menuitem" class="item" href="https://m.media-amazon.com/images/I/A1Y4fDIZZmL.pdf" target="_blank" rel="noopener noreferrer"
                 onclick={() => (c.menuOpen = false)}>
-                <span>Rules</span>
+                <span class="lab"><Icon name="book" />Rules</span>
                 <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="var(--muted)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"></path></svg>
             </a>
             <a role="menuitem" class="item" href="https://github.com/ly0va/qwixxer" target="_blank" rel="noopener noreferrer"
                 onclick={() => (c.menuOpen = false)}>
-                <span>Source code</span>
+                <span class="lab"><Icon name="github" />Source code</span>
                 <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="var(--muted)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"></path></svg>
             </a>
             <p class="legal">Unofficial fan project. Qwixx is a trademark of Nürnberger-Spielkarten-Verlag, published in North America by Gamewright. Not affiliated with or endorsed by either.</p>
@@ -98,6 +99,7 @@
         display: flex; align-items: center; justify-content: space-between; gap: 12px;
         font-family: var(--text); font-weight: 600; font-size: 15px; text-align: left; text-decoration: none; cursor: pointer;
     }
+    .lab { display: flex; align-items: center; gap: 10px; }
     .legal { margin: 4px 12px 6px; max-width: 220px; font-size: 11px; line-height: 1.35; color: var(--muted); }
     .item:hover { background: var(--log-bg); }
     .item.armed { background: var(--ink); color: var(--ground); }
