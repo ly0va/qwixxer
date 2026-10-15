@@ -94,4 +94,12 @@ impl WasmExplorer {
         let answer = self.inner.explore(&pos).map_err(js)?;
         Ok(serde_json::to_string(&answer).unwrap())
     }
+
+    /// Play-out totals for games `start .. start + count` (spec
+    /// `2026-10-15-explorer-analysis-design.md`), as JSON.
+    pub fn analyze(&self, position: &str, start: u32, count: u32) -> Result<String, JsError> {
+        let pos: explorer::Position = serde_json::from_str(position).map_err(js)?;
+        let a = self.inner.analyze(&pos, start, count).map_err(js)?;
+        Ok(serde_json::to_string(&a).unwrap())
+    }
 }

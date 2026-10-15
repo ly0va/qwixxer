@@ -13,8 +13,11 @@ use qwixxer::state::{Mark, State};
 use qwixxer::strategy::bot_impl::{
     active_phase1_choices, active_phase2_choices, eval_decision, passive_phase1_choices, Decision,
 };
-use qwixxer::strategy::search::{phi, SearchBot, WinProb};
+use qwixxer::strategy::search::{context_seed, phi, sample_player_seed, SearchBot, WinProb};
+use qwixxer::strategy::sim::{BatchedRollouts, SimGame};
 use qwixxer::strategy::{Bot, Strategy};
+use rand::rngs::SmallRng;
+use rand::SeedableRng;
 use serde::{Deserialize, Serialize};
 use std::slice::from_ref;
 
@@ -93,6 +96,19 @@ pub struct Answer {
     /// On your roll (dice set, game not over): the white-sum mark the
     /// opponent is predicted to make at the same time (`mark: null` = pass).
     pub opponent_white: Option<OpponentWhite>,
+}
+
+/// Spec "Engine" (`2026-10-15-explorer-analysis-design.md`): totals of
+/// play-out games `start .. start + count` of a position. Batches add up.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Analysis {
+    pub games: u32,
+    /// Games you win (higher final score) and games tied.
+    pub wins: u32,
+    pub ties: u32,
+    /// Sum, and sum of squares, of your final score minus the opponent's.
+    pub diff_sum: f64,
+    pub diff_sq_sum: f64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -318,6 +334,56 @@ impl Explorer {
             moves,
             opponent_white,
         })
+    }
+
+    /// Plays games `start .. start + count` from the position before the
+    /// roll (its dice ignored), the roller first, both seats Master (the
+    /// pair net, batched across games). Game k's dice depend only on the
+    /// position and k, so batches compose and replay exactly.
+    pub fn analyze(&self, pos: &Position, start: u32, count: u32) -> Result<Analysis, String> {
+        pos.validate()?;
+        let (you, opp, locked) = states(pos);
+        if you.strikes >= 4 || opp.strikes >= 4 || n_locked(locked) >= 2 {
+            return Err("the game is over".into());
+        }
+        let first = match pos.roller {
+            Roller::You => 0,
+            Roller::Opponent => 1,
+        };
+        let seed = context_seed(&you, from_ref(&opp), [0; 6]) ^ first as u64;
+        let sims = (start..start + count)
+            .map(|k| SimGame {
+                states: vec![you, opp],
+                active: first,
+                rngs: (0..2)
+                    .map(|p| SmallRng::seed_from_u64(sample_player_seed(seed, k as usize, p)))
+                    .collect(),
+                over: false,
+            })
+            .collect();
+        let mut driver = BatchedRollouts::new(&self.net, sims);
+        let mut turns = 0;
+        while !driver.all_over() {
+            driver.step_turn();
+            turns += 1;
+            assert!(turns <= 200, "play-out exceeded 200 turns");
+        }
+        let mut a = Analysis {
+            games: 0,
+            wins: 0,
+            ties: 0,
+            diff_sum: 0.0,
+            diff_sq_sum: 0.0,
+        };
+        for sim in &driver.sims {
+            let d = (sim.states[0].count_points() - sim.states[1].count_points()) as f64;
+            a.games += 1;
+            a.wins += (d > 0.0) as u32;
+            a.ties += (d == 0.0) as u32;
+            a.diff_sum += d;
+            a.diff_sq_sum += d * d;
+        }
+        Ok(a)
     }
 
     fn eval(&self, you: &State, opp: &State) -> Eval {
@@ -648,5 +714,55 @@ mod tests {
             unexplained.is_empty(),
             "Master off rank 1 without a note: {unexplained:?}"
         );
+    }
+    #[test]
+    fn analysis_batches_compose_and_replay() {
+        let ex = Explorer::new();
+        let p = pos(None, Roller::You);
+        let a = ex.analyze(&p, 0, 40).unwrap();
+        let b = ex.analyze(&p, 40, 60).unwrap();
+        let all = ex.analyze(&p, 0, 100).unwrap();
+        assert_eq!(all.games, 100);
+        assert_eq!(
+            (a.games + b.games, a.wins + b.wins, a.ties + b.ties),
+            (all.games, all.wins, all.ties)
+        );
+        // Diffs are integers, so f64 sums are exact.
+        assert_eq!(a.diff_sum + b.diff_sum, all.diff_sum);
+        assert_eq!(a.diff_sq_sum + b.diff_sq_sum, all.diff_sq_sum);
+        assert_eq!(ex.analyze(&p, 0, 100).unwrap(), all);
+    }
+
+    #[test]
+    fn analysis_ignores_the_dice_but_not_the_roller() {
+        let ex = Explorer::new();
+        let mut p = pos(None, Roller::You);
+        p.you.marks[0][2] = true; // red 4
+        let base = ex.analyze(&p, 0, 60).unwrap();
+        let mut with_dice = p.clone();
+        with_dice.dice = Some([6, 6, 1, 2, 3, 4]);
+        assert_eq!(ex.analyze(&with_dice, 0, 60).unwrap(), base);
+        let mut theirs = p.clone();
+        theirs.roller = Roller::Opponent;
+        assert_ne!(ex.analyze(&theirs, 0, 60).unwrap(), base);
+    }
+
+    #[test]
+    fn analysis_refuses_a_finished_game() {
+        let ex = Explorer::new();
+        let mut p = pos(None, Roller::You);
+        p.opponent.strikes = 4;
+        assert!(ex.analyze(&p, 0, 10).is_err());
+        let mut p = pos(None, Roller::You);
+        p.locked = [true, true, false, false];
+        assert!(ex.analyze(&p, 0, 10).is_err());
+    }
+
+    #[test]
+    fn analysis_of_the_empty_position_is_roughly_even() {
+        let a = Explorer::new().analyze(&pos(None, Roller::You), 0, 300).unwrap();
+        let p = (a.wins as f64 + a.ties as f64 / 2.0) / a.games as f64;
+        assert!((0.35..0.65).contains(&p), "p {p}");
+        assert!(a.diff_sq_sum > 0.0);
     }
 }
