@@ -90,10 +90,11 @@
     .txt { font-size: 14px; font-weight: 600; }
     .tag { height: 22px; padding: 0 7px; border-radius: 11px; display: inline-flex; align-items: center; font-size: 12px; font-weight: 700; box-shadow: inset 0 0 0 1.5px var(--muted); color: var(--soft); box-sizing: border-box; }
     .tag.plus { background: var(--ink); color: var(--ground); box-shadow: none; }
-    /* The tip spans its row (not the icon), so it never runs off the card. */
+    /* The tip sits in its row (not the icon), so it never runs off the card;
+       it is only as wide as its text. */
     .info { display: inline-flex; }
     .info button { width: 28px; height: 28px; margin: -3px 0; padding: 0; border: none; border-radius: 50%; background: none; color: var(--muted); display: flex; align-items: center; justify-content: center; cursor: pointer; }
-    .tip { display: none; position: absolute; z-index: 4; bottom: calc(100% - 4px); left: 30px; right: 8px; padding: 8px 10px; border-radius: 10px; background: var(--ink); color: var(--ground); font-size: 13px; font-weight: 500; line-height: 1.35; box-shadow: 0 6px 20px var(--shadow); }
+    .tip { display: none; position: absolute; z-index: 4; bottom: calc(100% - 4px); left: 30px; max-width: calc(100% - 38px); width: max-content; box-sizing: border-box; padding: 8px 10px; border-radius: 10px; background: var(--ink); color: var(--ground); font-size: 13px; font-weight: 500; line-height: 1.35; box-shadow: 0 6px 20px var(--shadow); }
     .info:hover .tip, .info:focus-within .tip, .info.open .tip { display: block; }
     .pct { width: 84px; display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
     .pct b { font-family: var(--cond); font-weight: 800; font-size: 22px; line-height: 1; font-variant-numeric: tabular-nums; }

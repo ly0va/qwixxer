@@ -35,8 +35,8 @@ a link and opens identically.
   shows "Explorer" in the same place, then a copy-link button and "⋯".
 - The "⋯" menu, game: New game · Explore this position · Explorer · Dark mode
   · Rules · Source code (+ notice). Explorer: Back to game · Dark mode · Rules
-  · Source code (+ notice). On desktop the same items appear; the tabs are an
-  extra route, not a replacement.
+  · Source code (+ notice). On desktop the tabs replace "Explorer" and "Back
+  to game", so the menu leaves them out.
 - "Explore this position" copies the game; "Explorer" opens the explorer's
   last position. Neither changes the game in progress, and "Back to game" (or
   the Play tab) returns to it exactly as it was. If the bot is mid-think when

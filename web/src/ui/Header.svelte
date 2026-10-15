@@ -14,7 +14,7 @@
     <div class="right">
         <span>You <b>{c.view?.you.score ?? 0}</b></span>
         <span class="muted">Bot <b>{c.view?.bot.score ?? 0}</b></span>
-        <Menu {c} {nav} />
+        <Menu {c} {nav} tabs />
     </div>
 </header>
 

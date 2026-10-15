@@ -422,7 +422,8 @@ table below); **Master** (`master`) = the static pair net; **Student**
 (`student`) = the GA champion; **Newbie** (`newbie`) = the hand-written
 Conservative. The header's "⋯" menu (`Menu.svelte`, both layouts) holds New
 game (two clicks mid-game), Explore this position, Explorer (Back to game in
-the explorer) and the dark-mode switch. `champion.txt` and `pair_model/model.mpk` are
+the explorer) and the dark-mode switch; on desktop, where the Play / Explore
+tabs switch views, it drops Explorer and Back to game. `champion.txt` and `pair_model/model.mpk` are
 embedded at compile time via `include_bytes!`, so rebuild after changing them.
 
 **`WasmGame`** (`lib.rs`) wraps a `Session` for wasm-bindgen with JSON in/out:
