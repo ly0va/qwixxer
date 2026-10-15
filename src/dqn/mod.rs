@@ -22,6 +22,7 @@ pub mod train;
 pub mod pair_train;
 
 pub mod pair;
+pub mod win;
 
 use crate::state::State;
 use crate::strategy::Bot;
