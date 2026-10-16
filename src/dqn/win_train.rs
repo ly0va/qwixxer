@@ -586,16 +586,25 @@ pub fn rollout_positions(
     k: usize,
     blend: f32,
 ) -> Vec<([f32; WIN_INPUTS], f32)> {
-    const BLOCK: u64 = 64;
+    // Games are labelled one per task, and a game's cost grows with the
+    // square of its length: size each batch from the positions still needed
+    // (~50 per game) so all cores stay busy past the slowest games. Seeds
+    // depend only on the game index, so batching never changes the output.
     let mut out = Vec::with_capacity(count);
-    let mut block = 0u64;
+    let mut games = 0u64;
     while out.len() < count {
-        let chunk: Vec<Vec<([f32; WIN_INPUTS], f32)>> = (0..BLOCK)
+        let per_game = if games == 0 {
+            50.0
+        } else {
+            out.len() as f64 / games as f64
+        };
+        let batch = (((count - out.len()) as f64 / per_game).ceil() as u64).max(64);
+        let chunk: Vec<Vec<([f32; WIN_INPUTS], f32)>> = (games..games + batch)
             .into_par_iter()
             .map_init(
                 || PairStrategy::load(pair_dir),
                 |pair, g| {
-                    let game_seed = seed.wrapping_add((block * BLOCK + g).wrapping_mul(1000));
+                    let game_seed = seed.wrapping_add(g.wrapping_mul(1000));
                     let bufs: [Rc<RefCell<Vec<Snap>>>; 2] = Default::default();
                     let players: Vec<Player> = (0..2)
                         .map(|i| {
@@ -637,7 +646,7 @@ pub fn rollout_positions(
             )
             .collect();
         out.extend(chunk.into_iter().flatten());
-        block += 1;
+        games += batch;
     }
     out.truncate(count);
     out
