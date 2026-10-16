@@ -391,6 +391,12 @@ enum Commands {
         /// Save each fitted net to <SAVE>/w<W> (bench it with QWIXXER_WIN_MODEL=<SAVE>/w<W> ... bench win pair)
         #[arg(long)]
         save: Option<String>,
+        /// Label with K full-game Master rollouts per (turn-end) position instead of Master's static P(win); 0 = static
+        #[arg(long, default_value = "0")]
+        rollouts: usize,
+        /// With --rollouts: target = blend·rollout P + (1 − blend)·Master's static P
+        #[arg(long, default_value = "1.0")]
+        blend: f32,
     },
 }
 
@@ -897,6 +903,8 @@ fn main() {
             epochs,
             widths,
             save,
+            rollouts,
+            blend,
         }) => {
             dqn::win_train::capacity_check(&dqn::win_train::FitCfg {
                 train,
@@ -905,6 +913,8 @@ fn main() {
                 widths,
                 lr: 1e-3,
                 save,
+                rollouts,
+                blend,
             });
         }
         None => {

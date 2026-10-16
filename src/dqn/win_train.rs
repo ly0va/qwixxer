@@ -9,7 +9,8 @@ use crate::dqn::win::{input_tensor, sigmoid, swap_input, win_input, ManualWinNet
 use crate::dqn::{MyBackend, TRAIN_SEED};
 use crate::game::{Game, Player};
 use crate::state::{Mark, State};
-use crate::strategy::search::WinProb;
+use crate::strategy::search::{phase2_entry, rollout_final_states, WinProb};
+use crate::strategy::sim::SimGame;
 use crate::strategy::{active_phase1_impl, active_phase2_impl, passive_phase1_impl, Bot, Strategy};
 use burn::{
     backend::Autodiff,
@@ -490,6 +491,116 @@ pub fn master_positions(count: usize, seed: u64, pair_dir: &str) -> Vec<([f32; W
     out
 }
 
+/// Plays a bot greedily and records (my state, opponent) at the end of each
+/// of my active turns: after phase 2, the boundary a rollout restarts from.
+struct TurnEnds<B: Bot> {
+    bot: B,
+    recorded: Rc<RefCell<Vec<(State, State)>>>,
+}
+
+impl<B: Bot> std::fmt::Debug for TurnEnds<B> {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "TurnEnds")
+    }
+}
+
+impl<B: Bot> Strategy for TurnEnds<B> {
+    fn active_phase1(&mut self, state: &State, opp_states: &[State], dice: [u8; 6]) -> Option<Mark> {
+        active_phase1_impl(&self.bot, state, opp_states, dice)
+    }
+
+    fn active_phase2(&mut self, state: &State, opp_states: &[State], dice: [u8; 6], has_marked: bool) -> Option<Mark> {
+        let mark = active_phase2_impl(&self.bot, state, opp_states, dice, has_marked);
+        let mut no_mark = *state;
+        if !has_marked {
+            no_mark.apply_strike();
+        }
+        self.recorded
+            .borrow_mut()
+            .push((after(state, mark, no_mark), opp_states[0]));
+        mark
+    }
+
+    fn passive_phase1(&mut self, state: &State, opp_states: &[State], dice: [u8; 6], _active: usize) -> Option<Mark> {
+        passive_phase1_impl(&self.bot, state, opp_states, dice)
+    }
+}
+
+/// P(me finishes ahead, ties ½) for each turn-end (me, opp), measured by `k`
+/// full-game CRN rollouts with `bot` playing both seats, the opponent to act
+/// first. A finished position's label is its exact result.
+pub fn rollout_labels(bot: &PairStrategy, positions: &[(State, State)], k: usize, seed: u64) -> Vec<f32> {
+    if positions.is_empty() {
+        return Vec::new();
+    }
+    let entries: Vec<(Vec<State>, bool)> = positions.iter().map(|(me, opp)| phase2_entry(*me, &[*opp])).collect();
+    rollout_final_states(bot, &entries, seed, k, 1, false)
+        .iter()
+        .map(|finals| finals.iter().map(|f| SimGame::outcome(f)).sum::<f32>() / finals.len() as f32)
+        .collect()
+}
+
+/// Turn-end positions from Master-vs-Master games, labelled with
+/// `blend`·(Master's `k`-rollout P(win)) + (1 − `blend`)·(Master's static
+/// P(win)): the play-out value Master+'s search consults. Deterministic per
+/// `seed`, in fixed blocks of games like [`master_positions`].
+pub fn rollout_positions(
+    count: usize,
+    seed: u64,
+    pair_dir: &str,
+    k: usize,
+    blend: f32,
+) -> Vec<([f32; WIN_INPUTS], f32)> {
+    const BLOCK: u64 = 64;
+    let mut out = Vec::with_capacity(count);
+    let mut block = 0u64;
+    while out.len() < count {
+        let chunk: Vec<Vec<([f32; WIN_INPUTS], f32)>> = (0..BLOCK)
+            .into_par_iter()
+            .map_init(
+                || PairStrategy::load(pair_dir),
+                |pair, g| {
+                    let game_seed = seed.wrapping_add((block * BLOCK + g).wrapping_mul(1000));
+                    let bufs: [Rc<RefCell<Vec<(State, State)>>>; 2] = Default::default();
+                    let players: Vec<Player> = (0..2)
+                        .map(|i| {
+                            let bot = PairStrategy {
+                                model: pair.model.clone(),
+                                device: pair.device,
+                                net: pair.net.clone(),
+                            };
+                            let rec = TurnEnds {
+                                bot,
+                                recorded: bufs[i].clone(),
+                            };
+                            Player::new(
+                                Box::new(rec),
+                                Box::new(SmallRng::seed_from_u64(game_seed.wrapping_add(i as u64))),
+                            )
+                        })
+                        .collect();
+                    Game::new(players).play();
+                    let ends: Vec<(State, State)> = bufs.iter().flat_map(|b| b.take()).collect();
+                    // Inputs and Master's estimate on the lock-propagated boards.
+                    let boards: Vec<Vec<State>> = ends.iter().map(|(me, opp)| phase2_entry(*me, &[*opp]).0).collect();
+                    let groups: Vec<(&State, &[State])> = boards.iter().map(|b| (&b[0], &b[1..])).collect();
+                    let stat = pair.win_prob_multi(&groups);
+                    let roll = rollout_labels(pair, &ends, k, game_seed ^ 0x5011_0075);
+                    boards
+                        .iter()
+                        .zip(stat.into_iter().zip(roll))
+                        .map(|(b, (s, r))| (win_input(&b[0], &b[1]), blend * r + (1.0 - blend) * s))
+                        .collect()
+                },
+            )
+            .collect();
+        out.extend(chunk.into_iter().flatten());
+        block += 1;
+    }
+    out.truncate(count);
+    out
+}
+
 /// Mean |sigmoid(logit) − target| over `data`.
 pub fn mean_abs_error(net: &ManualWinNet, data: &[([f32; WIN_INPUTS], f32)]) -> f32 {
     let total: f32 = data.iter().map(|(x, p)| (sigmoid(net.logit(x)) - p).abs()).sum();
@@ -504,6 +615,11 @@ pub struct FitCfg {
     pub lr: f64,
     /// Save each fitted net as a loadable model dir `<save>/w<W>`.
     pub save: Option<String>,
+    /// 0: label positions with Master's static P(win). K > 0: label
+    /// turn-end positions with K-rollout P(win) blended by `blend`
+    /// (see [`rollout_positions`]).
+    pub rollouts: usize,
+    pub blend: f32,
 }
 
 /// Held-out MAE at which a width counts as big enough (spec "Capacity check").
@@ -515,8 +631,12 @@ pub const FIT_MAE: f32 = 0.02;
 pub fn capacity_check(cfg: &FitCfg) -> Vec<(usize, f32)> {
     let device = Default::default();
     println!("Generating {} training and {} held-out positions…", cfg.train, cfg.test);
-    let train = master_positions(cfg.train, TRAIN_SEED, "pair_model");
-    let test = master_positions(cfg.test, TRAIN_SEED ^ 0x7E57_0000_0000, "pair_model");
+    let positions = |count, seed| match cfg.rollouts {
+        0 => master_positions(count, seed, "pair_model"),
+        k => rollout_positions(count, seed, "pair_model", k, cfg.blend),
+    };
+    let train = positions(cfg.train, TRAIN_SEED);
+    let test = positions(cfg.test, TRAIN_SEED ^ 0x7E57_0000_0000);
     let mut results = Vec::new();
     for &w in &cfg.widths {
         <Ad as Backend>::seed(&device, TRAIN_SEED);
@@ -538,9 +658,15 @@ pub fn capacity_check(cfg: &FitCfg) -> Vec<(usize, f32)> {
         println!("  W = {w:>3}: train loss {loss:.4}, held-out MAE {mae:.4}");
         results.push((w, mae));
     }
-    match results.iter().find(|(_, mae)| *mae <= FIT_MAE) {
-        Some((w, _)) => println!("Smallest width with MAE ≤ {FIT_MAE}: W = {w}"),
-        None => println!("No width reached MAE ≤ {FIT_MAE}: decide before training"),
+    if cfg.rollouts > 0 {
+        // Rollout labels carry their own sampling noise, so MAE has a floor
+        // well above FIT_MAE; judge these nets by benching them instead.
+        println!("(rollout labels: MAE includes label noise; bench the saved nets)");
+    } else {
+        match results.iter().find(|(_, mae)| *mae <= FIT_MAE) {
+            Some((w, _)) => println!("Smallest width with MAE ≤ {FIT_MAE}: W = {w}"),
+            None => println!("No width reached MAE ≤ {FIT_MAE}: decide before training"),
+        }
     }
     results
 }
@@ -748,6 +874,48 @@ mod tests {
         assert_eq!(master_positions(300, 21, "pair_model")[17].1, data[17].1);
     }
 
+    fn marked(row: usize, count: usize, strikes: u8) -> State {
+        let mut marks = [[false; 11]; 4];
+        marks[row][..count].iter_mut().for_each(|m| *m = true);
+        State::from_marks(&marks, strikes)
+    }
+
+    #[test]
+    fn rollout_label_of_a_finished_position_is_its_result() {
+        let pair = PairStrategy::load("pair_model");
+        // Opponent on 4 strikes: the game is over; me 28 vs opp −20.
+        let (me, opp) = (marked(0, 7, 0), marked(1, 0, 4));
+        assert_eq!(rollout_labels(&pair, &[(me, opp)], 8, 1), vec![1.0]);
+        assert_eq!(rollout_labels(&pair, &[(opp, me)], 8, 1), vec![0.0]);
+    }
+
+    #[test]
+    fn rollout_label_of_a_big_lead_is_near_one_and_seeded() {
+        let pair = PairStrategy::load("pair_model");
+        let lead = (marked(0, 8, 0), marked(1, 0, 3));
+        let even = (State::default(), State::default());
+        let labels = rollout_labels(&pair, &[lead, even], 64, 7);
+        assert!(labels[0] > 0.9, "{labels:?}");
+        assert!((0.2..0.8).contains(&labels[1]), "{labels:?}");
+        assert_eq!(rollout_labels(&pair, &[lead, even], 64, 7), labels);
+    }
+
+    #[test]
+    fn rollout_positions_blend_rollouts_with_masters_estimate() {
+        let roll = rollout_positions(60, 5, "pair_model", 8, 1.0);
+        let stat = rollout_positions(60, 5, "pair_model", 8, 0.0);
+        let half = rollout_positions(60, 5, "pair_model", 8, 0.5);
+        assert_eq!(roll.len(), 60);
+        assert!(roll.iter().all(|(_, p)| (0.0..=1.0).contains(p)));
+        for ((r, s), h) in roll.iter().zip(&stat).zip(&half) {
+            assert_eq!((r.0, s.0), (h.0, h.0), "same positions for every blend");
+            assert!((h.1 - (r.1 + s.1) / 2.0).abs() < 1e-5);
+        }
+        // Rollout labels are not Master's estimate.
+        assert!(roll.iter().zip(&stat).any(|(r, s)| (r.1 - s.1).abs() > 0.05));
+        assert_eq!(rollout_positions(60, 5, "pair_model", 8, 1.0), roll);
+    }
+
     #[test]
     fn mean_abs_error_is_zero_against_the_nets_own_predictions() {
         let n = net(6);
@@ -838,6 +1006,8 @@ mod tests {
             widths: vec![8, 12],
             lr: 1e-3,
             save: Some(dir.clone()),
+            rollouts: 0,
+            blend: 1.0,
         };
         let results = capacity_check(&cfg);
         let test = master_positions(cfg.test, TRAIN_SEED ^ 0x7E57_0000_0000, "pair_model");
