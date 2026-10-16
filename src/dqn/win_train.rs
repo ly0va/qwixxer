@@ -27,7 +27,7 @@ use std::sync::Arc;
 
 pub type Ad = Autodiff<MyBackend>;
 
-/// TD(λ) trace decay, as for the pair net.
+/// Default TD(λ) trace decay, as for the pair net.
 pub const LAMBDA: f32 = 0.8;
 
 /// One player's game: the input after each of their decisions, and the
@@ -66,12 +66,12 @@ pub fn lambda_returns(ps: &[f32], outcome: f32, lambda: f32) -> Vec<f32> {
 
 /// Rebuild every chain's targets with the current net (spec "Fresh
 /// targets"): stored inputs paired with their λ-returns.
-pub fn fresh_targets(net: &ManualWinNet, chains: &[&Chain]) -> Vec<([f32; WIN_INPUTS], f32)> {
+pub fn fresh_targets(net: &ManualWinNet, chains: &[&Chain], lambda: f32) -> Vec<([f32; WIN_INPUTS], f32)> {
     chains
         .par_iter()
         .flat_map_iter(|c| {
             let ps: Vec<f32> = net.logits(&c.inputs).into_iter().map(sigmoid).collect();
-            let g = lambda_returns(&ps, c.outcome, LAMBDA);
+            let g = lambda_returns(&ps, c.outcome, lambda);
             c.inputs.iter().copied().zip(g).collect::<Vec<_>>()
         })
         .collect()
@@ -311,6 +311,8 @@ pub struct WinTrainCfg {
     /// ε at iteration 0, and the lowest ε the schedule decays to.
     pub epsilon_start: f32,
     pub epsilon_floor: f32,
+    /// TD(λ) trace decay for the targets: 0 = one-step bootstrap, 1 = outcome only.
+    pub lambda: f32,
     /// Warm start: begin a fresh run from this model dir (its config and
     /// weights; `width` is ignored).
     pub init: Option<String>,
@@ -418,7 +420,7 @@ pub fn self_play_train(cfg: &WinTrainCfg) -> WinStrategy {
             buffer.pop_front();
         }
         let refs: Vec<&Chain> = buffer.iter().flatten().collect();
-        let data = fresh_targets(&net, &refs);
+        let data = fresh_targets(&net, &refs, cfg.lambda);
         let (trained, loss) = train_epochs(model, &data, cfg.epochs, lr, TRAIN_SEED.wrapping_add(it as u64));
         model = trained;
 
@@ -606,8 +608,8 @@ mod tests {
         );
         let old = ManualWinNet::from_model(&old.valid());
         let new = net(2);
-        let t_old = fresh_targets(&old, &[&chain]);
-        let t_new = fresh_targets(&new, &[&chain]);
+        let t_old = fresh_targets(&old, &[&chain], LAMBDA);
+        let t_new = fresh_targets(&new, &[&chain], LAMBDA);
         let ps: Vec<f32> = new.logits(&chain.inputs).into_iter().map(sigmoid).collect();
         let expected = lambda_returns(&ps, 1.0, LAMBDA);
         assert_eq!(t_new.len(), chain.inputs.len());
@@ -619,6 +621,22 @@ mod tests {
             t_old.iter().zip(&t_new).any(|(a, b)| (a.1 - b.1).abs() > 1e-2),
             "targets ignored the net"
         );
+    }
+
+    #[test]
+    fn fresh_targets_use_the_given_lambda() {
+        let chain = Chain {
+            inputs: positions(),
+            outcome: 0.0,
+        };
+        let n = net(4);
+        let ps: Vec<f32> = n.logits(&chain.inputs).into_iter().map(sigmoid).collect();
+        // λ = 0: one-step targets, each the net's P of the next input.
+        let t0: Vec<f32> = fresh_targets(&n, &[&chain], 0.0).into_iter().map(|(_, t)| t).collect();
+        assert_eq!(&t0[..ps.len() - 1], &ps[1..]);
+        assert_eq!(t0[ps.len() - 1], 0.0);
+        // λ = 1: every target is the outcome.
+        assert!(fresh_targets(&n, &[&chain], 1.0).iter().all(|(_, t)| *t == 0.0));
     }
 
     #[test]
@@ -697,6 +715,7 @@ mod tests {
             lr_end: 4e-5,
             epsilon_start: 0.2,
             epsilon_floor: 0.07,
+            lambda: LAMBDA,
             init: None,
             pair_dir: "pair_model".into(),
         };
@@ -844,6 +863,7 @@ mod tests {
             lr_end: 4e-5,
             epsilon_start: 0.2,
             epsilon_floor: 0.07,
+            lambda: LAMBDA,
             init: None,
             pair_dir: "pair_model".into(),
         }

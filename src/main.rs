@@ -357,6 +357,9 @@ enum Commands {
         /// Lowest exploration rate the schedule decays to
         #[arg(long, default_value = "0.07")]
         epsilon_floor: f32,
+        /// TD(λ) trace decay: 0 = bootstrap from the next position only, 1 = game outcome only
+        #[arg(long, default_value = "0.8")]
+        lambda: f32,
         /// Warm start: begin a fresh run from this model dir (e.g. win_fit/w64); --width is then ignored
         #[arg(long)]
         init: Option<String>,
@@ -863,6 +866,7 @@ fn main() {
             lr_end,
             epsilon_start,
             epsilon_floor,
+            lambda,
             init,
             width,
             buffer,
@@ -881,6 +885,7 @@ fn main() {
                 lr_end,
                 epsilon_start,
                 epsilon_floor,
+                lambda,
                 init,
                 pair_dir: "pair_model".into(),
             });
