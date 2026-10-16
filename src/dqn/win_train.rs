@@ -9,7 +9,7 @@ use crate::dqn::win::{input_tensor, sigmoid, swap_input, win_input, ManualWinNet
 use crate::dqn::{MyBackend, TRAIN_SEED};
 use crate::game::{Game, Player};
 use crate::state::{Mark, State};
-use crate::strategy::search::{phase2_entry, rollout_final_states, WinProb};
+use crate::strategy::search::{passive_entry, passive_first_active, phase2_entry, rollout_final_states, WinProb};
 use crate::strategy::sim::SimGame;
 use crate::strategy::{active_phase1_impl, active_phase2_impl, passive_phase1_impl, Bot, Strategy};
 use burn::{
@@ -491,20 +491,30 @@ pub fn master_positions(count: usize, seed: u64, pair_dir: &str) -> Vec<([f32; W
     out
 }
 
-/// Plays a bot greedily and records (my state, opponent) at the end of each
-/// of my active turns: after phase 2, the boundary a rollout restarts from.
-struct TurnEnds<B: Bot> {
-    bot: B,
-    recorded: Rc<RefCell<Vec<(State, State)>>>,
+/// One labelled snapshot: the (me, opp) the net sees, and where a rollout
+/// of it starts (all-player boards with the current turn completed, whether
+/// the game is over, and the seat that acts first).
+struct Snap {
+    seen: (State, State),
+    entry: (Vec<State>, bool),
+    first_active: usize,
 }
 
-impl<B: Bot> std::fmt::Debug for TurnEnds<B> {
+/// Plays a bot greedily and records a [`Snap`] at the pair recorder's
+/// cadence (as `play_recorded`): after each active phase 2, and after each
+/// passive decision that had a white move to consider.
+struct Snapshots<B: Bot> {
+    bot: B,
+    recorded: Rc<RefCell<Vec<Snap>>>,
+}
+
+impl<B: Bot> std::fmt::Debug for Snapshots<B> {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "TurnEnds")
+        write!(f, "Snapshots")
     }
 }
 
-impl<B: Bot> Strategy for TurnEnds<B> {
+impl<B: Bot> Strategy for Snapshots<B> {
     fn active_phase1(&mut self, state: &State, opp_states: &[State], dice: [u8; 6]) -> Option<Mark> {
         active_phase1_impl(&self.bot, state, opp_states, dice)
     }
@@ -515,35 +525,60 @@ impl<B: Bot> Strategy for TurnEnds<B> {
         if !has_marked {
             no_mark.apply_strike();
         }
-        self.recorded
-            .borrow_mut()
-            .push((after(state, mark, no_mark), opp_states[0]));
+        let post = after(state, mark, no_mark);
+        self.recorded.borrow_mut().push(Snap {
+            seen: (post, opp_states[0]),
+            entry: phase2_entry(post, &opp_states[..1]),
+            first_active: 1,
+        });
         mark
     }
 
-    fn passive_phase1(&mut self, state: &State, opp_states: &[State], dice: [u8; 6], _active: usize) -> Option<Mark> {
-        passive_phase1_impl(&self.bot, state, opp_states, dice)
+    fn passive_phase1(&mut self, state: &State, opp_states: &[State], dice: [u8; 6], active: usize) -> Option<Mark> {
+        if state.generate_white_moves(dice[0] + dice[1]).is_empty() {
+            return None;
+        }
+        let mark = passive_phase1_impl(&self.bot, state, opp_states, dice);
+        self.recorded.borrow_mut().push(Snap {
+            seen: (after(state, mark, *state), opp_states[0]),
+            entry: passive_entry(&self.bot, state, opp_states, dice, active, mark),
+            first_active: passive_first_active(active, 2),
+        });
+        mark
     }
 }
 
-/// P(me finishes ahead, ties ½) for each turn-end (me, opp), measured by `k`
-/// full-game CRN rollouts with `bot` playing both seats, the opponent to act
-/// first. A finished position's label is its exact result.
+/// P(seat 0 of each entry finishes ahead, ties ½) by `k` full-game CRN
+/// rollouts with `bot` in every seat, grouped by the seat that acts first.
+/// A finished entry's label is its exact result.
+fn entry_labels(bot: &PairStrategy, entries: &[(Vec<State>, bool)], first: &[usize], k: usize, seed: u64) -> Vec<f32> {
+    let mut labels = vec![0.0; entries.len()];
+    for fa in 0..2 {
+        let idx: Vec<usize> = (0..entries.len()).filter(|&i| first[i] == fa).collect();
+        if idx.is_empty() {
+            continue;
+        }
+        let group: Vec<(Vec<State>, bool)> = idx.iter().map(|&i| entries[i].clone()).collect();
+        let finals = rollout_final_states(bot, &group, seed.wrapping_add(fa as u64), k, fa, false);
+        for (&i, f) in idx.iter().zip(finals) {
+            labels[i] = f.iter().map(|s| SimGame::outcome(s)).sum::<f32>() / f.len() as f32;
+        }
+    }
+    labels
+}
+
+/// P(me finishes ahead, ties ½) for each turn-end (me, opp) by `k` rollouts
+/// with `bot` in both seats, the opponent to act first.
 pub fn rollout_labels(bot: &PairStrategy, positions: &[(State, State)], k: usize, seed: u64) -> Vec<f32> {
-    if positions.is_empty() {
-        return Vec::new();
-    }
     let entries: Vec<(Vec<State>, bool)> = positions.iter().map(|(me, opp)| phase2_entry(*me, &[*opp])).collect();
-    rollout_final_states(bot, &entries, seed, k, 1, false)
-        .iter()
-        .map(|finals| finals.iter().map(|f| SimGame::outcome(f)).sum::<f32>() / finals.len() as f32)
-        .collect()
+    entry_labels(bot, &entries, &vec![1; entries.len()], k, seed)
 }
 
-/// Turn-end positions from Master-vs-Master games, labelled with
+/// [`master_positions`]' positions (same games and snapshots), labelled
 /// `blend`·(Master's `k`-rollout P(win)) + (1 − `blend`)·(Master's static
-/// P(win)): the play-out value Master+'s search consults. Deterministic per
-/// `seed`, in fixed blocks of games like [`master_positions`].
+/// P(win)): the play-out value Master+'s search consults. A passive
+/// snapshot's rollout first completes the turn (the active player's phase 2
+/// on the rolled dice, as search does). Deterministic per `seed`.
 pub fn rollout_positions(
     count: usize,
     seed: u64,
@@ -561,7 +596,7 @@ pub fn rollout_positions(
                 || PairStrategy::load(pair_dir),
                 |pair, g| {
                     let game_seed = seed.wrapping_add((block * BLOCK + g).wrapping_mul(1000));
-                    let bufs: [Rc<RefCell<Vec<(State, State)>>>; 2] = Default::default();
+                    let bufs: [Rc<RefCell<Vec<Snap>>>; 2] = Default::default();
                     let players: Vec<Player> = (0..2)
                         .map(|i| {
                             let bot = PairStrategy {
@@ -569,7 +604,7 @@ pub fn rollout_positions(
                                 device: pair.device,
                                 net: pair.net.clone(),
                             };
-                            let rec = TurnEnds {
+                            let rec = Snapshots {
                                 bot,
                                 recorded: bufs[i].clone(),
                             };
@@ -580,16 +615,23 @@ pub fn rollout_positions(
                         })
                         .collect();
                     Game::new(players).play();
-                    let ends: Vec<(State, State)> = bufs.iter().flat_map(|b| b.take()).collect();
-                    // Inputs and Master's estimate on the lock-propagated boards.
-                    let boards: Vec<Vec<State>> = ends.iter().map(|(me, opp)| phase2_entry(*me, &[*opp]).0).collect();
-                    let groups: Vec<(&State, &[State])> = boards.iter().map(|b| (&b[0], &b[1..])).collect();
+                    let snaps: Vec<Snap> = bufs.iter().flat_map(|b| b.take()).collect();
+                    let groups: Vec<(&State, &[State])> = snaps
+                        .iter()
+                        .map(|s| (&s.seen.0, std::slice::from_ref(&s.seen.1)))
+                        .collect();
                     let stat = pair.win_prob_multi(&groups);
-                    let roll = rollout_labels(pair, &ends, k, game_seed ^ 0x5011_0075);
-                    boards
+                    let roll = if blend == 0.0 {
+                        vec![0.0; snaps.len()]
+                    } else {
+                        let entries: Vec<(Vec<State>, bool)> = snaps.iter().map(|s| s.entry.clone()).collect();
+                        let first: Vec<usize> = snaps.iter().map(|s| s.first_active).collect();
+                        entry_labels(pair, &entries, &first, k, game_seed ^ 0x5011_0075)
+                    };
+                    snaps
                         .iter()
                         .zip(stat.into_iter().zip(roll))
-                        .map(|(b, (s, r))| (win_input(&b[0], &b[1]), blend * r + (1.0 - blend) * s))
+                        .map(|(s, (st, r))| (win_input(&s.seen.0, &s.seen.1), blend * r + (1.0 - blend) * st))
                         .collect()
                 },
             )
@@ -898,6 +940,33 @@ mod tests {
         assert!(labels[0] > 0.9, "{labels:?}");
         assert!((0.2..0.8).contains(&labels[1]), "{labels:?}");
         assert_eq!(rollout_labels(&pair, &[lead, even], 64, 7), labels);
+    }
+
+    #[test]
+    fn rollout_positions_at_blend_zero_are_master_positions() {
+        // Same games, same snapshots (turn ends and passive decisions), and
+        // Master's static labels: only the rollouts differ.
+        assert_eq!(
+            rollout_positions(300, 21, "pair_model", 4, 0.0),
+            master_positions(300, 21, "pair_model")
+        );
+    }
+
+    #[test]
+    fn rollout_labels_broadly_agree_with_master() {
+        // Master's net estimates its own play-out value; a wrong perspective
+        // in the rollout frame gives ~0.19 here, the correct frame ~0.075
+        // (mostly K = 32 label noise). Passive labels sit ~0.05 below
+        // Master's: the rollout plays the opponent's pending phase 2, which
+        // Master's inputs cannot see.
+        let roll = rollout_positions(400, 9, "pair_model", 32, 1.0);
+        let stat = rollout_positions(400, 9, "pair_model", 32, 0.0);
+        let mad = roll.iter().zip(&stat).map(|(r, s)| (r.1 - s.1).abs()).sum::<f32>() / roll.len() as f32;
+        let bias = roll.iter().zip(&stat).map(|(r, s)| r.1 - s.1).sum::<f32>() / roll.len() as f32;
+        assert!(
+            mad < 0.1,
+            "mean |rollout − static| = {mad}, mean rollout − static = {bias}"
+        );
     }
 
     #[test]
