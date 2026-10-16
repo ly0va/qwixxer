@@ -397,6 +397,9 @@ enum Commands {
         /// With --rollouts: target = blend·rollout P + (1 − blend)·Master's static P
         #[arg(long, default_value = "1.0")]
         blend: f32,
+        /// With --rollouts: this win model dir plays the games and rollouts instead of Master (policy iteration)
+        #[arg(long)]
+        player: Option<String>,
     },
 }
 
@@ -905,6 +908,7 @@ fn main() {
             save,
             rollouts,
             blend,
+            player,
         }) => {
             dqn::win_train::capacity_check(&dqn::win_train::FitCfg {
                 train,
@@ -915,6 +919,7 @@ fn main() {
                 save,
                 rollouts,
                 blend,
+                player,
             });
         }
         None => {

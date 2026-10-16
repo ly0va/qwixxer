@@ -529,7 +529,7 @@ impl<B: Bot> Strategy for TurnEnds<B> {
 /// P(me finishes ahead, ties ½) for each turn-end (me, opp), measured by `k`
 /// full-game CRN rollouts with `bot` playing both seats, the opponent to act
 /// first. A finished position's label is its exact result.
-pub fn rollout_labels(bot: &PairStrategy, positions: &[(State, State)], k: usize, seed: u64) -> Vec<f32> {
+pub fn rollout_labels(bot: &impl Bot, positions: &[(State, State)], k: usize, seed: u64) -> Vec<f32> {
     if positions.is_empty() {
         return Vec::new();
     }
@@ -551,6 +551,21 @@ pub fn rollout_positions(
     k: usize,
     blend: f32,
 ) -> Vec<([f32; WIN_INPUTS], f32)> {
+    rollout_positions_by(count, seed, &|| PairStrategy::load(pair_dir), pair_dir, k, blend)
+}
+
+/// [`rollout_positions`] with the bot `player()` builds (once per worker
+/// thread) in both seats of the games and the rollouts: one step of policy
+/// iteration when it is the net fitted to the previous round's labels. The
+/// blend's static term stays Master's.
+pub fn rollout_positions_by<P: Bot + Clone + 'static>(
+    count: usize,
+    seed: u64,
+    player: &(dyn Fn() -> P + Sync),
+    pair_dir: &str,
+    k: usize,
+    blend: f32,
+) -> Vec<([f32; WIN_INPUTS], f32)> {
     // Games are labelled one per task, and a game's cost grows with the
     // square of its length: size each batch from the positions still needed
     // (~25 turn ends per game) so all cores stay busy past the slowest
@@ -568,19 +583,14 @@ pub fn rollout_positions(
         let chunk: Vec<Vec<([f32; WIN_INPUTS], f32)>> = (games..games + batch)
             .into_par_iter()
             .map_init(
-                || PairStrategy::load(pair_dir),
-                |pair, g| {
+                || (PairStrategy::load(pair_dir), player()),
+                |(pair, player), g| {
                     let game_seed = seed.wrapping_add(g.wrapping_mul(1000));
                     let bufs: [Rc<RefCell<Vec<(State, State)>>>; 2] = Default::default();
                     let players: Vec<Player> = (0..2)
                         .map(|i| {
-                            let bot = PairStrategy {
-                                model: pair.model.clone(),
-                                device: pair.device,
-                                net: pair.net.clone(),
-                            };
                             let rec = TurnEnds {
-                                bot,
+                                bot: player.clone(),
                                 recorded: bufs[i].clone(),
                             };
                             Player::new(
@@ -598,7 +608,7 @@ pub fn rollout_positions(
                     let roll = if blend == 0.0 {
                         vec![0.0; ends.len()]
                     } else {
-                        rollout_labels(pair, &ends, k, game_seed ^ 0x5011_0075)
+                        rollout_labels(&*player, &ends, k, game_seed ^ 0x5011_0075)
                     };
                     boards
                         .iter()
@@ -634,6 +644,9 @@ pub struct FitCfg {
     /// (see [`rollout_positions`]).
     pub rollouts: usize,
     pub blend: f32,
+    /// With `rollouts`: a win model dir whose net plays the games and the
+    /// rollouts instead of Master (policy iteration).
+    pub player: Option<String>,
 }
 
 /// Held-out MAE at which a width counts as big enough (spec "Capacity check").
@@ -645,9 +658,12 @@ pub const FIT_MAE: f32 = 0.02;
 pub fn capacity_check(cfg: &FitCfg) -> Vec<(usize, f32)> {
     let device = Default::default();
     println!("Generating {} training and {} held-out positions…", cfg.train, cfg.test);
-    let positions = |count, seed| match cfg.rollouts {
-        0 => master_positions(count, seed, "pair_model"),
-        k => rollout_positions(count, seed, "pair_model", k, cfg.blend),
+    assert!(cfg.player.is_none() || cfg.rollouts > 0, "--player needs --rollouts");
+    let player = cfg.player.as_ref().map(|dir| WinStrategy::load(dir));
+    let positions = |count, seed| match (cfg.rollouts, &player) {
+        (0, _) => master_positions(count, seed, "pair_model"),
+        (k, None) => rollout_positions(count, seed, "pair_model", k, cfg.blend),
+        (k, Some(win)) => rollout_positions_by(count, seed, &|| win.clone(), "pair_model", k, cfg.blend),
     };
     let train = positions(cfg.train, TRAIN_SEED);
     let test = positions(cfg.test, TRAIN_SEED ^ 0x7E57_0000_0000);
@@ -901,6 +917,27 @@ mod tests {
         let (me, opp) = (marked(0, 7, 0), marked(1, 0, 4));
         assert_eq!(rollout_labels(&pair, &[(me, opp)], 8, 1), vec![1.0]);
         assert_eq!(rollout_labels(&pair, &[(opp, me)], 8, 1), vec![0.0]);
+        // Whoever plays the rollouts.
+        let win = WinStrategy { net: Arc::new(net(3)) };
+        assert_eq!(rollout_labels(&win, &[(me, opp), (opp, me)], 8, 1), vec![1.0, 0.0]);
+    }
+
+    #[test]
+    fn rollout_positions_by_another_player_come_from_its_games() {
+        let win = WinStrategy { net: Arc::new(net(3)) };
+        let by_win = rollout_positions_by(200, 5, &|| win.clone(), "pair_model", 8, 1.0);
+        assert_eq!(by_win.len(), 200);
+        assert!(by_win.iter().all(|(_, p)| (0.0..=1.0).contains(p)));
+        assert_eq!(
+            rollout_positions_by(200, 5, &|| win.clone(), "pair_model", 8, 1.0),
+            by_win
+        );
+        // A different player plays different games from the same seeds.
+        let by_master = rollout_positions(200, 5, "pair_model", 8, 1.0);
+        assert!(by_win.iter().zip(&by_master).any(|(a, b)| a.0 != b.0));
+        // Master as the explicit player is the default.
+        let master = || PairStrategy::load("pair_model");
+        assert_eq!(rollout_positions_by(200, 5, &master, "pair_model", 8, 1.0), by_master);
     }
 
     #[test]
@@ -1037,6 +1074,7 @@ mod tests {
             save: Some(dir.clone()),
             rollouts: 0,
             blend: 1.0,
+            player: None,
         };
         let results = capacity_check(&cfg);
         let test = master_positions(cfg.test, TRAIN_SEED ^ 0x7E57_0000_0000, "pair_model");

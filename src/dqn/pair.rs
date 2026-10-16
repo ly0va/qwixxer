@@ -259,6 +259,7 @@ impl ManualPairNet {
 
 // ---- Strategy ----
 
+#[derive(Clone)]
 pub struct PairStrategy {
     pub model: Arc<PairModel<MyBackend>>,
     pub device: burn::backend::ndarray::NdArrayDevice,
