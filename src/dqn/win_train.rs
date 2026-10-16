@@ -85,10 +85,10 @@ pub fn bce_logits<B: Backend>(z: Tensor<B, 2>, t: Tensor<B, 2>) -> Tensor<B, 1> 
     (t.clone() * pos + t.neg().add_scalar(1.0) * neg).mean().neg()
 }
 
-/// Exploration rate for iteration `it` (0-based): 0.2·0.95^it, never below
-/// `floor` (the pair trainer's schedule at floor 0.07).
-pub fn epsilon_at(it: usize, floor: f32) -> f32 {
-    (0.2 * 0.95f32.powi(it as i32)).max(floor)
+/// Exploration rate for iteration `it` (0-based): start·0.95^it, never below
+/// `floor` (the pair trainer's schedule is start 0.2, floor 0.07).
+pub fn epsilon_at(it: usize, start: f32, floor: f32) -> f32 {
+    (start * 0.95f32.powi(it as i32)).max(floor)
 }
 
 /// Learning rate for iteration `it` (0-based) of a `total`-iteration run:
@@ -308,8 +308,12 @@ pub struct WinTrainCfg {
     /// the last (`start_iteration + iterations - 1`).
     pub lr: f64,
     pub lr_end: f64,
-    /// Lowest ε the exploration schedule decays to.
+    /// ε at iteration 0, and the lowest ε the schedule decays to.
+    pub epsilon_start: f32,
     pub epsilon_floor: f32,
+    /// Warm start: begin a fresh run from this model dir (its config and
+    /// weights; `width` is ignored).
+    pub init: Option<String>,
     /// Master's model dir, for the per-iteration bench.
     pub pair_dir: String,
 }
@@ -328,6 +332,10 @@ pub fn self_play_train(cfg: &WinTrainCfg) -> WinStrategy {
             cfg.pair_dir
         );
     }
+    assert!(
+        cfg.init.is_none() || cfg.start_iteration == 0,
+        "--init starts a fresh run; it cannot be combined with --start-iteration"
+    );
     if cfg.start_iteration == 0 {
         let taken = ["model.mpk", "training.csv"]
             .iter()
@@ -343,25 +351,60 @@ pub fn self_play_train(cfg: &WinTrainCfg) -> WinStrategy {
     std::fs::create_dir_all(&cfg.dir).expect("Failed to create the model dir");
     let config_path = format!("{}/config.json", cfg.dir);
     let log_path = format!("{}/training.csv", cfg.dir);
-    let mut model: WinModel<Ad> = if cfg.start_iteration > 0 {
-        WinModelConfig::load(&config_path)
+    let load = |dir: &str| -> WinModel<Ad> {
+        WinModelConfig::load(format!("{dir}/config.json"))
             .expect("Failed to load win model config")
             .init::<Ad>(&device)
-            .load_file(format!("{}/model", cfg.dir), &CompactRecorder::new(), &device)
-            .expect("Failed to load win model to resume")
+            .load_file(format!("{dir}/model"), &CompactRecorder::new(), &device)
+            .expect("Failed to load win model")
+    };
+    let mut model: WinModel<Ad> = if cfg.start_iteration > 0 {
+        load(&cfg.dir)
     } else {
-        let mcfg = WinModelConfig::new().with_width(cfg.width);
+        let mcfg = match &cfg.init {
+            Some(init) => {
+                WinModelConfig::load(format!("{init}/config.json")).expect("Failed to load init model config")
+            }
+            None => WinModelConfig::new().with_width(cfg.width),
+        };
         mcfg.save(&config_path).expect("Failed to save win model config");
         std::fs::write(&log_path, "iteration,games,lr,loss,share_vs_master,elapsed_s\n").expect("Failed to write log");
-        mcfg.init::<Ad>(&device)
+        match &cfg.init {
+            Some(init) => load(init),
+            None => mcfg.init::<Ad>(&device),
+        }
     };
     let start = std::time::Instant::now();
+    let bench = |model: &WinModel<Ad>| {
+        (cfg.bench > 0).then(|| bench_vs_pair(&WinStrategy::from_model(&model.valid()), &cfg.pair_dir, cfg.bench))
+    };
+    let log = |row: String| {
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .create(true)
+            .open(&log_path)
+            .expect("Failed to open log");
+        writeln!(f, "{row}").ok();
+    };
+    let pct = |share: Option<f64>| {
+        share
+            .map(|s| format!("{:.2}%", s * 100.0))
+            .unwrap_or_else(|| "-".into())
+    };
+    let csv = |share: Option<f64>| share.map(|s| format!("{s:.4}")).unwrap_or_default();
+    if cfg.init.is_some() {
+        // Iteration 0: the warm start's own strength, the bar to beat.
+        let share = bench(&model);
+        println!("Iteration   0 (init): vs Master {}", pct(share));
+        log(format!("0,0,,,{},{}", csv(share), start.elapsed().as_secs()));
+    }
     let mut buffer: std::collections::VecDeque<Vec<Chain>> = std::collections::VecDeque::new();
 
     let total = cfg.start_iteration + cfg.iterations;
     for it in cfg.start_iteration..total {
         let lr = lr_at(it, total, cfg.lr, cfg.lr_end);
-        let epsilon = epsilon_at(it, cfg.epsilon_floor);
+        let epsilon = epsilon_at(it, cfg.epsilon_start, cfg.epsilon_floor);
         let net = Arc::new(ManualWinNet::from_model(&model.valid()));
         let chains: Vec<Chain> = (0..cfg.games)
             .into_par_iter()
@@ -390,32 +433,20 @@ pub fn self_play_train(cfg: &WinTrainCfg) -> WinStrategy {
         )
         .expect("Failed to save checkpoint");
 
-        let share = if cfg.bench > 0 {
-            Some(bench_vs_pair(
-                &WinStrategy::from_model(&inference),
-                &cfg.pair_dir,
-                cfg.bench,
-            ))
-        } else {
-            None
-        };
+        let share = bench(&model);
         let elapsed = start.elapsed().as_secs();
-        let share_text = share
-            .map(|s| format!("{:.1}%", s * 100.0))
-            .unwrap_or_else(|| "-".into());
         println!(
-            "Iteration {:>3}: ε {epsilon:.3}, lr {lr:.1e}, {} positions, loss {loss:.4}, vs Master {share_text}, {elapsed}s",
+            "Iteration {:>3}: ε {epsilon:.3}, lr {lr:.1e}, {} positions, loss {loss:.4}, vs Master {}, {elapsed}s",
             it + 1,
-            data.len()
+            data.len(),
+            pct(share)
         );
-        use std::io::Write;
-        let mut f = std::fs::OpenOptions::new()
-            .append(true)
-            .create(true)
-            .open(&log_path)
-            .expect("Failed to open log");
-        let share_csv = share.map(|s| format!("{s:.4}")).unwrap_or_default();
-        writeln!(f, "{},{},{lr:.3e},{loss:.5},{share_csv},{elapsed}", it + 1, cfg.games).ok();
+        log(format!(
+            "{},{},{lr:.3e},{loss:.5},{},{elapsed}",
+            it + 1,
+            cfg.games,
+            csv(share)
+        ));
     }
     WinStrategy::from_model(&model.valid())
 }
@@ -664,7 +695,9 @@ mod tests {
             start_iteration: 0,
             lr: 4e-4,
             lr_end: 4e-5,
+            epsilon_start: 0.2,
             epsilon_floor: 0.07,
+            init: None,
             pair_dir: "pair_model".into(),
         };
         let trained = self_play_train(&cfg);
@@ -723,15 +756,55 @@ mod tests {
 
     #[test]
     fn epsilon_decays_from_point_two_to_the_floor() {
-        assert_eq!(epsilon_at(0, 0.07), 0.2);
-        assert!((epsilon_at(1, 0.07) - 0.19).abs() < 1e-6);
+        assert_eq!(epsilon_at(0, 0.2, 0.07), 0.2);
+        assert!((epsilon_at(1, 0.2, 0.07) - 0.19).abs() < 1e-6);
         // Today's schedule: on the 0.07 floor from iteration 21 on.
-        assert!(epsilon_at(19, 0.07) > 0.07);
-        assert_eq!(epsilon_at(21, 0.07), 0.07);
+        assert!(epsilon_at(19, 0.2, 0.07) > 0.07);
+        assert_eq!(epsilon_at(21, 0.2, 0.07), 0.07);
         // A lower floor keeps decaying past it, down to the new floor.
-        assert!(epsilon_at(40, 0.02) < 0.07 && epsilon_at(40, 0.02) > 0.02);
-        assert_eq!(epsilon_at(159, 0.02), 0.02);
-        assert_eq!(epsilon_at(500, 0.0), 0.2 * 0.95f32.powi(500));
+        assert!(epsilon_at(40, 0.2, 0.02) < 0.07 && epsilon_at(40, 0.2, 0.02) > 0.02);
+        assert_eq!(epsilon_at(159, 0.2, 0.02), 0.02);
+        assert_eq!(epsilon_at(500, 0.2, 0.0), 0.2 * 0.95f32.powi(500));
+        // A lower start (warm starts) decays from there.
+        assert_eq!(epsilon_at(0, 0.05, 0.02), 0.05);
+        assert!((epsilon_at(1, 0.05, 0.02) - 0.0475).abs() < 1e-6);
+    }
+
+    #[test]
+    fn warm_start_begins_from_the_init_model_and_benches_it_first() {
+        let base = std::env::temp_dir().join(format!("qwixxer-win-warm-{}", std::process::id()));
+        let base = base.to_str().unwrap().to_string();
+        std::fs::remove_dir_all(&base).ok();
+        let (init_dir, dir) = (format!("{base}/init"), format!("{base}/run"));
+        let mut init_cfg = smoke_cfg(&init_dir);
+        init_cfg.width = 8;
+        self_play_train(&init_cfg);
+        let init = WinStrategy::load(&init_dir);
+
+        let mut cfg = smoke_cfg(&dir);
+        cfg.init = Some(init_dir.clone());
+        cfg.iterations = 0;
+        cfg.bench = 4;
+        let warm = self_play_train(&cfg);
+        // The init net, unchanged, and its width (not cfg.width = 16).
+        let xs = positions();
+        assert_eq!(warm.net.logits(&xs), init.net.logits(&xs));
+        assert_eq!(WinModelConfig::load(format!("{dir}/config.json")).unwrap().width, 8);
+        // The log starts with the init model's bench as iteration 0.
+        let log = std::fs::read_to_string(format!("{dir}/training.csv")).unwrap();
+        let rows: Vec<&str> = log.lines().skip(1).collect();
+        assert_eq!(rows.len(), 1, "{log}");
+        assert!(rows[0].starts_with("0,0,"), "{log}");
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    #[should_panic(expected = "--init starts a fresh run")]
+    fn warm_start_cannot_be_combined_with_resume() {
+        let mut cfg = smoke_cfg("unused");
+        cfg.init = Some("somewhere".into());
+        cfg.start_iteration = 3;
+        self_play_train(&cfg);
     }
 
     #[test]
@@ -769,7 +842,9 @@ mod tests {
             start_iteration: 0,
             lr: 4e-4,
             lr_end: 4e-5,
+            epsilon_start: 0.2,
             epsilon_floor: 0.07,
+            init: None,
             pair_dir: "pair_model".into(),
         }
     }
