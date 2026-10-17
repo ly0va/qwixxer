@@ -4,6 +4,11 @@
 //!
 //! Design: docs/superpowers/specs/2026-10-17-win-policy-iteration-design.md
 
+use crate::dqn::win_train::outcome;
+use crate::game::{Game, Player};
+use crate::strategy::{Bot, Strategy};
+use rand::{rngs::SmallRng, SeedableRng};
+use rayon::prelude::*;
 use std::collections::VecDeque;
 
 /// Seed purposes for [`round_seed`].
@@ -66,9 +71,143 @@ pub fn gate_decision(scores: &[f32], z_min: f64, at_max: bool) -> (Gate, f64, f6
     (g, share, z)
 }
 
+/// Paired games between `a` and `b`, one score per pair index: both games
+/// of a pair share the dice streams (`seed`, pair index, seat), `a` in seat
+/// 0 then seat 1, and the score is `a`'s mean outcome (win 1, tie ½). The
+/// dice depend only on `seed` and the pair index, so splitting `pairs`
+/// into blocks or changing the thread count never changes a score. Bots
+/// are built once per worker thread.
+pub fn head_to_head<A: Bot + Clone + 'static, B: Bot + Clone + 'static>(
+    a: &(dyn Fn() -> A + Sync),
+    b: &(dyn Fn() -> B + Sync),
+    pairs: std::ops::Range<u64>,
+    seed: u64,
+) -> Vec<f32> {
+    pairs
+        .into_par_iter()
+        .map_init(
+            || (a(), b()),
+            |(a, b), p| {
+                let dice = |seat: u64| Box::new(SmallRng::seed_from_u64(seed.wrapping_add(p * 2 + seat)));
+                let mut total = 0.0;
+                for rot in 0..2 {
+                    let x: Box<dyn Strategy> = Box::new(a.clone());
+                    let y: Box<dyn Strategy> = Box::new(b.clone());
+                    let players = if rot == 0 {
+                        vec![Player::new(x, dice(0)), Player::new(y, dice(1))]
+                    } else {
+                        vec![Player::new(y, dice(0)), Player::new(x, dice(1))]
+                    };
+                    let mut game = Game::new(players);
+                    game.play();
+                    let s: Vec<isize> = game.players.iter().map(|p| p.state.count_points()).collect();
+                    total += outcome(s[rot], s[1 - rot]);
+                }
+                total / 2.0
+            },
+        )
+        .collect()
+}
+
+pub struct GateResult {
+    pub promoted: bool,
+    pub games: usize,
+    pub share: f64,
+    pub z: f64,
+}
+
+/// The spec's sequential gate: play `block` games at a time (the last
+/// block cut so the total never exceeds `max`) and stop as soon as
+/// [`gate_decision`] promotes or rejects.
+pub fn run_gate<A: Bot + Clone + 'static, B: Bot + Clone + 'static>(
+    cand: &(dyn Fn() -> A + Sync),
+    champ: &(dyn Fn() -> B + Sync),
+    seed: u64,
+    z_min: f64,
+    block: usize,
+    max: usize,
+) -> GateResult {
+    let (block_pairs, max_pairs) = ((block / 2) as u64, (max / 2) as u64);
+    let mut scores: Vec<f32> = Vec::new();
+    loop {
+        let start = scores.len() as u64;
+        let end = (start + block_pairs).min(max_pairs);
+        scores.extend(head_to_head(cand, champ, start..end, seed));
+        let (g, share, z) = gate_decision(&scores, z_min, end >= max_pairs);
+        if g != Gate::Continue {
+            return GateResult {
+                promoted: g == Gate::Promote,
+                games: scores.len() * 2,
+                share,
+                z,
+            };
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dqn::win::{WinModelConfig, WinStrategy};
+    use crate::dqn::MyBackend;
+    use burn::prelude::*;
+
+    /// A random W=4 net. Burn's seed is global, so seeding and init are
+    /// serialized: parallel tests must not interleave between the two.
+    fn tiny_net(seed: u64) -> WinStrategy {
+        static SEEDING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _guard = SEEDING.lock().unwrap();
+        let device = Default::default();
+        <MyBackend as Backend>::seed(&device, seed);
+        WinStrategy::from_model(&WinModelConfig::new().with_width(4).init::<MyBackend>(&device))
+    }
+
+    #[test]
+    fn a_bot_against_itself_scores_exactly_half_per_pair() {
+        let a = tiny_net(1);
+        let scores = head_to_head(&|| a.clone(), &|| a.clone(), 0..8, 7);
+        assert_eq!(scores, vec![0.5; 8]);
+    }
+
+    #[test]
+    fn head_to_head_is_deterministic_and_split_independent() {
+        let (a, b) = (tiny_net(1), tiny_net(2));
+        let whole = head_to_head(&|| a.clone(), &|| b.clone(), 0..12, 7);
+        assert_eq!(whole, head_to_head(&|| a.clone(), &|| b.clone(), 0..12, 7));
+        let mut split = head_to_head(&|| a.clone(), &|| b.clone(), 0..5, 7);
+        split.extend(head_to_head(&|| a.clone(), &|| b.clone(), 5..12, 7));
+        assert_eq!(whole, split);
+        assert!(
+            whole.iter().any(|&s| s != 0.5),
+            "different nets should differ somewhere"
+        );
+        // Swapping the bots mirrors every pair score.
+        let mirrored = head_to_head(&|| b.clone(), &|| a.clone(), 0..12, 7);
+        for (x, y) in whole.iter().zip(&mirrored) {
+            assert!((x + y - 1.0).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn gate_on_equal_bots_rejects_after_one_block() {
+        let a = tiny_net(1);
+        let r = run_gate(&|| a.clone(), &|| a.clone(), 7, 2.0, 10, 40);
+        assert!(!r.promoted);
+        assert_eq!(r.games, 10);
+    }
+
+    #[test]
+    fn gate_never_plays_past_its_cap() {
+        let (a, b) = (tiny_net(1), tiny_net(2));
+        // z_min unreachable and the cap not a multiple of the block: the
+        // gate must stop at exactly `max` games unless it rejects earlier.
+        let r = run_gate(&|| a.clone(), &|| b.clone(), 7, f64::INFINITY, 8, 14);
+        assert!(!r.promoted);
+        assert!(r.games <= 14 && r.games % 2 == 0, "games = {}", r.games);
+        // Stopping before the cap is only allowed on a reject (z < 0, or
+        // z reported as 0 for zero spread).
+        assert!(r.games == 14 || r.z <= 0.0, "games = {}, z = {}", r.games, r.z);
+    }
 
     #[test]
     fn round_seeds_are_deterministic_and_distinct() {
