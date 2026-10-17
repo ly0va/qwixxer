@@ -459,6 +459,15 @@ enum Commands {
         master_games: usize,
         #[arg(long, default_value = "42")]
         seed: u64,
+        /// turn = turn-end rollout labels; cand = also the top candidates of the decisions win-search would search
+        #[arg(long, default_value = "turn", value_parser = ["turn", "cand"])]
+        labels: String,
+        /// Full-game rollouts per candidate (--labels cand)
+        #[arg(long, default_value = "64")]
+        cand_rollouts: usize,
+        /// Copies of each candidate sample (--labels cand)
+        #[arg(long, default_value = "1")]
+        cand_m: usize,
     },
 }
 
@@ -1030,6 +1039,9 @@ fn main() {
             gate_max,
             master_games,
             seed,
+            labels,
+            cand_rollouts,
+            cand_m,
         }) => {
             let cfg = dqn::win_pi::WinPiCfg {
                 dir,
@@ -1047,6 +1059,13 @@ fn main() {
                 master_games,
                 seed,
                 pair_dir: "pair_model".into(),
+                labels: if labels == "cand" {
+                    dqn::win_pi::Labels::Cand
+                } else {
+                    dqn::win_pi::Labels::Turn
+                },
+                cand_rollouts,
+                cand_m,
             };
             if let Err(e) = cfg.validate() {
                 eprintln!("win-pi: {e}");

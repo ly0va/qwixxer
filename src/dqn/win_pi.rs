@@ -2,13 +2,16 @@
 //! own games, a warm-started candidate is fitted to a window of recent
 //! rounds, and a sequential paired head-to-head decides promotion.
 //!
-//! Design: docs/superpowers/specs/2026-10-17-win-policy-iteration-design.md
+//! Design: docs/superpowers/specs/2026-10-17-win-policy-iteration-design.md,
+//! docs/superpowers/specs/2026-10-17-win-candidate-distillation-design.md
 
 use crate::dqn::pair::PairStrategy;
-use crate::dqn::win::{WinModel, WinModelConfig, WinStrategy, WIN_INPUTS};
-use crate::dqn::win_train::{bench_vs_pair, outcome, rollout_positions_by, train_epochs, Ad};
+use crate::dqn::win::{sigmoid, ManualWinNet, WinModel, WinModelConfig, WinStrategy, WIN_INPUTS};
+use crate::dqn::win_distill::diff_stats;
+use crate::dqn::win_train::{bench_vs_pair, outcome, rollout_round_by, train_epochs, Ad, CandCfg};
 use crate::dqn::MyBackend;
 use crate::game::{Game, Player};
+use crate::strategy::search::GATE_MARGIN;
 use crate::strategy::{Bot, Strategy};
 use burn::{module::AutodiffModule, prelude::*, record::CompactRecorder};
 use rand::{rngs::SmallRng, SeedableRng};
@@ -153,6 +156,15 @@ pub fn run_gate<A: Bot + Clone + 'static, B: Bot + Clone + 'static>(
 /// Learning rate of a from-scratch round 1 (no `--init`), as `win-fit`.
 pub const FRESH_LR: f64 = 1e-3;
 
+/// What labels a round's data: turn ends only, or also the top candidates
+/// of the decisions win-search would search
+/// (docs/superpowers/specs/2026-10-17-win-candidate-distillation-design.md).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Labels {
+    Turn,
+    Cand,
+}
+
 pub struct WinPiCfg {
     pub dir: String,
     /// Starting champion (a win model dir); `None` = Master plays round 1.
@@ -176,6 +188,11 @@ pub struct WinPiCfg {
     pub master_games: usize,
     pub seed: u64,
     pub pair_dir: String,
+    pub labels: Labels,
+    /// Full-game rollouts per candidate (`Labels::Cand`).
+    pub cand_rollouts: usize,
+    /// Copies of each candidate sample (`Labels::Cand`).
+    pub cand_m: usize,
 }
 
 impl WinPiCfg {
@@ -195,6 +212,12 @@ impl WinPiCfg {
         }
         if self.gate_max < self.gate_block {
             return Err("--gate-max must be at least --gate-block".into());
+        }
+        if self.cand_rollouts < 2 {
+            return Err("--cand-rollouts must be at least 2".into());
+        }
+        if self.cand_m == 0 {
+            return Err("--cand-m must be at least 1".into());
         }
         if !Path::new(&format!("{}/model.mpk", self.pair_dir)).exists() {
             return Err(format!("pair model not found at {}/model.mpk", self.pair_dir));
@@ -249,7 +272,8 @@ pub fn policy_iteration(cfg: &WinPiCfg) -> Option<WinStrategy> {
     let log_path = format!("{}/training.csv", cfg.dir);
     std::fs::write(
         &log_path,
-        "round,positions,loss,gate_games,share_vs_champion,z,promoted,share_vs_master,elapsed_s\n",
+        "round,positions,cand_decisions,cand_samples,diff_rmse,diff_noise,flip_share,\
+         loss,gate_games,share_vs_champion,z,promoted,share_vs_master,elapsed_s\n",
     )
     .expect("Failed to write log");
     let log = |row: String| {
@@ -281,40 +305,95 @@ pub fn policy_iteration(cfg: &WinPiCfg) -> Option<WinStrategy> {
         if cfg.master_games > 0 {
             let s = yardstick(m);
             println!("Round  0 (init): vs Master {}", pct(s));
-            log(format!("0,,,,,,,{},{}", csv(s), start.elapsed().as_secs()));
+            log(format!("0{},{},{}", ",".repeat(11), csv(s), start.elapsed().as_secs()));
         }
     }
 
     let mut window: VecDeque<Vec<([f32; WIN_INPUTS], f32)>> = VecDeque::new();
     for round in 1..=cfg.rounds {
-        // 1. Generate: the champion's own turn ends, labelled by its rollouts.
+        // 1. Generate: the champion's own turn ends, labelled by its rollouts;
+        // with `--labels cand`, also the top candidates of the decisions
+        // win-search would search in the same games.
         let pos_seed = round_seed(cfg.seed, round, POS);
-        let data = match &champion {
-            None => rollout_positions_by(
+        let cand = (cfg.labels == Labels::Cand).then_some(CandCfg {
+            k: cfg.cand_rollouts,
+            margin: GATE_MARGIN,
+        });
+        let round_data = match &champion {
+            None => rollout_round_by(
                 cfg.positions,
                 pos_seed,
                 &|| PairStrategy::load(&cfg.pair_dir),
                 &cfg.pair_dir,
                 cfg.rollouts,
                 1.0,
+                cand,
             ),
             Some(m) => {
                 let win = WinStrategy::from_model(&m.valid());
-                rollout_positions_by(
+                rollout_round_by(
                     cfg.positions,
                     pos_seed,
                     &|| win.clone(),
                     &cfg.pair_dir,
                     cfg.rollouts,
                     1.0,
+                    cand,
                 )
             }
         };
-        // 2. Window: every round's data enters, whatever its gate decides.
+
+        // 2. Diagnose: the champion's error on the new candidates'
+        // differences (none while Master is the champion).
+        let diag = champion.as_ref().and_then(|m| {
+            let net = ManualWinNet::from_model(&m.valid());
+            let preds: Vec<Vec<f32>> = round_data
+                .groups
+                .iter()
+                .map(|g| {
+                    let xs: Vec<[f32; WIN_INPUTS]> = g.samples.iter().map(|s| s.0).collect();
+                    net.logits(&xs).into_iter().map(sigmoid).collect()
+                })
+                .collect();
+            diff_stats(&preds, &round_data.groups, cfg.cand_rollouts)
+        });
+        let cand_decisions = round_data.groups.len();
+        let mut data = round_data.positions;
+        let turn_ends = data.len();
+        for g in &round_data.groups {
+            for _ in 0..cfg.cand_m {
+                data.extend_from_slice(&g.samples);
+            }
+        }
+        let cand_samples = data.len() - turn_ends;
+        let diag_csv = diag
+            .as_ref()
+            .map(|d| format!("{:.4},{:.4},{:.4}", d.diff_rmse, d.diff_noise, d.flip_share))
+            .unwrap_or_else(|| ",,".into());
+        let cand_csv = match cfg.labels {
+            Labels::Turn => ",,,,".to_string(),
+            Labels::Cand => format!("{cand_decisions},{cand_samples},{diag_csv}"),
+        };
+        let cand_note = match cfg.labels {
+            Labels::Turn => String::new(),
+            Labels::Cand => format!(
+                ", {cand_decisions} decisions ({cand_samples} samples){}",
+                diag.as_ref()
+                    .map(|d| format!(
+                        ", diff RMSE {:.4} (noise {:.4}), flips {:.1}%",
+                        d.diff_rmse,
+                        d.diff_noise,
+                        d.flip_share * 100.0
+                    ))
+                    .unwrap_or_default()
+            ),
+        };
+
+        // 3. Window: every round's data enters, whatever its gate decides.
         push_window(&mut window, data, cfg.window);
         let train: Vec<_> = window.iter().flatten().copied().collect();
 
-        // 3. Fit: warm start from the champion, or from scratch against Master.
+        // 4. Fit: warm start from the champion, or from scratch against Master.
         let fit_seed = round_seed(cfg.seed, round, FIT);
         let (init_model, lr) = match &champion {
             Some(m) => (m.clone(), cfg.lr),
@@ -326,7 +405,7 @@ pub fn policy_iteration(cfg: &WinPiCfg) -> Option<WinStrategy> {
         let (candidate, loss) = train_epochs(init_model, &train, cfg.epochs, lr, fit_seed);
         save_win(&format!("{}/round-{round}", cfg.dir), &mcfg, &candidate.valid());
 
-        // 4. Gate: candidate vs champion, paired, sequential.
+        // 5. Gate: candidate vs champion, paired, sequential.
         let cand = WinStrategy::from_model(&candidate.valid());
         let gate_seed = round_seed(cfg.seed, round, GATE);
         let g = match &champion {
@@ -353,7 +432,7 @@ pub fn policy_iteration(cfg: &WinPiCfg) -> Option<WinStrategy> {
         let verdict = if g.promoted { "promoted" } else { "kept" };
         let row = |master: Option<f64>| {
             format!(
-                "{round},{},{loss:.5},{},{:.4},{:.2},{},{},{}",
+                "{round},{},{cand_csv},{loss:.5},{},{:.4},{:.2},{},{},{}",
                 train.len(),
                 g.games,
                 g.share,
@@ -376,10 +455,10 @@ pub fn policy_iteration(cfg: &WinPiCfg) -> Option<WinStrategy> {
             return None;
         }
 
-        // 5. Yardstick (logged only) and 6. log.
+        // 6. Yardstick (logged only) and 7. log.
         let master = yardstick(champion.as_ref().expect("a win-net champion after round 1"));
         println!(
-            "Round {round:>2}: {} positions, loss {loss:.4}, gate {} games {:.2}% z {:.2} → {verdict}, champion vs Master {}, {}s",
+            "Round {round:>2}: {} positions{cand_note}, loss {loss:.4}, gate {} games {:.2}% z {:.2} → {verdict}, champion vs Master {}, {}s",
             train.len(),
             g.games,
             g.share * 100.0,
@@ -512,6 +591,9 @@ mod tests {
         assert_eq!(gate_decision(&[0.5], 2.0, false).0, Gate::Reject);
     }
 
+    const HEADER: &str = "round,positions,cand_decisions,cand_samples,diff_rmse,diff_noise,flip_share,\
+                          loss,gate_games,share_vs_champion,z,promoted,share_vs_master,elapsed_s";
+
     fn tmp(name: &str) -> String {
         let d = std::env::temp_dir().join(format!("qwixxer-win-pi-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
@@ -535,6 +617,9 @@ mod tests {
             master_games: 2,
             seed: 42,
             pair_dir: "pair_model".into(),
+            labels: Labels::Turn,
+            cand_rollouts: 2,
+            cand_m: 1,
         }
     }
 
@@ -575,6 +660,16 @@ mod tests {
             ..tiny_cfg(ok.dir.clone(), None)
         })
         .contains("pair model"));
+        assert!(err(WinPiCfg {
+            cand_rollouts: 1,
+            ..tiny_cfg(ok.dir.clone(), None)
+        })
+        .contains("--cand-rollouts"));
+        assert!(err(WinPiCfg {
+            cand_m: 0,
+            ..tiny_cfg(ok.dir.clone(), None)
+        })
+        .contains("--cand-m"));
         std::fs::create_dir_all(&ok.dir).unwrap();
         assert!(err(tiny_cfg(ok.dir.clone(), None)).contains("already exists"));
         std::fs::remove_dir_all(&base).unwrap();
@@ -583,12 +678,7 @@ mod tests {
     #[test]
     fn two_rounds_from_an_init_net_write_the_run() {
         let base = tmp("smoke");
-        let init = format!("{base}/init");
-        let device = Default::default();
-        <MyBackend as Backend>::seed(&device, 3);
-        let mcfg = WinModelConfig::new().with_width(4);
-        let model: WinModel<MyBackend> = mcfg.init(&device);
-        save_win(&init, &mcfg, &model);
+        let init = init_net(&base);
         let cfg = tiny_cfg(format!("{base}/run"), Some(init));
         assert!(policy_iteration(&cfg).is_some());
         for d in ["round-1", "round-2", "champion"] {
@@ -603,18 +693,18 @@ mod tests {
         }
         let csv = std::fs::read_to_string(format!("{}/training.csv", cfg.dir)).unwrap();
         let lines: Vec<&str> = csv.lines().collect();
-        assert_eq!(
-            lines[0],
-            "round,positions,loss,gate_games,share_vs_champion,z,promoted,share_vs_master,elapsed_s"
-        );
+        assert_eq!(lines[0], HEADER);
         assert_eq!(lines.len(), 4, "{csv}");
-        assert!(lines[1].starts_with("0,,,,,,,"), "{}", lines[1]);
+        assert!(lines[1].starts_with("0,,,,,,,,,,,,"), "{}", lines[1]);
+        assert_eq!(lines[1].split(',').count(), 14, "{}", lines[1]);
         for (i, row) in lines[2..].iter().enumerate() {
             let f: Vec<&str> = row.split(',').collect();
-            assert_eq!(f.len(), 9, "{row}");
+            assert_eq!(f.len(), 14, "{row}");
             assert_eq!(f[0], (i + 1).to_string());
-            assert!(f[6] == "0" || f[6] == "1", "{row}");
-            assert!(!f[7].is_empty(), "{row}");
+            // --labels turn: no candidate columns.
+            assert!(f[2..7].iter().all(|c| c.is_empty()), "{row}");
+            assert!(f[11] == "0" || f[11] == "1", "{row}");
+            assert!(!f[12].is_empty(), "{row}");
         }
         std::fs::remove_dir_all(&base).unwrap();
     }
@@ -633,7 +723,61 @@ mod tests {
         let csv = std::fs::read_to_string(format!("{}/training.csv", cfg.dir)).unwrap();
         let rows: Vec<&str> = csv.lines().skip(1).collect();
         assert_eq!(rows.len(), 1, "{csv}");
-        assert_eq!(rows[0].split(',').nth(6), Some("0"));
+        assert_eq!(rows[0].split(',').nth(11), Some("0"));
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    fn init_net(base: &str) -> String {
+        let init = format!("{base}/init");
+        let device = Default::default();
+        <MyBackend as Backend>::seed(&device, 3);
+        let mcfg = WinModelConfig::new().with_width(4);
+        let model: WinModel<MyBackend> = mcfg.init(&device);
+        save_win(&init, &mcfg, &model);
+        init
+    }
+
+    #[test]
+    fn candidate_rounds_log_their_decisions_and_headroom() {
+        let base = tmp("cand");
+        let cfg = WinPiCfg {
+            labels: Labels::Cand,
+            cand_m: 2,
+            rounds: 1,
+            ..tiny_cfg(format!("{base}/run"), Some(init_net(&base)))
+        };
+        assert!(policy_iteration(&cfg).is_some());
+        let csv = std::fs::read_to_string(format!("{}/training.csv", cfg.dir)).unwrap();
+        let lines: Vec<&str> = csv.lines().collect();
+        assert_eq!(lines.len(), 3, "{csv}");
+        let f: Vec<&str> = lines[2].split(',').collect();
+        assert_eq!(f.len(), 14, "{}", lines[2]);
+        let decisions: usize = f[2].parse().unwrap();
+        let samples: usize = f[3].parse().unwrap();
+        assert!(decisions > 0, "{}", lines[2]);
+        // 2–3 candidates per decision, each emitted cand_m = 2 times.
+        assert!(samples >= 4 * decisions && samples <= 6 * decisions, "{}", lines[2]);
+        assert_eq!(samples % 2, 0);
+        assert!(f[4..7].iter().all(|c| !c.is_empty()), "{}", lines[2]);
+        // The window total counts the turn ends and the candidate samples.
+        assert_eq!(f[1].parse::<usize>().unwrap(), cfg.positions + samples);
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn a_fresh_candidate_run_has_no_champion_to_diagnose() {
+        let base = tmp("fresh-cand");
+        let cfg = WinPiCfg {
+            labels: Labels::Cand,
+            master_games: 0,
+            ..tiny_cfg(format!("{base}/run"), None)
+        };
+        assert!(policy_iteration(&cfg).is_none());
+        let csv = std::fs::read_to_string(format!("{}/training.csv", cfg.dir)).unwrap();
+        let row = csv.lines().nth(1).unwrap();
+        let f: Vec<&str> = row.split(',').collect();
+        assert!(!f[2].is_empty() && !f[3].is_empty(), "{row}");
+        assert!(f[4..7].iter().all(|c| c.is_empty()), "{row}");
         std::fs::remove_dir_all(&base).unwrap();
     }
 }
