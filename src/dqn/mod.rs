@@ -24,6 +24,9 @@ pub mod pair_train;
 #[cfg(feature = "dqn")]
 pub mod win_train;
 
+#[cfg(feature = "dqn")]
+pub mod win_pi;
+
 pub mod pair;
 pub mod win;
 
