@@ -6,6 +6,9 @@
 use crate::dqn::pair::PairStrategy;
 use crate::dqn::win::WinModelConfig;
 use crate::dqn::win::{input_tensor, sigmoid, swap_input, win_input, ManualWinNet, WinModel, WinStrategy, WIN_INPUTS};
+use crate::dqn::win_distill::{
+    capture_active1, capture_active2, capture_passive, label_decision, CandDecision, CandGroup,
+};
 use crate::dqn::{MyBackend, TRAIN_SEED};
 use crate::game::{Game, Player};
 use crate::state::{Mark, State};
@@ -493,9 +496,23 @@ pub fn master_positions(count: usize, seed: u64, pair_dir: &str) -> Vec<([f32; W
 
 /// Plays a bot greedily and records (my state, opponent) at the end of each
 /// of my active turns: after phase 2, the boundary a rollout restarts from.
+/// With `capture`, also keeps the decisions win-search would search; that
+/// never changes a move.
 struct TurnEnds<B: Bot> {
     bot: B,
     recorded: Rc<RefCell<Vec<(State, State)>>>,
+    /// The close-gate margin and the captured decisions.
+    capture: Option<(f32, Rc<RefCell<Vec<CandDecision>>>)>,
+}
+
+impl<B: Bot> TurnEnds<B> {
+    fn keep(&self, capture: impl FnOnce(&B, f32) -> Option<CandDecision>) {
+        if let Some((margin, buf)) = &self.capture {
+            if let Some(d) = capture(&self.bot, *margin) {
+                buf.borrow_mut().push(d);
+            }
+        }
+    }
 }
 
 impl<B: Bot> std::fmt::Debug for TurnEnds<B> {
@@ -506,10 +523,12 @@ impl<B: Bot> std::fmt::Debug for TurnEnds<B> {
 
 impl<B: Bot> Strategy for TurnEnds<B> {
     fn active_phase1(&mut self, state: &State, opp_states: &[State], dice: [u8; 6]) -> Option<Mark> {
+        self.keep(|b, m| capture_active1(b, state, opp_states, dice, m));
         active_phase1_impl(&self.bot, state, opp_states, dice)
     }
 
     fn active_phase2(&mut self, state: &State, opp_states: &[State], dice: [u8; 6], has_marked: bool) -> Option<Mark> {
+        self.keep(|b, m| capture_active2(b, state, opp_states, dice, has_marked, m));
         let mark = active_phase2_impl(&self.bot, state, opp_states, dice, has_marked);
         let mut no_mark = *state;
         if !has_marked {
@@ -521,7 +540,8 @@ impl<B: Bot> Strategy for TurnEnds<B> {
         mark
     }
 
-    fn passive_phase1(&mut self, state: &State, opp_states: &[State], dice: [u8; 6], _active: usize) -> Option<Mark> {
+    fn passive_phase1(&mut self, state: &State, opp_states: &[State], dice: [u8; 6], active: usize) -> Option<Mark> {
+        self.keep(|b, m| capture_passive(b, state, opp_states, dice, active, m));
         passive_phase1_impl(&self.bot, state, opp_states, dice)
     }
 }
@@ -585,32 +605,69 @@ pub fn rollout_positions_by<P: Bot + Clone + 'static>(
     k: usize,
     blend: f32,
 ) -> Vec<([f32; WIN_INPUTS], f32)> {
+    rollout_round_by(count, seed, player, pair_dir, k, blend, None).positions
+}
+
+/// Candidate capture for [`rollout_round_by`].
+#[derive(Clone, Copy, Debug)]
+pub struct CandCfg {
+    /// Full-game rollouts per candidate.
+    pub k: usize,
+    /// Close-gate margin (production: `GATE_MARGIN`).
+    pub margin: f32,
+}
+
+/// One round's data from [`rollout_round_by`].
+pub struct RoundData {
+    pub positions: Vec<([f32; WIN_INPUTS], f32)>,
+    /// The labelled decisions of every game played. The positions are cut
+    /// to `count`; the last games' decisions are kept whole.
+    pub groups: Vec<CandGroup>,
+}
+
+/// [`rollout_positions_by`] that, with `cand`, also keeps the decisions
+/// win-search would search in the same games and labels their top
+/// candidates with `cand.k` rollouts by the player
+/// (docs/superpowers/specs/2026-10-17-win-candidate-distillation-design.md).
+/// Capture never changes a move, so the positions are the same either way.
+pub fn rollout_round_by<P: Bot + Clone + 'static>(
+    count: usize,
+    seed: u64,
+    player: &(dyn Fn() -> P + Sync),
+    pair_dir: &str,
+    k: usize,
+    blend: f32,
+    cand: Option<CandCfg>,
+) -> RoundData {
     // Games are labelled one per task, and a game's cost grows with the
     // square of its length: size each batch from the positions still needed
     // (~25 turn ends per game) so all cores stay busy past the slowest
     // games. Seeds depend only on the game index, so batching never changes
     // the output.
-    let mut out = Vec::with_capacity(count);
+    let mut positions = Vec::with_capacity(count);
+    let mut groups = Vec::new();
     let mut games = 0u64;
-    while out.len() < count {
+    while positions.len() < count {
         let per_game = if games == 0 {
             25.0
         } else {
-            out.len() as f64 / games as f64
+            positions.len() as f64 / games as f64
         };
-        let batch = (((count - out.len()) as f64 / per_game).ceil() as u64).max(64);
-        let chunk: Vec<Vec<([f32; WIN_INPUTS], f32)>> = (games..games + batch)
+        let batch = (((count - positions.len()) as f64 / per_game).ceil() as u64).max(64);
+        let chunk: Vec<(Vec<([f32; WIN_INPUTS], f32)>, Vec<CandGroup>)> = (games..games + batch)
             .into_par_iter()
             .map_init(
                 || (PairStrategy::load(pair_dir), player()),
                 |(pair, player), g| {
                     let game_seed = seed.wrapping_add(g.wrapping_mul(1000));
                     let bufs: [Rc<RefCell<Vec<(State, State)>>>; 2] = Default::default();
+                    let caps: [Rc<RefCell<Vec<CandDecision>>>; 2] = Default::default();
                     let players: Vec<Player> = (0..2)
                         .map(|i| {
                             let rec = TurnEnds {
                                 bot: player.clone(),
                                 recorded: bufs[i].clone(),
+                                capture: cand.map(|c| (c.margin, caps[i].clone())),
                             };
                             Player::new(
                                 Box::new(rec),
@@ -629,19 +686,31 @@ pub fn rollout_positions_by<P: Bot + Clone + 'static>(
                     } else {
                         rollout_labels(&*player, &ends, k, game_seed ^ 0x5011_0075)
                     };
-                    boards
+                    let pos = boards
                         .iter()
                         .zip(stat.into_iter().zip(roll))
                         .map(|(b, (s, r))| (win_input(&b[0], &b[1]), blend * r + (1.0 - blend) * s))
-                        .collect()
+                        .collect();
+                    let labelled = match cand {
+                        Some(c) => caps
+                            .iter()
+                            .flat_map(|b| b.take())
+                            .map(|d| label_decision(&*player, &d, c.k))
+                            .collect(),
+                        None => Vec::new(),
+                    };
+                    (pos, labelled)
                 },
             )
             .collect();
-        out.extend(chunk.into_iter().flatten());
+        for (p, g) in chunk {
+            positions.extend(p);
+            groups.extend(g);
+        }
         games += batch;
     }
-    out.truncate(count);
-    out
+    positions.truncate(count);
+    RoundData { positions, groups }
 }
 
 // ---- Value gap ----
@@ -667,6 +736,7 @@ pub fn turn_ends_by<P: Bot + Clone + 'static>(
                         let rec = TurnEnds {
                             bot: player.clone(),
                             recorded: bufs[i].clone(),
+                            capture: None,
                         };
                         Player::new(
                             Box::new(rec),
@@ -904,6 +974,44 @@ mod tests {
         let device = Default::default();
         <MyBackend as Backend>::seed(&device, seed);
         ManualWinNet::from_model(&WinModelConfig::new().init::<MyBackend>(&device))
+    }
+
+    /// FNV-1a over the bits of every input and label.
+    fn fingerprint(data: &[([f32; WIN_INPUTS], f32)]) -> u64 {
+        let mut h = 0xcbf2_9ce4_8422_2325u64;
+        for (x, y) in data {
+            for v in x.iter().chain(std::iter::once(y)) {
+                h = (h ^ v.to_bits() as u64).wrapping_mul(0x0100_0000_01b3);
+            }
+        }
+        h
+    }
+
+    #[test]
+    fn rollout_positions_by_output_is_pinned() {
+        let data = rollout_positions_by(40, 11, &|| PairStrategy::load("pair_model"), "pair_model", 2, 1.0);
+        assert_eq!(data.len(), 40);
+        assert_eq!(fingerprint(&data), 4406892993736741356);
+    }
+
+    #[test]
+    fn capture_leaves_the_positions_unchanged_and_labels_decisions() {
+        use crate::strategy::search::{GATE_MARGIN, SEARCH_CANDS};
+        let pair = || PairStrategy::load("pair_model");
+        let plain = rollout_round_by(40, 11, &pair, "pair_model", 2, 1.0, None);
+        assert!(plain.groups.is_empty());
+        let cand = Some(CandCfg {
+            k: 4,
+            margin: GATE_MARGIN,
+        });
+        let with = rollout_round_by(40, 11, &pair, "pair_model", 2, 1.0, cand);
+        assert_eq!(plain.positions, with.positions);
+        assert!(!with.groups.is_empty());
+        for g in &with.groups {
+            assert!((2..=SEARCH_CANDS).contains(&g.samples.len()), "{}", g.samples.len());
+            assert_eq!(g.pair_var.len(), g.samples.len() - 1);
+            assert!(g.samples.iter().all(|s| (0.0..=1.0).contains(&s.1)));
+        }
     }
 
     #[test]
