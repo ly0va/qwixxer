@@ -4,12 +4,17 @@
 //!
 //! Design: docs/superpowers/specs/2026-10-17-win-policy-iteration-design.md
 
-use crate::dqn::win_train::outcome;
+use crate::dqn::pair::PairStrategy;
+use crate::dqn::win::{WinModel, WinModelConfig, WinStrategy, WIN_INPUTS};
+use crate::dqn::win_train::{bench_vs_pair, outcome, rollout_positions_by, train_epochs, Ad};
+use crate::dqn::MyBackend;
 use crate::game::{Game, Player};
 use crate::strategy::{Bot, Strategy};
+use burn::{module::AutodiffModule, prelude::*, record::CompactRecorder};
 use rand::{rngs::SmallRng, SeedableRng};
 use rayon::prelude::*;
 use std::collections::VecDeque;
+use std::path::Path;
 
 /// Seed purposes for [`round_seed`].
 pub const POS: u64 = 1;
@@ -145,12 +150,251 @@ pub fn run_gate<A: Bot + Clone + 'static, B: Bot + Clone + 'static>(
     }
 }
 
+/// Learning rate of a from-scratch round 1 (no `--init`), as `win-fit`.
+pub const FRESH_LR: f64 = 1e-3;
+
+pub struct WinPiCfg {
+    pub dir: String,
+    /// Starting champion (a win model dir); `None` = Master plays round 1.
+    pub init: Option<String>,
+    /// Width of a from-scratch net; ignored with `init`.
+    pub width: usize,
+    pub rounds: usize,
+    /// New turn-end positions per round.
+    pub positions: usize,
+    /// Rollouts per position.
+    pub rollouts: usize,
+    /// Rounds of positions the fit trains on.
+    pub window: usize,
+    pub epochs: usize,
+    /// Warm-start learning rate (rounds with a win-net champion).
+    pub lr: f64,
+    pub gate_z: f64,
+    pub gate_block: usize,
+    pub gate_max: usize,
+    /// Yardstick games against Master per round (0 = none).
+    pub master_games: usize,
+    pub seed: u64,
+    pub pair_dir: String,
+}
+
+impl WinPiCfg {
+    /// Every check that can fail, before any work.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.rounds == 0 {
+            return Err("--rounds must be at least 1".into());
+        }
+        if self.rollouts == 0 {
+            return Err("--rollouts must be at least 1".into());
+        }
+        if self.window == 0 {
+            return Err("--window must be at least 1".into());
+        }
+        if self.gate_block < 2 || self.gate_block % 2 != 0 {
+            return Err("--gate-block must be even and at least 2".into());
+        }
+        if self.gate_max < self.gate_block {
+            return Err("--gate-max must be at least --gate-block".into());
+        }
+        if !Path::new(&format!("{}/model.mpk", self.pair_dir)).exists() {
+            return Err(format!("pair model not found at {}/model.mpk", self.pair_dir));
+        }
+        if let Some(init) = &self.init {
+            for f in ["config.json", "model.mpk"] {
+                if !Path::new(&format!("{init}/{f}")).exists() {
+                    return Err(format!("--init {init}: {f} not found"));
+                }
+            }
+        }
+        if Path::new(&self.dir).exists() {
+            return Err(format!(
+                "{} already exists: move it aside or pick another --dir",
+                self.dir
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Write a loadable win model dir (`config.json`, `model.mpk`).
+pub fn save_win(dir: &str, mcfg: &WinModelConfig, model: &WinModel<MyBackend>) {
+    std::fs::create_dir_all(dir).expect("Failed to create the win model dir");
+    mcfg.save(format!("{dir}/config.json"))
+        .expect("Failed to save win model config");
+    model
+        .clone()
+        .save_file(format!("{dir}/model"), &CompactRecorder::new())
+        .expect("Failed to save win model");
+}
+
+fn load_win_ad(dir: &str) -> (WinModelConfig, WinModel<Ad>) {
+    let device = Default::default();
+    let mcfg = WinModelConfig::load(format!("{dir}/config.json")).expect("Failed to load win model config");
+    let model = mcfg
+        .init::<Ad>(&device)
+        .load_file(format!("{dir}/model"), &CompactRecorder::new(), &device)
+        .expect("Failed to load win model");
+    (mcfg, model)
+}
+
+/// The spec's loop. Returns the final champion, or `None` when a
+/// from-scratch round 1 fails to beat Master (nothing to continue from).
+pub fn policy_iteration(cfg: &WinPiCfg) -> Option<WinStrategy> {
+    if let Err(e) = cfg.validate() {
+        panic!("{e}");
+    }
+    let device = Default::default();
+    let start = std::time::Instant::now();
+    std::fs::create_dir_all(&cfg.dir).expect("Failed to create the run dir");
+    let log_path = format!("{}/training.csv", cfg.dir);
+    std::fs::write(
+        &log_path,
+        "round,positions,loss,gate_games,share_vs_champion,z,promoted,share_vs_master,elapsed_s\n",
+    )
+    .expect("Failed to write log");
+    let log = |row: String| {
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&log_path)
+            .expect("Failed to open log");
+        writeln!(f, "{row}").ok();
+    };
+    let pct = |s: Option<f64>| s.map(|s| format!("{:.2}%", s * 100.0)).unwrap_or_else(|| "-".into());
+    let csv = |s: Option<f64>| s.map(|s| format!("{s:.4}")).unwrap_or_default();
+    let yardstick = |m: &WinModel<Ad>| {
+        (cfg.master_games > 0)
+            .then(|| bench_vs_pair(&WinStrategy::from_model(&m.valid()), &cfg.pair_dir, cfg.master_games))
+    };
+    let champion_dir = format!("{}/champion", cfg.dir);
+
+    // `None` = Master is the champion (round 1 of a from-scratch run).
+    let (mcfg, mut champion): (WinModelConfig, Option<WinModel<Ad>>) = match &cfg.init {
+        Some(dir) => {
+            let (mcfg, model) = load_win_ad(dir);
+            (mcfg, Some(model))
+        }
+        None => (WinModelConfig::new().with_width(cfg.width), None),
+    };
+    if let Some(m) = &champion {
+        save_win(&champion_dir, &mcfg, &m.valid());
+        if cfg.master_games > 0 {
+            let s = yardstick(m);
+            println!("Round  0 (init): vs Master {}", pct(s));
+            log(format!("0,,,,,,,{},{}", csv(s), start.elapsed().as_secs()));
+        }
+    }
+
+    let mut window: VecDeque<Vec<([f32; WIN_INPUTS], f32)>> = VecDeque::new();
+    for round in 1..=cfg.rounds {
+        // 1. Generate: the champion's own turn ends, labelled by its rollouts.
+        let pos_seed = round_seed(cfg.seed, round, POS);
+        let data = match &champion {
+            None => rollout_positions_by(
+                cfg.positions,
+                pos_seed,
+                &|| PairStrategy::load(&cfg.pair_dir),
+                &cfg.pair_dir,
+                cfg.rollouts,
+                1.0,
+            ),
+            Some(m) => {
+                let win = WinStrategy::from_model(&m.valid());
+                rollout_positions_by(
+                    cfg.positions,
+                    pos_seed,
+                    &|| win.clone(),
+                    &cfg.pair_dir,
+                    cfg.rollouts,
+                    1.0,
+                )
+            }
+        };
+        // 2. Window: every round's data enters, whatever its gate decides.
+        push_window(&mut window, data, cfg.window);
+        let train: Vec<_> = window.iter().flatten().copied().collect();
+
+        // 3. Fit: warm start from the champion, or from scratch against Master.
+        let fit_seed = round_seed(cfg.seed, round, FIT);
+        let (init_model, lr) = match &champion {
+            Some(m) => (m.clone(), cfg.lr),
+            None => {
+                <Ad as Backend>::seed(&device, fit_seed);
+                (mcfg.init::<Ad>(&device), FRESH_LR)
+            }
+        };
+        let (candidate, loss) = train_epochs(init_model, &train, cfg.epochs, lr, fit_seed);
+        save_win(&format!("{}/round-{round}", cfg.dir), &mcfg, &candidate.valid());
+
+        // 4. Gate: candidate vs champion, paired, sequential.
+        let cand = WinStrategy::from_model(&candidate.valid());
+        let gate_seed = round_seed(cfg.seed, round, GATE);
+        let g = match &champion {
+            None => run_gate(
+                &|| cand.clone(),
+                &|| PairStrategy::load(&cfg.pair_dir),
+                gate_seed,
+                cfg.gate_z,
+                cfg.gate_block,
+                cfg.gate_max,
+            ),
+            Some(m) => {
+                let champ = WinStrategy::from_model(&m.valid());
+                run_gate(
+                    &|| cand.clone(),
+                    &|| champ.clone(),
+                    gate_seed,
+                    cfg.gate_z,
+                    cfg.gate_block,
+                    cfg.gate_max,
+                )
+            }
+        };
+        let verdict = if g.promoted { "promoted" } else { "kept" };
+        let row = |master: Option<f64>| {
+            format!(
+                "{round},{},{loss:.5},{},{:.4},{:.2},{},{},{}",
+                train.len(),
+                g.games,
+                g.share,
+                g.z,
+                g.promoted as u8,
+                csv(master),
+                start.elapsed().as_secs()
+            )
+        };
+        if g.promoted {
+            save_win(&champion_dir, &mcfg, &candidate.valid());
+            champion = Some(candidate);
+        } else if champion.is_none() {
+            println!(
+                "Round {round:>2}: fresh fit lost the gate to Master ({:.2}%, z {:.2}): no win net to continue from",
+                g.share * 100.0,
+                g.z
+            );
+            log(row(None));
+            return None;
+        }
+
+        // 5. Yardstick (logged only) and 6. log.
+        let master = yardstick(champion.as_ref().expect("a win-net champion after round 1"));
+        println!(
+            "Round {round:>2}: {} positions, loss {loss:.4}, gate {} games {:.2}% z {:.2} → {verdict}, champion vs Master {}, {}s",
+            train.len(),
+            g.games,
+            g.share * 100.0,
+            g.z,
+            pct(master),
+            start.elapsed().as_secs()
+        );
+        log(row(master));
+    }
+    champion.map(|m| WinStrategy::from_model(&m.valid()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dqn::win::{WinModelConfig, WinStrategy};
-    use crate::dqn::MyBackend;
-    use burn::prelude::*;
 
     /// A random W=4 net. Burn's seed is global, so seeding and init are
     /// serialized: parallel tests must not interleave between the two.
@@ -266,5 +510,130 @@ mod tests {
     fn gate_rejects_zero_variance() {
         assert_eq!(gate_decision(&[0.5; 10], 2.0, false).0, Gate::Reject);
         assert_eq!(gate_decision(&[0.5], 2.0, false).0, Gate::Reject);
+    }
+
+    fn tmp(name: &str) -> String {
+        let d = std::env::temp_dir().join(format!("qwixxer-win-pi-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        d.to_string_lossy().into_owned()
+    }
+
+    fn tiny_cfg(dir: String, init: Option<String>) -> WinPiCfg {
+        WinPiCfg {
+            dir,
+            init,
+            width: 4,
+            rounds: 2,
+            positions: 30,
+            rollouts: 2,
+            window: 2,
+            epochs: 1,
+            lr: 3e-4,
+            gate_z: 2.0,
+            gate_block: 4,
+            gate_max: 8,
+            master_games: 2,
+            seed: 42,
+            pair_dir: "pair_model".into(),
+        }
+    }
+
+    #[test]
+    fn validate_refuses_bad_settings_before_any_work() {
+        let base = tmp("validate");
+        let ok = tiny_cfg(format!("{base}/run"), None);
+        assert_eq!(ok.validate(), Ok(()));
+        let err = |c: WinPiCfg| c.validate().unwrap_err();
+        assert!(err(WinPiCfg {
+            rollouts: 0,
+            ..tiny_cfg(ok.dir.clone(), None)
+        })
+        .contains("--rollouts"));
+        assert!(err(WinPiCfg {
+            window: 0,
+            ..tiny_cfg(ok.dir.clone(), None)
+        })
+        .contains("--window"));
+        assert!(err(WinPiCfg {
+            rounds: 0,
+            ..tiny_cfg(ok.dir.clone(), None)
+        })
+        .contains("--rounds"));
+        assert!(err(WinPiCfg {
+            gate_block: 3,
+            ..tiny_cfg(ok.dir.clone(), None)
+        })
+        .contains("--gate-block"));
+        assert!(err(WinPiCfg {
+            gate_max: 2,
+            ..tiny_cfg(ok.dir.clone(), None)
+        })
+        .contains("--gate-max"));
+        assert!(err(tiny_cfg(ok.dir.clone(), Some(format!("{base}/nope")))).contains("--init"));
+        assert!(err(WinPiCfg {
+            pair_dir: format!("{base}/nope"),
+            ..tiny_cfg(ok.dir.clone(), None)
+        })
+        .contains("pair model"));
+        std::fs::create_dir_all(&ok.dir).unwrap();
+        assert!(err(tiny_cfg(ok.dir.clone(), None)).contains("already exists"));
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn two_rounds_from_an_init_net_write_the_run() {
+        let base = tmp("smoke");
+        let init = format!("{base}/init");
+        let device = Default::default();
+        <MyBackend as Backend>::seed(&device, 3);
+        let mcfg = WinModelConfig::new().with_width(4);
+        let model: WinModel<MyBackend> = mcfg.init(&device);
+        save_win(&init, &mcfg, &model);
+        let cfg = tiny_cfg(format!("{base}/run"), Some(init));
+        assert!(policy_iteration(&cfg).is_some());
+        for d in ["round-1", "round-2", "champion"] {
+            assert!(
+                std::path::Path::new(&format!("{}/{d}/model.mpk", cfg.dir)).exists(),
+                "{d}"
+            );
+            assert!(
+                std::path::Path::new(&format!("{}/{d}/config.json", cfg.dir)).exists(),
+                "{d}"
+            );
+        }
+        let csv = std::fs::read_to_string(format!("{}/training.csv", cfg.dir)).unwrap();
+        let lines: Vec<&str> = csv.lines().collect();
+        assert_eq!(
+            lines[0],
+            "round,positions,loss,gate_games,share_vs_champion,z,promoted,share_vs_master,elapsed_s"
+        );
+        assert_eq!(lines.len(), 4, "{csv}");
+        assert!(lines[1].starts_with("0,,,,,,,"), "{}", lines[1]);
+        for (i, row) in lines[2..].iter().enumerate() {
+            let f: Vec<&str> = row.split(',').collect();
+            assert_eq!(f.len(), 9, "{row}");
+            assert_eq!(f[0], (i + 1).to_string());
+            assert!(f[6] == "0" || f[6] == "1", "{row}");
+            assert!(!f[7].is_empty(), "{row}");
+        }
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn a_fresh_start_that_loses_to_master_stops_cleanly() {
+        let base = tmp("fresh");
+        // A barely trained W=4 net cannot beat Master over 8 games with z > 2.
+        let cfg = WinPiCfg {
+            master_games: 0,
+            ..tiny_cfg(format!("{base}/run"), None)
+        };
+        assert!(policy_iteration(&cfg).is_none());
+        assert!(std::path::Path::new(&format!("{}/round-1/model.mpk", cfg.dir)).exists());
+        assert!(!std::path::Path::new(&format!("{}/champion", cfg.dir)).exists());
+        let csv = std::fs::read_to_string(format!("{}/training.csv", cfg.dir)).unwrap();
+        let rows: Vec<&str> = csv.lines().skip(1).collect();
+        assert_eq!(rows.len(), 1, "{csv}");
+        assert_eq!(rows[0].split(',').nth(6), Some("0"));
+        std::fs::remove_dir_all(&base).unwrap();
     }
 }
