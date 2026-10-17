@@ -4,11 +4,14 @@
 //!
 //! Design: docs/superpowers/specs/2026-10-17-win-candidate-distillation-design.md
 
+use crate::dqn::win::{swap_input, win_input, WIN_INPUTS};
 use crate::state::{Mark, State};
 use crate::strategy::bot_impl::{active_phase1_choices, active_phase2_choices, passive_phase1_choices, Decision};
 use crate::strategy::search::{
-    context_seed, gates_with, passive_entry, passive_first_active, phase1_entry, phase2_entry, SEARCH_CANDS,
+    context_seed, gates_with, passive_entry, passive_first_active, phase1_entry, phase2_entry, rollout_final_states,
+    SEARCH_CANDS,
 };
+use crate::strategy::sim::SimGame;
 use crate::strategy::Bot;
 
 /// A decision win-search would search, ready to label: one entry per kept
@@ -137,11 +140,119 @@ pub fn capture_passive(
     })
 }
 
+/// One labelled decision: a training sample per kept candidate (best static
+/// value first) and the CRN spread of each runner-up's difference to the
+/// first candidate.
+#[derive(Clone, Debug)]
+pub struct CandGroup {
+    /// (input, P(win)) in the turn-end frame (the other player to move).
+    pub samples: Vec<([f32; WIN_INPUTS], f32)>,
+    /// `pair_var[i − 1]`: sample variance over the rollouts of
+    /// outcome(i) − outcome(0), for candidates i ≥ 1.
+    pub pair_var: Vec<f32>,
+    /// The entries had me to move next, so the samples are stored from the
+    /// opponent's side (`swap_input`, `1 − label`).
+    pub swapped: bool,
+}
+
+/// Sample variance (n − 1); 0 below two values.
+fn sample_var(xs: &[f32]) -> f32 {
+    if xs.len() < 2 {
+        return 0.0;
+    }
+    let n = xs.len() as f32;
+    let mean = xs.iter().sum::<f32>() / n;
+    xs.iter().map(|x| (x - mean) * (x - mean)).sum::<f32>() / (n - 1.0)
+}
+
+/// Label every kept candidate with `k` full-game CRN rollouts by `bot`:
+/// mean outcome for me (win 1, tie ½); an ended entry's exact result stands
+/// for every rollout.
+pub fn label_decision(bot: &impl Bot, d: &CandDecision, k: usize) -> CandGroup {
+    let finals = rollout_final_states(bot, &d.entries, d.seed, k, d.first_active, false);
+    let outcomes: Vec<Vec<f32>> = finals
+        .iter()
+        .map(|f| {
+            let o: Vec<f32> = f.iter().map(|states| SimGame::outcome(states)).collect();
+            if o.len() == 1 {
+                vec![o[0]; k]
+            } else {
+                o
+            }
+        })
+        .collect();
+    let swapped = d.first_active == 0;
+    let samples = d
+        .entries
+        .iter()
+        .zip(&outcomes)
+        .map(|((e, _), o)| {
+            assert_eq!(e.len(), 2, "the win net is 2-player only");
+            let x = win_input(&e[0], &e[1]);
+            let y = o.iter().sum::<f32>() / k as f32;
+            if swapped {
+                (swap_input(&x), 1.0 - y)
+            } else {
+                (x, y)
+            }
+        })
+        .collect();
+    let pair_var = outcomes[1..]
+        .iter()
+        .map(|o| {
+            let diffs: Vec<f32> = o.iter().zip(&outcomes[0]).map(|(a, b)| a - b).collect();
+            sample_var(&diffs)
+        })
+        .collect();
+    CandGroup {
+        samples,
+        pair_var,
+        swapped,
+    }
+}
+
+/// The champion's error on the differences between candidates.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DiffReport {
+    pub decisions: usize,
+    /// RMS over runner-ups of (p_i − p_0) − (y_i − y_0).
+    pub diff_rmse: f32,
+    /// The part of `diff_rmse` the labels' own noise explains: √(mean pair_var / k).
+    pub diff_noise: f32,
+    /// Share of decisions whose best label (for me) is not the first
+    /// candidate, the static pick.
+    pub flip_share: f32,
+}
+
+/// `preds[g][i]` = the champion's P for `groups[g].samples[i]` (the
+/// samples' frame). `None` when no decision has a runner-up.
+pub fn diff_stats(preds: &[Vec<f32>], groups: &[CandGroup], k: usize) -> Option<DiffReport> {
+    let (mut sq, mut var, mut pairs, mut flips) = (0.0f64, 0.0f64, 0usize, 0usize);
+    for (p, g) in preds.iter().zip(groups) {
+        let y: Vec<f32> = g.samples.iter().map(|s| s.1).collect();
+        for i in 1..y.len() {
+            let e = (p[i] - p[0]) - (y[i] - y[0]);
+            sq += (e * e) as f64;
+            var += g.pair_var[i - 1] as f64;
+            pairs += 1;
+        }
+        // Best label for me; ties keep the first (static) candidate.
+        let mine: Vec<f32> = y.iter().map(|&v| if g.swapped { 1.0 - v } else { v }).collect();
+        let best = (1..mine.len()).fold(0, |b, i| if mine[i] > mine[b] { i } else { b });
+        flips += (best != 0) as usize;
+    }
+    (pairs > 0).then(|| DiffReport {
+        decisions: groups.len(),
+        diff_rmse: (sq / pairs as f64).sqrt() as f32,
+        diff_noise: (var / pairs as f64 / k as f64).sqrt() as f32,
+        flip_share: flips as f32 / groups.len() as f32,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::dqn::pair::PairStrategy;
-    use crate::dqn::win::win_input;
     use crate::dqn::win_train::turn_ends_by;
 
     fn pair() -> PairStrategy {
@@ -163,7 +274,7 @@ mod tests {
             .collect()
     }
 
-    fn board(e: &(Vec<State>, bool)) -> [f32; crate::dqn::win::WIN_INPUTS] {
+    fn board(e: &(Vec<State>, bool)) -> [f32; WIN_INPUTS] {
         win_input(&e.0[0], &e.0[1])
     }
 
@@ -247,5 +358,106 @@ mod tests {
             assert!(capture_active2(&bot, &me, &[], dice, false, f32::INFINITY).is_none());
             assert!(capture_active1(&bot, &me, &[], dice, f32::INFINITY).is_none());
         }
+    }
+
+    #[test]
+    fn an_ended_candidate_gets_its_exact_result_and_crn_holds() {
+        let bot = pair();
+        let opp = State::default();
+        let mut done = State::default();
+        for _ in 0..4 {
+            done.apply_strike();
+        }
+        let live = phase2_entry(State::default(), &[opp]);
+        let ended = phase2_entry(done, &[opp]);
+        assert!(ended.1 && !live.1);
+        let d = CandDecision {
+            entries: vec![live.clone(), ended.clone(), live.clone()],
+            first_active: 1,
+            seed: 9,
+        };
+        let g = label_decision(&bot, &d, 8);
+        assert!(!g.swapped);
+        assert_eq!(g.samples.len(), 3);
+        assert_eq!(g.samples[0].0, board(&live));
+        // Four strikes: −20 against 0, an exact loss.
+        assert_eq!(g.samples[1].1, 0.0);
+        // Identical candidates share every rollout's dice.
+        assert_eq!(g.samples[0].1, g.samples[2].1);
+        assert_eq!(g.pair_var.len(), 2);
+        assert_eq!(g.pair_var[1], 0.0);
+        // Deterministic for a seed.
+        assert_eq!(label_decision(&bot, &d, 8).samples, g.samples);
+    }
+
+    #[test]
+    fn me_next_entries_are_stored_from_the_opponents_side() {
+        let bot = pair();
+        let opp = State::default();
+        let mut marked = State::default();
+        marked.apply_mark(Mark { row: 0, number: 2 });
+        let entries = vec![phase2_entry(marked, &[opp]), phase2_entry(State::default(), &[opp])];
+        let d = CandDecision {
+            entries: entries.clone(),
+            first_active: 0,
+            seed: 9,
+        };
+        let g = label_decision(&bot, &d, 8);
+        assert!(g.swapped);
+        let finals = rollout_final_states(&bot, &entries, 9, 8, 0, false);
+        let mean = finals[0].iter().map(|f| SimGame::outcome(f)).sum::<f32>() / 8.0;
+        assert_eq!(g.samples[0].0, swap_input(&board(&entries[0])));
+        assert!((g.samples[0].1 - (1.0 - mean)).abs() < 1e-6);
+    }
+
+    fn group(labels: &[f32], pair_var: &[f32], swapped: bool) -> CandGroup {
+        CandGroup {
+            samples: labels.iter().map(|&y| ([0.0; WIN_INPUTS], y)).collect(),
+            pair_var: pair_var.to_vec(),
+            swapped,
+        }
+    }
+
+    #[test]
+    fn a_constant_shift_has_no_difference_error() {
+        let gs = vec![
+            group(&[0.6, 0.4, 0.5], &[0.04, 0.08], false),
+            group(&[0.3, 0.7], &[0.02], false),
+        ];
+        let preds: Vec<Vec<f32>> = gs
+            .iter()
+            .map(|g| g.samples.iter().map(|s| s.1 + 0.1).collect())
+            .collect();
+        let r = diff_stats(&preds, &gs, 4).unwrap();
+        assert_eq!(r.decisions, 2);
+        assert!(r.diff_rmse < 1e-6, "{r:?}");
+        assert!((r.diff_noise - (0.14f32 / 3.0 / 4.0).sqrt()).abs() < 1e-6, "{r:?}");
+        // The second decision's best label is its runner-up.
+        assert!((r.flip_share - 0.5).abs() < 1e-6, "{r:?}");
+    }
+
+    #[test]
+    fn difference_error_is_rms_over_runner_ups() {
+        let gs = vec![group(&[0.5, 0.5, 0.5], &[0.0, 0.0], false)];
+        let r = diff_stats(&[vec![0.5, 0.8, 0.1]], &gs, 4).unwrap();
+        // Errors 0.3 and −0.4.
+        assert!((r.diff_rmse - (0.125f32).sqrt()).abs() < 1e-6, "{r:?}");
+        assert_eq!(r.diff_noise, 0.0);
+        // Ties keep the first candidate.
+        assert_eq!(r.flip_share, 0.0);
+    }
+
+    #[test]
+    fn flips_are_judged_for_me_in_swapped_groups() {
+        // Stored [0.4, 0.6] from the opponent's side is [0.6, 0.4] for me.
+        let swapped = diff_stats(&[vec![0.4, 0.6]], &[group(&[0.4, 0.6], &[0.0], true)], 4).unwrap();
+        assert_eq!(swapped.flip_share, 0.0);
+        let plain = diff_stats(&[vec![0.4, 0.6]], &[group(&[0.4, 0.6], &[0.0], false)], 4).unwrap();
+        assert_eq!(plain.flip_share, 1.0);
+    }
+
+    #[test]
+    fn no_decisions_no_report() {
+        assert!(diff_stats(&[], &[], 4).is_none());
     }
 }
