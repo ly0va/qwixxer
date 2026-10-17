@@ -401,6 +401,50 @@ enum Commands {
         #[arg(long)]
         player: Option<String>,
     },
+    /// Win-net policy iteration: rollout labels from the champion's own games, gated promotion
+    #[cfg(feature = "dqn")]
+    WinPi {
+        /// Output dir (must not exist): round-<i>/, champion/, training.csv
+        #[arg(long, default_value = "win_pi")]
+        dir: String,
+        /// Starting champion (a win model dir, e.g. win_model); without it Master plays round 1
+        #[arg(long)]
+        init: Option<String>,
+        /// Width of a from-scratch net (ignored with --init)
+        #[arg(long, default_value = "64")]
+        width: usize,
+        #[arg(long, default_value = "10")]
+        rounds: usize,
+        /// New turn-end positions per round
+        #[arg(long, default_value = "300000")]
+        positions: usize,
+        /// Rollouts per position
+        #[arg(long, default_value = "64")]
+        rollouts: usize,
+        /// Rounds of positions each fit trains on
+        #[arg(long, default_value = "2")]
+        window: usize,
+        /// Epochs per fit
+        #[arg(long, default_value = "20")]
+        epochs: usize,
+        /// Warm-start learning rate (a from-scratch round 1 uses 1e-3)
+        #[arg(long, default_value = "3e-4")]
+        lr: f64,
+        /// Promote when z = (share − ½)/se exceeds this
+        #[arg(long, default_value = "2.0")]
+        gate_z: f64,
+        /// Gate games per block (even)
+        #[arg(long, default_value = "100000")]
+        gate_block: usize,
+        /// Gate games at most
+        #[arg(long, default_value = "1000000")]
+        gate_max: usize,
+        /// Champion vs Master games per round, logged only (0 = skip)
+        #[arg(long, default_value = "200000")]
+        master_games: usize,
+        #[arg(long, default_value = "42")]
+        seed: u64,
+    },
 }
 
 fn run_play(bots: Vec<BotType>, verbose: bool) {
@@ -921,6 +965,46 @@ fn main() {
                 blend,
                 player,
             });
+        }
+        #[cfg(feature = "dqn")]
+        Some(Commands::WinPi {
+            dir,
+            init,
+            width,
+            rounds,
+            positions,
+            rollouts,
+            window,
+            epochs,
+            lr,
+            gate_z,
+            gate_block,
+            gate_max,
+            master_games,
+            seed,
+        }) => {
+            let cfg = dqn::win_pi::WinPiCfg {
+                dir,
+                init,
+                width,
+                rounds,
+                positions,
+                rollouts,
+                window,
+                epochs,
+                lr,
+                gate_z,
+                gate_block,
+                gate_max,
+                master_games,
+                seed,
+                pair_dir: "pair_model".into(),
+            };
+            if let Err(e) = cfg.validate() {
+                eprintln!("win-pi: {e}");
+                std::process::exit(2);
+            }
+            dqn::win_pi::policy_iteration(&cfg);
         }
         None => {
             // Default: play against MCTS
