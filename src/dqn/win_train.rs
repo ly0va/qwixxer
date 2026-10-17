@@ -620,8 +620,8 @@ pub struct CandCfg {
 /// One round's data from [`rollout_round_by`].
 pub struct RoundData {
     pub positions: Vec<([f32; WIN_INPUTS], f32)>,
-    /// The labelled decisions of every game played. The positions are cut
-    /// to `count`; the last games' decisions are kept whole.
+    /// The labelled decisions of the games whose turn ends are kept: every
+    /// game up to and including the one the `count` cut falls in.
     pub groups: Vec<CandGroup>,
 }
 
@@ -645,7 +645,7 @@ pub fn rollout_round_by<P: Bot + Clone + 'static>(
     // games. Seeds depend only on the game index, so batching never changes
     // the output.
     let mut positions = Vec::with_capacity(count);
-    let mut groups = Vec::new();
+    let mut kept: Vec<CandDecision> = Vec::new();
     let mut games = 0u64;
     while positions.len() < count {
         let per_game = if games == 0 {
@@ -654,7 +654,7 @@ pub fn rollout_round_by<P: Bot + Clone + 'static>(
             positions.len() as f64 / games as f64
         };
         let batch = (((count - positions.len()) as f64 / per_game).ceil() as u64).max(64);
-        let chunk: Vec<(Vec<([f32; WIN_INPUTS], f32)>, Vec<CandGroup>)> = (games..games + batch)
+        let chunk: Vec<(Vec<([f32; WIN_INPUTS], f32)>, Vec<CandDecision>)> = (games..games + batch)
             .into_par_iter()
             .map_init(
                 || (PairStrategy::load(pair_dir), player()),
@@ -691,25 +691,31 @@ pub fn rollout_round_by<P: Bot + Clone + 'static>(
                         .zip(stat.into_iter().zip(roll))
                         .map(|(b, (s, r))| (win_input(&b[0], &b[1]), blend * r + (1.0 - blend) * s))
                         .collect();
-                    let labelled = match cand {
-                        Some(c) => caps
-                            .iter()
-                            .flat_map(|b| b.take())
-                            .map(|d| label_decision(&*player, &d, c.k))
-                            .collect(),
-                        None => Vec::new(),
-                    };
-                    (pos, labelled)
+                    let captured: Vec<CandDecision> = caps.iter().flat_map(|b| b.take()).collect();
+                    (pos, captured)
                 },
             )
             .collect();
-        for (p, g) in chunk {
-            positions.extend(p);
-            groups.extend(g);
+        // Games in order; a game's decisions count only while its turn ends
+        // are (at least partly) kept, so candidates and turn ends come from
+        // the same games.
+        for (p, d) in chunk {
+            if positions.len() < count {
+                positions.extend(p);
+                kept.extend(d);
+            }
         }
         games += batch;
     }
     positions.truncate(count);
+    // Label only the kept decisions; the order is the capture order.
+    let groups = match cand {
+        Some(c) => kept
+            .into_par_iter()
+            .map_init(player, |player, d| label_decision(&*player, &d, c.k))
+            .collect(),
+        None => Vec::new(),
+    };
     RoundData { positions, groups }
 }
 
@@ -1011,6 +1017,30 @@ mod tests {
             assert!((2..=SEARCH_CANDS).contains(&g.samples.len()), "{}", g.samples.len());
             assert_eq!(g.pair_var.len(), g.samples.len() - 1);
             assert!(g.samples.iter().all(|s| (0.0..=1.0).contains(&s.1)));
+        }
+    }
+
+    #[test]
+    fn candidates_come_only_from_the_games_whose_positions_are_kept() {
+        use crate::strategy::search::GATE_MARGIN;
+        let pair = || PairStrategy::load("pair_model");
+        let cand = Some(CandCfg {
+            k: 2,
+            margin: GATE_MARGIN,
+        });
+        // 10 turn ends fit in the first game; 40 need a second one. Both
+        // play a first batch of 64 games.
+        let one = rollout_round_by(10, 11, &pair, "pair_model", 2, 1.0, cand);
+        let two = rollout_round_by(40, 11, &pair, "pair_model", 2, 1.0, cand);
+        assert!(!one.groups.is_empty());
+        assert!(
+            one.groups.len() < two.groups.len(),
+            "{} vs {}",
+            one.groups.len(),
+            two.groups.len()
+        );
+        for (a, b) in one.groups.iter().zip(&two.groups) {
+            assert_eq!(a.samples, b.samples);
         }
     }
 
