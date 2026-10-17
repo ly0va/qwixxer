@@ -25,6 +25,8 @@ pub mod pair_train;
 pub mod win_train;
 
 #[cfg(feature = "dqn")]
+pub mod win_distill;
+#[cfg(feature = "dqn")]
 pub mod win_pi;
 
 pub mod pair;
