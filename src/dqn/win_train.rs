@@ -530,13 +530,32 @@ impl<B: Bot> Strategy for TurnEnds<B> {
 /// full-game CRN rollouts with `bot` playing both seats, the opponent to act
 /// first. A finished position's label is its exact result.
 pub fn rollout_labels(bot: &impl Bot, positions: &[(State, State)], k: usize, seed: u64) -> Vec<f32> {
+    rollout_label_stats(bot, positions, k, seed)
+        .into_iter()
+        .map(|(mean, _)| mean)
+        .collect()
+}
+
+/// [`rollout_labels`] with each label's spread: (mean outcome, sample
+/// variance of the `k` outcomes; 0 for a finished position).
+pub fn rollout_label_stats(bot: &impl Bot, positions: &[(State, State)], k: usize, seed: u64) -> Vec<(f32, f32)> {
     if positions.is_empty() {
         return Vec::new();
     }
     let entries: Vec<(Vec<State>, bool)> = positions.iter().map(|(me, opp)| phase2_entry(*me, &[*opp])).collect();
     rollout_final_states(bot, &entries, seed, k, 1, false)
         .iter()
-        .map(|finals| finals.iter().map(|f| SimGame::outcome(f)).sum::<f32>() / finals.len() as f32)
+        .map(|finals| {
+            let outcomes: Vec<f32> = finals.iter().map(|f| SimGame::outcome(f)).collect();
+            let n = outcomes.len() as f32;
+            let mean = outcomes.iter().sum::<f32>() / n;
+            let var = if outcomes.len() < 2 {
+                0.0
+            } else {
+                outcomes.iter().map(|o| (o - mean) * (o - mean)).sum::<f32>() / (n - 1.0)
+            };
+            (mean, var)
+        })
         .collect()
 }
 
@@ -623,6 +642,165 @@ pub fn rollout_positions_by<P: Bot + Clone + 'static>(
     }
     out.truncate(count);
     out
+}
+
+// ---- Value gap ----
+
+/// The first `count` turn ends (me, opp) of `player`'s self-play games,
+/// game `g` seeded `seed + 1000·g` (as in [`rollout_positions_by`]).
+pub fn turn_ends_by<P: Bot + Clone + 'static>(
+    count: usize,
+    seed: u64,
+    player: &(dyn Fn() -> P + Sync),
+) -> Vec<(State, State)> {
+    let mut out = Vec::with_capacity(count);
+    let mut games = 0u64;
+    while out.len() < count {
+        let batch = (((count - out.len()) as u64).div_ceil(25)).max(64);
+        let chunk: Vec<Vec<(State, State)>> = (games..games + batch)
+            .into_par_iter()
+            .map_init(player, |player, g| {
+                let game_seed = seed.wrapping_add(g.wrapping_mul(1000));
+                let bufs: [Rc<RefCell<Vec<(State, State)>>>; 2] = Default::default();
+                let players: Vec<Player> = (0..2)
+                    .map(|i| {
+                        let rec = TurnEnds {
+                            bot: player.clone(),
+                            recorded: bufs[i].clone(),
+                        };
+                        Player::new(
+                            Box::new(rec),
+                            Box::new(SmallRng::seed_from_u64(game_seed.wrapping_add(i as u64))),
+                        )
+                    })
+                    .collect();
+                Game::new(players).play();
+                bufs.iter().flat_map(|b| b.take()).collect()
+            })
+            .collect();
+        out.extend(chunk.into_iter().flatten());
+        games += batch;
+    }
+    out.truncate(count);
+    out
+}
+
+/// How far a net's P(win) is from its own play-out value.
+#[derive(Debug)]
+pub struct GapReport {
+    pub positions: usize,
+    /// Mean |prediction − label| and mean (prediction − label).
+    pub mae: f32,
+    pub bias: f32,
+    /// RMS(prediction − label), labels' noise included.
+    pub rmse_raw: f32,
+    /// Mean variance of a label (outcome variance / K): its sampling noise.
+    pub noise_var: f32,
+    /// The net's own RMS error: √(rmse_raw² − noise_var), floored at 0.
+    pub rmse: f32,
+    /// A K = 64 training label's noise (SD), for scale.
+    pub noise_sd_64: f32,
+    /// The constant logit shift that best fits the labels (a turn-end
+    /// tempo term the antisymmetric net cannot represent), and the net's
+    /// RMS error after it, label noise removed: the error that is left to
+    /// matter when candidates are compared.
+    pub offset: f32,
+    pub rmse_offset: f32,
+    /// Ten bins by prediction ([0, 0.1), …, [0.9, 1]): (count, mean
+    /// prediction, mean label).
+    pub calibration: Vec<(usize, f32, f32)>,
+}
+
+/// [`GapReport`] from predictions and (mean, outcome variance) labels of
+/// `k` rollouts each.
+pub fn gap_stats(preds: &[f32], labels: &[(f32, f32)], k: usize) -> GapReport {
+    let n = preds.len().max(1) as f32;
+    let diffs: Vec<f32> = preds.iter().zip(labels).map(|(p, (m, _))| p - m).collect();
+    let mse = diffs.iter().map(|d| d * d).sum::<f32>() / n;
+    let mean_var = labels.iter().map(|l| l.1).sum::<f32>() / n;
+    let noise_var = mean_var / k as f32;
+    let mut bins = vec![(0usize, 0.0f32, 0.0f32); 10];
+    for (p, (m, _)) in preds.iter().zip(labels) {
+        let b = &mut bins[((p * 10.0) as usize).min(9)];
+        *b = (b.0 + 1, b.1 + p, b.2 + m);
+    }
+    let calibration = bins
+        .into_iter()
+        .map(|(c, p, m)| {
+            if c == 0 {
+                (0, 0.0, 0.0)
+            } else {
+                (c, p / c as f32, m / c as f32)
+            }
+        })
+        .collect();
+    // Grid search over a logit shift in [−1, 1] (MSE is smooth and
+    // unimodal in it); predictions clamped away from 0 and 1 first.
+    let logits: Vec<f32> = preds
+        .iter()
+        .map(|p| {
+            let p = p.clamp(1e-6, 1.0 - 1e-6);
+            (p / (1.0 - p)).ln()
+        })
+        .collect();
+    let mse_at = |c: f32| {
+        logits
+            .iter()
+            .zip(labels)
+            .map(|(z, (m, _))| (sigmoid(z + c) - m).powi(2))
+            .sum::<f32>()
+            / n
+    };
+    let (offset, mse_offset) = (-200..=200)
+        .map(|i| i as f32 * 0.005)
+        .map(|c| (c, mse_at(c)))
+        .min_by(|a, b| a.1.total_cmp(&b.1))
+        .unwrap();
+    GapReport {
+        offset,
+        rmse_offset: (mse_offset - noise_var).max(0.0).sqrt(),
+        positions: preds.len(),
+        mae: diffs.iter().map(|d| d.abs()).sum::<f32>() / n,
+        bias: diffs.iter().sum::<f32>() / n,
+        rmse_raw: mse.sqrt(),
+        noise_var,
+        rmse: (mse - noise_var).max(0.0).sqrt(),
+        noise_sd_64: (mean_var / 64.0).sqrt(),
+        calibration,
+    }
+}
+
+/// Turn ends skipped between two measured ones in [`value_gap`].
+pub const GAP_STRIDE: usize = 10;
+
+/// The win net in `dir` against its own `k`-rollout P(win) on `count`
+/// turn ends of its self-play games: is its error fit capacity or label
+/// quality? Every [`GAP_STRIDE`]th turn end is kept, so the positions come
+/// from many games rather than a few long correlated ones. Labels run 16
+/// positions per task, CRN within a task.
+pub fn value_gap(dir: &str, count: usize, k: usize, seed: u64) -> GapReport {
+    let win = WinStrategy::load(dir);
+    let ends: Vec<(State, State)> = turn_ends_by(count * GAP_STRIDE, seed, &|| win.clone())
+        .into_iter()
+        .step_by(GAP_STRIDE)
+        .collect();
+    let labels: Vec<(f32, f32)> = ends
+        .par_chunks(16)
+        .enumerate()
+        .map_init(
+            || win.clone(),
+            |w, (i, chunk)| rollout_label_stats(w, chunk, k, seed ^ 0x6A9_0000 ^ (i as u64).wrapping_mul(0x9E37_79B9)),
+        )
+        .collect::<Vec<_>>()
+        .concat();
+    let preds: Vec<f32> = ends
+        .iter()
+        .map(|(me, opp)| {
+            let b = phase2_entry(*me, &[*opp]).0;
+            sigmoid(win.net.logit(&win_input(&b[0], &b[1])))
+        })
+        .collect();
+    gap_stats(&preds, &labels, k)
 }
 
 /// Mean |sigmoid(logit) − target| over `data`.
@@ -1126,5 +1304,82 @@ mod tests {
         cfg.bench = 4;
         cfg.pair_dir = "no_such_pair_model".into();
         self_play_train(&cfg);
+    }
+
+    #[test]
+    fn gap_stats_subtract_the_labels_own_sampling_noise() {
+        // Exact predictions: no error at all.
+        let labels = vec![(0.3, 0.25), (0.7, 0.25)];
+        let r = gap_stats(&[0.3, 0.7], &labels, 100);
+        assert_eq!((r.positions, r.mae, r.rmse_raw, r.rmse), (2, 0.0, 0.0, 0.0));
+        // Off by +0.1 everywhere: raw RMSE 0.1, of which var/K = 0.0025 is
+        // the K = 100 labels' noise, leaving √0.0075 for the net.
+        let r = gap_stats(&[0.4, 0.8], &labels, 100);
+        assert!((r.bias - 0.1).abs() < 1e-6 && (r.mae - 0.1).abs() < 1e-6);
+        assert!((r.rmse_raw - 0.1).abs() < 1e-6);
+        assert!((r.noise_var - 0.0025).abs() < 1e-7);
+        assert!((r.rmse - 0.0075f32.sqrt()).abs() < 1e-6);
+        assert!((r.noise_sd_64 - (0.25f32 / 64.0).sqrt()).abs() < 1e-6);
+    }
+
+    #[test]
+    fn gap_stats_find_a_constant_logit_offset() {
+        // Predictions shifted by +0.2 in logit from exact labels: the best
+        // offset undoes it and leaves (almost) no error.
+        let labels: Vec<(f32, f32)> = (1..20).map(|i| (i as f32 / 20.0, 0.0)).collect();
+        let preds: Vec<f32> = labels
+            .iter()
+            .map(|(m, _)| sigmoid((m / (1.0 - m)).ln() + 0.2))
+            .collect();
+        let r = gap_stats(&preds, &labels, 1000);
+        assert!((r.offset + 0.2).abs() < 0.006, "offset {}", r.offset);
+        assert!(r.rmse_offset < 2e-3 && r.rmse > 0.02, "{r:?}");
+    }
+
+    #[test]
+    fn gap_stats_bin_calibration_by_prediction() {
+        let r = gap_stats(
+            &[0.05, 0.07, 0.95, 1.0],
+            &[(0.0, 0.0), (0.2, 0.0), (1.0, 0.0), (1.0, 0.0)],
+            10,
+        );
+        assert_eq!(r.calibration.len(), 10);
+        let (n, pred, label) = r.calibration[0];
+        assert_eq!(n, 2);
+        assert!((pred - 0.06).abs() < 1e-6 && (label - 0.1).abs() < 1e-6);
+        // 1.0 falls in the top bin, not an eleventh one.
+        assert_eq!(r.calibration[9].0, 2);
+        assert!(r.calibration[1..9].iter().all(|b| b.0 == 0));
+    }
+
+    #[test]
+    fn rollout_label_stats_means_are_rollout_labels() {
+        let bot = WinStrategy { net: Arc::new(net(5)) };
+        let ends = turn_ends_by(12, 9, &|| bot.clone());
+        assert_eq!(ends.len(), 12);
+        let stats = rollout_label_stats(&bot, &ends, 8, 3);
+        let means: Vec<f32> = stats.iter().map(|s| s.0).collect();
+        assert_eq!(means, rollout_labels(&bot, &ends, 8, 3));
+        assert!(stats.iter().all(|&(m, v)| (0.0..=1.0).contains(&m) && v >= 0.0));
+        assert_eq!(ends, turn_ends_by(12, 9, &|| bot.clone()));
+    }
+
+    #[test]
+    fn value_gap_reports_on_a_saved_net() {
+        let dir = std::env::temp_dir().join(format!("qwixxer-win-gap-{}", std::process::id()));
+        let dir = dir.to_str().unwrap().to_string();
+        std::fs::remove_dir_all(&dir).ok();
+        let device = Default::default();
+        let mcfg = WinModelConfig::new().with_width(4);
+        std::fs::create_dir_all(&dir).unwrap();
+        mcfg.save(format!("{dir}/config.json")).unwrap();
+        mcfg.init::<MyBackend>(&device)
+            .save_file(format!("{dir}/model"), &CompactRecorder::new())
+            .unwrap();
+        let r = value_gap(&dir, 20, 8, 1);
+        assert_eq!(r.positions, 20);
+        assert!(r.rmse.is_finite() && r.rmse <= r.rmse_raw + 1e-6);
+        assert_eq!(r.calibration.iter().map(|b| b.0).sum::<usize>(), 20);
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

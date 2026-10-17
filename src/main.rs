@@ -401,6 +401,21 @@ enum Commands {
         #[arg(long)]
         player: Option<String>,
     },
+    /// Win-net value gap: the net's P(win) vs its own many-rollout P(win) on its self-play turn ends
+    #[cfg(feature = "dqn")]
+    WinGap {
+        /// Win model dir to measure
+        #[arg(long, default_value = "win_model")]
+        model: String,
+        /// Turn-end positions
+        #[arg(long, default_value = "3000")]
+        positions: usize,
+        /// Rollouts per position
+        #[arg(long, default_value = "1024")]
+        rollouts: usize,
+        #[arg(long, default_value = "42")]
+        seed: u64,
+    },
     /// Win-net policy iteration: rollout labels from the champion's own games, gated promotion
     #[cfg(feature = "dqn")]
     WinPi {
@@ -965,6 +980,39 @@ fn main() {
                 blend,
                 player,
             });
+        }
+        #[cfg(feature = "dqn")]
+        Some(Commands::WinGap {
+            model,
+            positions,
+            rollouts,
+            seed,
+        }) => {
+            let start = std::time::Instant::now();
+            println!("{model}: {positions} turn ends of its own games, {rollouts} rollouts each…");
+            let r = dqn::win_train::value_gap(&model, positions, rollouts, seed);
+            println!("  MAE {:.4}, bias {:+.4}, raw RMSE {:.4}", r.mae, r.bias, r.rmse_raw);
+            println!(
+                "  label noise (SD) {:.4} at K = {rollouts}; a K = 64 training label's: {:.4}",
+                r.noise_var.sqrt(),
+                r.noise_sd_64
+            );
+            println!("  net RMSE (label noise removed): {:.4}", r.rmse);
+            println!(
+                "  best constant logit offset {:+.3}; net RMSE after it (noise removed): {:.4}",
+                r.offset, r.rmse_offset
+            );
+            println!("  calibration (predicted bin: n, mean predicted, mean rollout):");
+            for (i, (n, p, m)) in r.calibration.iter().enumerate() {
+                if *n > 0 {
+                    println!(
+                        "    [{:.1}, {:.1}): {n:>5}, {p:.3}, {m:.3}",
+                        i as f32 / 10.0,
+                        (i + 1) as f32 / 10.0
+                    );
+                }
+            }
+            println!("  {}s", start.elapsed().as_secs());
         }
         #[cfg(feature = "dqn")]
         Some(Commands::WinPi {
