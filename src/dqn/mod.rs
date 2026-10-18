@@ -28,6 +28,8 @@ pub mod win_train;
 pub mod win_distill;
 #[cfg(feature = "dqn")]
 pub mod win_pi;
+#[cfg(feature = "dqn")]
+pub mod win_data;
 
 pub mod pair;
 pub mod win;

@@ -156,7 +156,7 @@ pub struct CandGroup {
 }
 
 /// Sample variance (n − 1); 0 below two values.
-fn sample_var(xs: &[f32]) -> f32 {
+pub(crate) fn sample_var(xs: &[f32]) -> f32 {
     if xs.len() < 2 {
         return 0.0;
     }
@@ -224,12 +224,33 @@ pub struct DiffReport {
     pub flip_share: f32,
 }
 
+/// What the difference diagnostic reads from one decision: its labels in
+/// the samples' frame, the runner-ups' paired variances, and the frame.
+pub struct GroupView<'a> {
+    pub labels: Vec<f32>,
+    pub pair_var: &'a [f32],
+    pub swapped: bool,
+}
+
 /// `preds[g][i]` = the champion's P for `groups[g].samples[i]` (the
 /// samples' frame). `None` when no decision has a runner-up.
 pub fn diff_stats(preds: &[Vec<f32>], groups: &[CandGroup], k: usize) -> Option<DiffReport> {
+    let views: Vec<GroupView> = groups
+        .iter()
+        .map(|g| GroupView {
+            labels: g.samples.iter().map(|s| s.1).collect(),
+            pair_var: &g.pair_var,
+            swapped: g.swapped,
+        })
+        .collect();
+    diff_stats_views(preds, &views, k)
+}
+
+/// [`diff_stats`] over [`GroupView`]s.
+pub fn diff_stats_views(preds: &[Vec<f32>], groups: &[GroupView], k: usize) -> Option<DiffReport> {
     let (mut sq, mut var, mut pairs, mut flips) = (0.0f64, 0.0f64, 0usize, 0usize);
     for (p, g) in preds.iter().zip(groups) {
-        let y: Vec<f32> = g.samples.iter().map(|s| s.1).collect();
+        let y = &g.labels;
         for i in 1..y.len() {
             let e = (p[i] - p[0]) - (y[i] - y[0]);
             sq += (e * e) as f64;
