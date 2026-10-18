@@ -534,6 +534,21 @@ enum Commands {
         #[arg(long)]
         legacy_fit: bool,
     },
+    /// Paired head-to-head between two win model dirs, or a win model dir and Master
+    #[cfg(feature = "dqn")]
+    WinGate {
+        /// Win model dir
+        #[arg(long)]
+        a: String,
+        /// Win model dir, or "master" for the pair net in pair_model/
+        #[arg(long)]
+        b: String,
+        /// Games (even: both seats on every dice set)
+        #[arg(long, default_value = "200000")]
+        games: usize,
+        #[arg(long, default_value = "42")]
+        seed: u64,
+    },
 }
 
 fn run_play(bots: Vec<BotType>, verbose: bool) {
@@ -1216,6 +1231,26 @@ fn main() {
                     std::process::exit(2);
                 }
             }
+        }
+        #[cfg(feature = "dqn")]
+        Some(Commands::WinGate { a, b, games, seed }) => {
+            if games < 2 || games % 2 != 0 {
+                eprintln!("win-gate: --games must be even and at least 2");
+                std::process::exit(2);
+            }
+            for dir in [&a, &b] {
+                if dir.as_str() != "master" && !std::path::Path::new(&format!("{dir}/model.mpk")).exists() {
+                    eprintln!("win-gate: {dir}/model.mpk not found");
+                    std::process::exit(2);
+                }
+            }
+            let start = std::time::Instant::now();
+            let (n, share, z) = dqn::win_pi::win_gate(&a, &b, games, seed, "pair_model");
+            println!(
+                "win-gate: {n} games, {a} vs {b}: {:.2}% for {a}, z {z:.2}, {}s",
+                share * 100.0,
+                start.elapsed().as_secs()
+            );
         }
         None => {
             // Default: play against MCTS
