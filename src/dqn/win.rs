@@ -155,11 +155,18 @@ pub struct WinModelConfig {
     /// before it existed: an `Option` because burn's config loader rejects
     /// a missing plain field.
     pub thermo: Option<bool>,
+    /// The dir also holds trained [`AuxHeads`] in `aux.mpk`. `None` in
+    /// older dirs (an `Option` for the same reason as `thermo`).
+    pub aux: Option<bool>,
 }
 
 impl WinModelConfig {
     pub fn is_thermo(&self) -> bool {
         self.thermo == Some(true)
+    }
+
+    pub fn has_aux(&self) -> bool {
+        self.aux == Some(true)
     }
 
     pub fn init<B: Backend>(&self, device: &B::Device) -> WinModel<B> {
@@ -299,6 +306,14 @@ impl<B: Backend> AuxHeads<B> {
             diff: lin(width),
         }
     }
+}
+
+/// Write `dir/aux.mpk`; the dir's `config.json` says `aux: true`.
+pub fn save_aux(dir: &str, heads: &AuxHeads<MyBackend>) {
+    heads
+        .clone()
+        .save_file(format!("{dir}/aux"), &CompactRecorder::new())
+        .expect("Failed to save the auxiliary heads");
 }
 
 // ---- Manual inference path ----

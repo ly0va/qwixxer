@@ -8,12 +8,22 @@ use crate::dqn::win::{
     flat_tensor, sigmoid, swap_input, swap_thermo, thermo_input, win_input, AuxHeads, WinModel, WIN_INPUTS,
     WIN_INPUTS_T,
 };
+use crate::dqn::win::{save_aux, widen_to_thermo, WinModelConfig};
+use crate::dqn::win_data::{self, Dataset};
 use crate::dqn::win_data::{DecisionData, Sample, Split};
 use crate::dqn::win_distill::{diff_stats_views, DiffReport, GroupView};
+use crate::dqn::win_pi::{load_win_ad, save_win};
 use crate::dqn::win_train::bce_logits;
+use crate::dqn::win_train::Ad;
 use crate::dqn::MyBackend;
 use crate::state::State;
+use burn::{
+    module::AutodiffModule,
+    optim::{AdamConfig, AdamWConfig, GradientsParams, Optimizer},
+};
 use burn::{module::Param, nn::Linear, prelude::*, tensor::TensorData};
+use rand::{rngs::SmallRng, seq::SliceRandom, SeedableRng};
+use std::path::Path;
 
 /// The net being fitted, with its auxiliary heads when the arm has them.
 /// The net goes to `model.mpk`, the heads to `aux.mpk`.
@@ -383,12 +393,269 @@ pub fn subset(split: &Split, max: usize) -> Split {
     }
 }
 
+/// Training batch size, as `train_epochs`.
+pub const BATCH: usize = 1024;
+
+/// Training turn ends and training samples in the training-excess subset.
+const TRAIN_SUBSET: usize = 50_000;
+
+pub const FIT_HEADER: &str = "epoch,train_excess,heldout_excess,heldout_floor,heldout_marks,heldout_strikes,\
+heldout_diff,diff_rmse,diff_noise,flip_share,best,elapsed_s";
+
+/// `win-arm` settings.
+pub struct ArmCfg {
+    /// A `win-data` dir.
+    pub data: String,
+    /// Output model dir (must not exist).
+    pub out: String,
+    /// Warm start from this win model dir; `None` = from scratch.
+    pub init: Option<String>,
+    /// Thermometer inputs (a plain `init` is widened).
+    pub thermo: bool,
+    /// Auxiliary heads.
+    pub aux: bool,
+    pub epochs: usize,
+    /// Peak learning rate (the constant one with `legacy`).
+    pub lr: f64,
+    /// AdamW weight decay.
+    pub wd: f32,
+    /// Weight-average decay per step (0 = the live weights).
+    pub ema: f32,
+    /// Aux loss weights: marks, strikes, difference.
+    pub aux_weights: Vec<f32>,
+    /// Width of a from-scratch net.
+    pub width: usize,
+    pub seed: u64,
+    /// Today's fit: `train_epochs`' Adam at a constant lr, no weight decay,
+    /// no averaging, the last epoch saved.
+    pub legacy: bool,
+}
+
+impl ArmCfg {
+    /// Every check that can fail before the dataset is read.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.epochs == 0 {
+            return Err("--epochs must be at least 1".into());
+        }
+        if !(self.lr > 0.0) {
+            return Err("--lr must be positive".into());
+        }
+        if !(0.0..1.0).contains(&self.ema) {
+            return Err("--ema must be in [0, 1)".into());
+        }
+        if !(self.wd >= 0.0) {
+            return Err("--wd must be at least 0".into());
+        }
+        if self.aux_weights.len() != 3 || self.aux_weights.iter().any(|&w| !(w >= 0.0)) {
+            return Err("--aux-weights takes 3 non-negative weights: marks,strikes,difference".into());
+        }
+        if self.legacy && (self.thermo || self.aux) {
+            return Err("--legacy-fit refits the plain net without aux heads: drop --thermo and --aux".into());
+        }
+        for f in ["meta.json", "data.bin"] {
+            if !Path::new(&format!("{}/{f}", self.data)).exists() {
+                return Err(format!("--data {}: {f} not found", self.data));
+            }
+        }
+        match &self.init {
+            Some(init) => {
+                for f in ["config.json", "model.mpk"] {
+                    if !Path::new(&format!("{init}/{f}")).exists() {
+                        return Err(format!("--init {init}: {f} not found"));
+                    }
+                }
+                let c = WinModelConfig::load(format!("{init}/config.json"))
+                    .map_err(|e| format!("--init {init}: unreadable config.json ({e:?})"))?;
+                if c.is_thermo() && !self.thermo {
+                    return Err(format!("--init {init} is a thermometer net: add --thermo"));
+                }
+            }
+            None if self.width == 0 => return Err("--width must be at least 1".into()),
+            None => {}
+        }
+        if Path::new(&self.out).exists() {
+            return Err(format!(
+                "{} already exists: move it aside or pick another --out",
+                self.out
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+pub struct FitSummary {
+    /// 1-based epoch whose weights were saved.
+    pub best_epoch: usize,
+    pub epochs: usize,
+}
+
+/// Fit one arm (docs/superpowers/specs/2026-10-19-win-thermo-aux-design.md,
+/// "Fit"): writes `out/config.json`, `out/model.mpk` (the best epoch's
+/// averaged net, without heads) and `out/fit.csv`.
+pub fn fit(cfg: &ArmCfg) -> Result<FitSummary, String> {
+    cfg.validate()?;
+    let ds = win_data::load(&cfg.data).map_err(|e| format!("--data {}: {e}", cfg.data))?;
+    if ds.heldout.turns.is_empty() && ds.heldout.decisions.is_empty() {
+        return Err(format!(
+            "--data {}: no held-out games (generate it with --holdout above 0)",
+            cfg.data
+        ));
+    }
+    if ds.train.turns.is_empty() && ds.train.decisions.is_empty() {
+        return Err(format!("--data {}: no training games", cfg.data));
+    }
+    let device = Default::default();
+    <Ad as Backend>::seed(&device, cfg.seed);
+    let net: WinModel<Ad> = match &cfg.init {
+        Some(dir) => {
+            let (_, m) = load_win_ad(dir);
+            if cfg.thermo && !m.is_thermo() {
+                widen_to_thermo(&m, &device)
+            } else {
+                m
+            }
+        }
+        None => WinModelConfig::new()
+            .with_width(cfg.width)
+            .with_thermo(cfg.thermo.then_some(true))
+            .init(&device),
+    };
+    let width = net.row1.weight.shape().dims[1];
+    let mcfg = WinModelConfig::new()
+        .with_width(width)
+        .with_thermo(net.is_thermo().then_some(true))
+        .with_aux(cfg.aux.then_some(true));
+    let model = ArmModel {
+        net,
+        aux: cfg.aux.then(|| AuxHeads::new(width, &device)),
+    };
+    std::fs::create_dir_all(&cfg.out).map_err(|e| format!("{}: {e}", cfg.out))?;
+    if cfg.legacy {
+        run(cfg, &ds, &mcfg, model, AdamConfig::new().init())
+    } else {
+        run(
+            cfg,
+            &ds,
+            &mcfg,
+            model,
+            AdamWConfig::new().with_weight_decay(cfg.wd).init(),
+        )
+    }
+}
+
+fn run<O: Optimizer<ArmModel<Ad>, Ad>>(
+    cfg: &ArmCfg,
+    ds: &Dataset,
+    mcfg: &WinModelConfig,
+    mut model: ArmModel<Ad>,
+    mut optim: O,
+) -> Result<FitSummary, String> {
+    let device = Default::default();
+    let start = std::time::Instant::now();
+    // Turn ends then candidates, as win-pi orders a round's data.
+    let samples: Vec<&Sample> = ds
+        .train
+        .turns
+        .iter()
+        .chain(ds.train.decisions.iter().flat_map(|d| &d.samples))
+        .collect();
+    let thermo = model.net.is_thermo();
+    let total = cfg.epochs * samples.len().div_ceil(BATCH);
+    let mut ema = Ema::new(&model, if cfg.legacy { 0.0 } else { cfg.ema });
+    let train_sub = subset(&ds.train, TRAIN_SUBSET);
+    let (kt, kc) = (ds.meta.rollouts, ds.meta.cand_rollouts);
+    let log_path = format!("{}/fit.csv", cfg.out);
+    std::fs::write(&log_path, format!("{FIT_HEADER}\n")).map_err(|e| format!("{log_path}: {e}"))?;
+    let mut order: Vec<usize> = (0..samples.len()).collect();
+    let (mut best, mut best_model, mut best_epoch, mut step) = (Best::default(), None, 0, 0);
+    for epoch in 0..cfg.epochs {
+        order.shuffle(&mut SmallRng::seed_from_u64(cfg.seed.wrapping_add(epoch as u64)));
+        for chunk in order.chunks(BATCH) {
+            let batch: Vec<&Sample> = chunk.iter().map(|&i| samples[i]).collect();
+            let (x, s, t) = tensors::<Ad>(&batch, thermo, &device);
+            let (loss, _) = arm_loss(model.forward(x, s), &t, &cfg.aux_weights);
+            let grads = GradientsParams::from_grads(loss.backward(), &model);
+            let lr = if cfg.legacy {
+                cfg.lr
+            } else {
+                cosine_lr(cfg.lr, step, total)
+            };
+            model = optim.step(lr, model, grads);
+            ema.update(&model);
+            step += 1;
+        }
+        let avg = ema.apply(model.valid());
+        let held = evaluate(&avg, &ds.heldout, kt, kc);
+        let train_excess = evaluate(&avg, &train_sub, kt, kc).excess;
+        let metric = held.diffs.as_ref().map_or(held.excess, |d| d.diff_rmse as f64);
+        let is_best = if cfg.legacy {
+            epoch + 1 == cfg.epochs
+        } else {
+            best.offer(metric)
+        };
+        if is_best {
+            best_model = Some(avg.clone());
+            best_epoch = epoch + 1;
+        }
+        let opt = |v: Option<f64>| v.map(|v| format!("{v:.6}")).unwrap_or_default();
+        let d = held.diffs.as_ref();
+        let row = format!(
+            "{},{train_excess:.6},{:.6},{:.6},{},{},{},{},{},{},{},{}",
+            epoch + 1,
+            held.excess,
+            held.floor,
+            opt(held.marks),
+            opt(held.strikes),
+            opt(held.diff),
+            opt(d.map(|d| d.diff_rmse as f64)),
+            opt(d.map(|d| d.diff_noise as f64)),
+            opt(d.map(|d| d.flip_share as f64)),
+            is_best as u8,
+            start.elapsed().as_secs()
+        );
+        {
+            use std::io::Write;
+            let mut f = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&log_path)
+                .map_err(|e| format!("{log_path}: {e}"))?;
+            writeln!(f, "{row}").map_err(|e| format!("{log_path}: {e}"))?;
+        }
+        println!(
+            "Epoch {:>2}: train excess {train_excess:.5}, held-out excess {:.5} (floor {:.5}){}{}, {}s",
+            epoch + 1,
+            held.excess,
+            held.floor,
+            d.map(|d| format!(", diff RMSE {:.4} (noise {:.4})", d.diff_rmse, d.diff_noise))
+                .unwrap_or_default(),
+            if is_best { " → best" } else { "" },
+            start.elapsed().as_secs()
+        );
+    }
+    let best_model: ArmModel<MyBackend> = best_model.expect("at least one epoch");
+    save_win(&cfg.out, mcfg, &best_model.net);
+    if let Some(heads) = &best_model.aux {
+        save_aux(&cfg.out, heads);
+    }
+    Ok(FitSummary {
+        best_epoch,
+        epochs: cfg.epochs,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dqn::pair::PairStrategy;
+    use crate::dqn::win::WinStrategy;
     use crate::dqn::win::{WinModelConfig, TOKEN, T_TOKEN};
+    use crate::dqn::win_data::{generate, load, save, DataCfg};
     use crate::dqn::win_distill::sample_var;
+    use crate::dqn::win_pi::{load_win_ad, save_win};
+    use crate::dqn::win_train::train_epochs;
     use crate::state::Mark;
+    use burn::module::AutodiffModule;
     use burn::tensor::ElementConversion;
     use rand::{Rng, SeedableRng};
 
@@ -639,5 +906,220 @@ mod tests {
         assert!(r.marks.is_none() && r.strikes.is_none() && r.diff.is_none());
         let sub = subset(&split, 1);
         assert_eq!((sub.turns.len(), sub.decisions.len()), (1, 0));
+    }
+
+    fn tmp(name: &str) -> String {
+        let d = std::env::temp_dir().join(format!("qwixxer-win-arm-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        d.to_string_lossy().into_owned()
+    }
+
+    /// A tiny dataset by Master with decisions on both sides, and a W=4
+    /// plain net to start from.
+    fn tiny(base: &str) -> (String, String) {
+        let data = format!("{base}/data");
+        let cfg = DataCfg {
+            player: "pair_model".into(),
+            out: data.clone(),
+            positions: 120,
+            rollouts: 2,
+            cand_rollouts: 2,
+            holdout: 0.5,
+            seed: 3,
+        };
+        let ds = generate(&cfg, &|| PairStrategy::load("pair_model"));
+        assert!(
+            !ds.train.decisions.is_empty() && !ds.heldout.decisions.is_empty(),
+            "pick another seed: one side has no decisions"
+        );
+        save(&data, &ds).unwrap();
+        let init = format!("{base}/init");
+        let device = Default::default();
+        let mcfg = WinModelConfig::new().with_width(4);
+        save_win(&init, &mcfg, &mcfg.init::<MyBackend>(&device));
+        (data, init)
+    }
+
+    fn arm(data: &str, out: String, init: Option<String>) -> ArmCfg {
+        ArmCfg {
+            data: data.into(),
+            out,
+            init,
+            thermo: false,
+            aux: false,
+            epochs: 2,
+            lr: 3e-4,
+            wd: 1e-4,
+            ema: 0.999,
+            aux_weights: vec![1.0, 0.5, 0.5],
+            width: 4,
+            seed: 42,
+            legacy: false,
+        }
+    }
+
+    #[test]
+    fn the_legacy_fit_is_todays_fit() {
+        let base = tmp("legacy");
+        let (data, init) = tiny(&base);
+        let out = format!("{base}/legacy");
+        fit(&ArmCfg {
+            legacy: true,
+            ..arm(&data, out.clone(), Some(init.clone()))
+        })
+        .unwrap();
+        let ds = load(&data).unwrap();
+        let samples: Vec<([f32; WIN_INPUTS], f32)> = ds
+            .train
+            .turns
+            .iter()
+            .chain(ds.train.decisions.iter().flat_map(|d| &d.samples))
+            .map(|s| (win_input(&s.me, &s.opp), s.win))
+            .collect();
+        let (mcfg, start) = load_win_ad(&init);
+        let (want, _) = train_epochs(start, &samples, 2, 3e-4, 42);
+        let want_dir = format!("{base}/want");
+        save_win(&want_dir, &mcfg, &want.valid());
+        let (got, want) = (WinStrategy::load(&out), WinStrategy::load(&want_dir));
+        let xs: Vec<_> = samples.iter().map(|s| s.0).collect();
+        assert_eq!(got.net.logits(&xs), want.net.logits(&xs));
+        let log = std::fs::read_to_string(format!("{out}/fit.csv")).unwrap();
+        let rows: Vec<&str> = log.lines().collect();
+        assert_eq!(rows[0], FIT_HEADER);
+        assert_eq!(rows.len(), 3);
+        // The legacy fit saves its last epoch, and no heads.
+        assert_eq!(rows[2].split(',').nth(10), Some("1"));
+        assert!(!Path::new(&format!("{out}/aux.mpk")).exists());
+        assert!(!WinModelConfig::load(format!("{out}/config.json")).unwrap().has_aux());
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn a_thermometer_arm_with_heads_fits_and_saves_a_playable_net() {
+        let base = tmp("smoke");
+        let (data, init) = tiny(&base);
+        let out = format!("{base}/arm");
+        let s = fit(&ArmCfg {
+            thermo: true,
+            aux: true,
+            ..arm(&data, out.clone(), Some(init))
+        })
+        .unwrap();
+        assert!((1..=2).contains(&s.best_epoch) && s.epochs == 2);
+        let log = std::fs::read_to_string(format!("{out}/fit.csv")).unwrap();
+        let rows: Vec<Vec<&str>> = log.lines().skip(1).map(|l| l.split(',').collect()).collect();
+        assert_eq!(rows.len(), 2);
+        for r in &rows {
+            assert_eq!(r.len(), 12);
+            assert!(
+                r[4..10].iter().all(|v| !v.is_empty()),
+                "aux and diff columns filled: {r:?}"
+            );
+        }
+        let bot = WinStrategy::load(&out);
+        assert!(bot.net.is_thermo());
+        // The heads are saved beside the net.
+        assert!(Path::new(&format!("{out}/aux.mpk")).exists());
+        assert!(WinModelConfig::load(format!("{out}/config.json")).unwrap().has_aux());
+        // The widened bit columns trained: some weight of the first progress
+        // bit (input 4 of the row encoder) moved off zero.
+        let (_, m) = load_win_ad(&out);
+        let w = m.row1.weight.val().into_data().to_vec::<f32>().unwrap();
+        let width = m.row1.weight.shape().dims[1];
+        assert!(w[4 * width..5 * width].iter().any(|&v| v != 0.0));
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn a_from_scratch_arm_fits() {
+        let base = tmp("scratch");
+        let (data, _) = tiny(&base);
+        let out = format!("{base}/arm");
+        fit(&ArmCfg {
+            thermo: true,
+            aux: true,
+            epochs: 1,
+            ..arm(&data, out.clone(), None)
+        })
+        .unwrap();
+        assert!(WinStrategy::load(&out).net.is_thermo());
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn held_out_games_without_decisions_stop_on_the_win_excess() {
+        let base = tmp("no-decisions");
+        let (data, init) = tiny(&base);
+        let mut ds = load(&data).unwrap();
+        ds.heldout.decisions.clear();
+        let bare = format!("{base}/bare");
+        save(&bare, &ds).unwrap();
+        let out = format!("{base}/arm");
+        fit(&arm(&bare, out.clone(), Some(init))).unwrap();
+        let log = std::fs::read_to_string(format!("{out}/fit.csv")).unwrap();
+        for row in log.lines().skip(1) {
+            let r: Vec<&str> = row.split(',').collect();
+            assert!(r[7].is_empty() && r[8].is_empty() && r[9].is_empty(), "{row}");
+        }
+        assert!(Path::new(&format!("{out}/model.mpk")).exists());
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn validate_refuses_bad_settings() {
+        let base = tmp("validate");
+        let (data, init) = tiny(&base);
+        let ok = arm(&data, format!("{base}/out"), Some(init.clone()));
+        assert_eq!(ok.validate(), Ok(()));
+        let err = |c: ArmCfg| c.validate().unwrap_err();
+        let base_cfg = || arm(&data, ok.out.clone(), Some(init.clone()));
+        assert!(err(ArmCfg {
+            epochs: 0,
+            ..base_cfg()
+        })
+        .contains("--epochs"));
+        assert!(err(ArmCfg { ema: 1.0, ..base_cfg() }).contains("--ema"));
+        assert!(err(ArmCfg { lr: 0.0, ..base_cfg() }).contains("--lr"));
+        assert!(err(ArmCfg {
+            aux_weights: vec![1.0],
+            ..base_cfg()
+        })
+        .contains("--aux-weights"));
+        assert!(err(ArmCfg {
+            legacy: true,
+            aux: true,
+            ..base_cfg()
+        })
+        .contains("--legacy-fit"));
+        assert!(err(ArmCfg {
+            data: format!("{base}/nope"),
+            ..base_cfg()
+        })
+        .contains("--data"));
+        assert!(err(ArmCfg {
+            init: Some(format!("{base}/nope")),
+            ..base_cfg()
+        })
+        .contains("--init"));
+        let thermo_init = format!("{base}/thermo");
+        let device = Default::default();
+        let mcfg = WinModelConfig::new().with_width(4).with_thermo(Some(true));
+        save_win(&thermo_init, &mcfg, &mcfg.init::<MyBackend>(&device));
+        assert!(err(ArmCfg {
+            init: Some(thermo_init),
+            ..base_cfg()
+        })
+        .contains("add --thermo"));
+        // A dataset without held-out games is refused when the fit loads it.
+        let mut ds = load(&data).unwrap();
+        ds.heldout = Split::default();
+        let none = format!("{base}/none");
+        save(&none, &ds).unwrap();
+        assert!(fit(&arm(&none, format!("{base}/out2"), Some(init.clone())))
+            .unwrap_err()
+            .contains("no held-out"));
+        std::fs::create_dir_all(&ok.out).unwrap();
+        assert!(err(base_cfg()).contains("already exists"));
+        std::fs::remove_dir_all(&base).unwrap();
     }
 }

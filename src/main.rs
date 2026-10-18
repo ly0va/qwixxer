@@ -493,6 +493,47 @@ enum Commands {
         #[arg(long, default_value = "42")]
         seed: u64,
     },
+    /// Win-net fit of one experiment arm on a win-data dataset, measured on its held-out games every epoch
+    #[cfg(feature = "dqn")]
+    WinArm {
+        /// win-data dir
+        #[arg(long)]
+        data: String,
+        /// Output model dir (must not exist): config.json, model.mpk, fit.csv
+        #[arg(long)]
+        out: String,
+        /// Warm start from this win model dir (default: from scratch)
+        #[arg(long)]
+        init: Option<String>,
+        /// Thermometer inputs (widens a plain --init)
+        #[arg(long)]
+        thermo: bool,
+        /// Auxiliary heads: final row marks, strikes, score difference (saved to aux.mpk, never used in play)
+        #[arg(long)]
+        aux: bool,
+        #[arg(long, default_value = "10")]
+        epochs: usize,
+        /// Peak learning rate (cosine decay to 0)
+        #[arg(long, default_value = "3e-4")]
+        lr: f64,
+        /// AdamW weight decay
+        #[arg(long, default_value = "1e-4")]
+        wd: f32,
+        /// Weight-average decay per step (0 = the live weights)
+        #[arg(long, default_value = "0.999")]
+        ema: f32,
+        /// Aux loss weights: marks,strikes,difference
+        #[arg(long, value_delimiter = ',', default_value = "1.0,0.5,0.5")]
+        aux_weights: Vec<f32>,
+        /// Width of a from-scratch net
+        #[arg(long, default_value = "64")]
+        width: usize,
+        #[arg(long, default_value = "42")]
+        seed: u64,
+        /// Today's fit as a control: Adam, constant lr, no decay or averaging, last epoch saved
+        #[arg(long)]
+        legacy_fit: bool,
+    },
 }
 
 fn run_play(bots: Vec<BotType>, verbose: bool) {
@@ -1136,6 +1177,45 @@ fn main() {
                 ds.heldout.cand_samples(),
                 start.elapsed().as_secs()
             );
+        }
+        #[cfg(feature = "dqn")]
+        Some(Commands::WinArm {
+            data,
+            out,
+            init,
+            thermo,
+            aux,
+            epochs,
+            lr,
+            wd,
+            ema,
+            aux_weights,
+            width,
+            seed,
+            legacy_fit,
+        }) => {
+            let cfg = dqn::win_arm::ArmCfg {
+                data,
+                out,
+                init,
+                thermo,
+                aux,
+                epochs,
+                lr,
+                wd,
+                ema,
+                aux_weights,
+                width,
+                seed,
+                legacy: legacy_fit,
+            };
+            match dqn::win_arm::fit(&cfg) {
+                Ok(s) => println!("win-arm: saved epoch {} of {} to {}", s.best_epoch, s.epochs, cfg.out),
+                Err(e) => {
+                    eprintln!("win-arm: {e}");
+                    std::process::exit(2);
+                }
+            }
         }
         None => {
             // Default: play against MCTS
