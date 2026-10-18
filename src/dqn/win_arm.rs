@@ -926,6 +926,7 @@ mod tests {
             cand_rollouts: 2,
             holdout: 0.5,
             seed: 3,
+            resume: false,
         };
         let ds = generate(&cfg, &|| PairStrategy::load("pair_model"));
         assert!(

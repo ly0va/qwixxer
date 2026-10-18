@@ -472,26 +472,30 @@ enum Commands {
     /// Win-net dataset: a player's turn ends and gated candidates with win and auxiliary rollout labels, held out by game
     #[cfg(feature = "dqn")]
     WinData {
-        /// Win model dir that plays the games and the rollouts
+        /// Win model dir that plays the games and the rollouts (required unless --resume)
         #[arg(long)]
-        player: String,
-        /// Output dir (must not exist): meta.json, data.bin
+        player: Option<String>,
+        /// Output dir: meta.json, data.bin (must not exist, unless --resume)
         #[arg(long)]
         out: String,
-        /// Turn ends to reach (whole games are kept)
+        /// Turn ends to reach in all (whole games are kept)
         #[arg(long, default_value = "400000")]
         positions: usize,
-        /// Rollouts per turn end
-        #[arg(long, default_value = "64")]
-        rollouts: usize,
-        /// Rollouts per candidate
-        #[arg(long, default_value = "64")]
-        cand_rollouts: usize,
-        /// Share of games held out
-        #[arg(long, default_value = "0.1")]
-        holdout: f64,
-        #[arg(long, default_value = "42")]
-        seed: u64,
+        /// Rollouts per turn end [default: 64]
+        #[arg(long)]
+        rollouts: Option<usize>,
+        /// Rollouts per candidate [default: 64]
+        #[arg(long)]
+        cand_rollouts: Option<usize>,
+        /// Share of games held out [default: 0.1]
+        #[arg(long)]
+        holdout: Option<f64>,
+        /// [default: 42]
+        #[arg(long)]
+        seed: Option<u64>,
+        /// Continue the dataset in --out up to --positions (settings not given come from it)
+        #[arg(long)]
+        resume: bool,
     },
     /// Win-net fit of one experiment arm on a win-data dataset, measured on its held-out games every epoch
     #[cfg(feature = "dqn")]
@@ -1162,34 +1166,40 @@ fn main() {
             cand_rollouts,
             holdout,
             seed,
+            resume,
         }) => {
-            let cfg = dqn::win_data::DataCfg {
-                player,
-                out,
-                positions,
-                rollouts,
-                cand_rollouts,
-                holdout,
-                seed,
-            };
-            if let Err(e) = cfg.validate() {
+            let fail = |e: String| -> ! {
                 eprintln!("win-data: {e}");
                 std::process::exit(2);
+            };
+            let cfg = if resume {
+                dqn::win_data::resume_cfg(&out, positions, player, rollouts, cand_rollouts, holdout, seed)
+                    .unwrap_or_else(|e| fail(e))
+            } else {
+                dqn::win_data::DataCfg {
+                    player: player.unwrap_or_else(|| fail("--player is required (except with --resume)".into())),
+                    out,
+                    positions,
+                    rollouts: rollouts.unwrap_or(64),
+                    cand_rollouts: cand_rollouts.unwrap_or(64),
+                    holdout: holdout.unwrap_or(0.1),
+                    seed: seed.unwrap_or(42),
+                    resume: false,
+                }
+            };
+            if let Err(e) = cfg.validate() {
+                fail(e);
             }
             let start = std::time::Instant::now();
             let win = dqn::win::WinStrategy::load(&cfg.player);
-            let ds = dqn::win_data::generate(&cfg, &|| win.clone());
-            dqn::win_data::save(&cfg.out, &ds).expect("Failed to write the dataset");
-            let m = &ds.meta;
+            let m = dqn::win_data::write_dataset(&cfg, &|| win.clone()).expect("Failed to write the dataset");
             println!(
-                "win-data: {} games; train {} turn ends + {} decisions ({} samples); held out {} + {} ({} samples); {}s",
+                "win-data: {} games; train {} turn ends + {} decisions; held out {} + {}; {}s",
                 m.games,
                 m.train_turns,
                 m.train_decisions,
-                ds.train.cand_samples(),
                 m.heldout_turns,
                 m.heldout_decisions,
-                ds.heldout.cand_samples(),
                 start.elapsed().as_secs()
             );
         }
