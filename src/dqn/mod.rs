@@ -30,6 +30,8 @@ pub mod win_distill;
 pub mod win_pi;
 #[cfg(feature = "dqn")]
 pub mod win_data;
+#[cfg(feature = "dqn")]
+pub mod win_arm;
 
 pub mod pair;
 pub mod win;

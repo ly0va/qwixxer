@@ -277,6 +277,30 @@ pub fn widen_to_thermo<B: Backend>(model: &WinModel<B>, device: &B::Device) -> W
     out
 }
 
+/// Heads on the trunk that play never uses: each row's final marks (one map
+/// shared by the rows), final strikes, and the final score difference.
+/// Trained by `win-arm --aux`, saved to `aux.mpk` beside the net.
+#[derive(Module, Debug)]
+pub struct AuxHeads<B: Backend> {
+    /// [e_r | h] (2W) → that row's final total / 12.
+    pub marks: Linear<B>,
+    /// h (W) → final strikes / 4.
+    pub strikes: Linear<B>,
+    /// h (W) → a; the difference / 100 is a(x) − a(swap x).
+    pub diff: Linear<B>,
+}
+
+impl<B: Backend> AuxHeads<B> {
+    pub fn new(width: usize, device: &B::Device) -> Self {
+        let lin = |d_in: usize| LinearConfig::new(d_in, 1).with_bias(true).init(device);
+        AuxHeads {
+            marks: lin(2 * width),
+            strikes: lin(width),
+            diff: lin(width),
+        }
+    }
+}
+
 // ---- Manual inference path ----
 
 /// One dense layer, weights input-major as burn stores them:
