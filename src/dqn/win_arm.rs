@@ -648,7 +648,7 @@ fn run<O: Optimizer<ArmModel<Ad>, Ad>>(
 mod tests {
     use super::*;
     use crate::dqn::pair::PairStrategy;
-    use crate::dqn::win::WinStrategy;
+    use crate::dqn::win::{AuxPred, ManualWinNet, WinStrategy};
     use crate::dqn::win::{WinModelConfig, TOKEN, T_TOKEN};
     use crate::dqn::win_data::{generate, load, save, DataCfg};
     use crate::dqn::win_distill::sample_var;
@@ -1120,6 +1120,54 @@ mod tests {
             .contains("no held-out"));
         std::fs::create_dir_all(&ok.out).unwrap();
         assert!(err(base_cfg()).contains("already exists"));
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn manual_heads_match_the_burn_heads() {
+        let device = Default::default();
+        let (a, b) = boards();
+        for thermo in [false, true] {
+            let m = random_arm(35, thermo, true);
+            let net = ManualWinNet::from_model(&m.net).with_aux(m.aux.as_ref().unwrap());
+            let (x, s, d) = encode(&[(&a, &b)], thermo);
+            let o = m.forward(flat_tensor(&x, d, &device), flat_tensor(&s, d, &device));
+            let (marks, strikes, diff) = (values(o.marks), values(o.strikes), values(o.diff));
+            let got: AuxPred = net.aux_states(&a, &b).unwrap();
+            for i in 0..8 {
+                assert!(
+                    (got.marks[i] - 12.0 * marks[i]).abs() < 1e-3,
+                    "thermo {thermo} mark {i}"
+                );
+            }
+            for i in 0..2 {
+                assert!((got.strikes[i] - 4.0 * strikes[i]).abs() < 1e-3);
+            }
+            assert!((got.diff - 100.0 * diff[0]).abs() < 1e-2);
+            assert!(ManualWinNet::from_model(&m.net).aux_states(&a, &b).is_none());
+        }
+    }
+
+    #[test]
+    fn a_fitted_arm_with_heads_loads_them() {
+        let base = tmp("heads");
+        let (data, init) = tiny(&base);
+        let (with, without) = (format!("{base}/with"), format!("{base}/without"));
+        fit(&ArmCfg {
+            aux: true,
+            epochs: 1,
+            ..arm(&data, with.clone(), Some(init.clone()))
+        })
+        .unwrap();
+        fit(&ArmCfg {
+            epochs: 1,
+            ..arm(&data, without.clone(), Some(init))
+        })
+        .unwrap();
+        let (a, b) = boards();
+        let p = WinStrategy::load(&with).net.aux_states(&a, &b).unwrap();
+        assert!(p.marks.iter().chain(&p.strikes).all(|v| v.is_finite()) && p.diff.is_finite());
+        assert!(WinStrategy::load(&without).net.aux_states(&a, &b).is_none());
         std::fs::remove_dir_all(&base).unwrap();
     }
 }

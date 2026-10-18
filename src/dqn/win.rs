@@ -316,6 +316,23 @@ pub fn save_aux(dir: &str, heads: &AuxHeads<MyBackend>) {
         .expect("Failed to save the auxiliary heads");
 }
 
+/// What the auxiliary heads predict for a position, in game units: final
+/// row totals (mine red, yellow, green, blue, then the opponent's), final
+/// strikes (mine, the opponent's), and the final (my − opponent's) points.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AuxPred {
+    pub marks: [f32; 8],
+    pub strikes: [f32; 2],
+    pub diff: f32,
+}
+
+/// Plain-array copy of [`AuxHeads`].
+struct ManualAux {
+    marks: Dense,
+    strikes: Dense,
+    diff: Dense,
+}
+
 // ---- Manual inference path ----
 
 /// One dense layer, weights input-major as burn stores them:
@@ -368,6 +385,8 @@ pub struct ManualWinNet {
     head1: Dense,
     head2: Dense,
     out: Dense,
+    /// Trained auxiliary heads, when the model dir has them (never used in play).
+    aux: Option<ManualAux>,
 }
 
 impl ManualWinNet {
@@ -381,6 +400,7 @@ impl ManualWinNet {
             head1: Dense::from_linear(&model.head1),
             head2: Dense::from_linear(&model.head2),
             out: Dense::from_linear(&model.out),
+            aux: None,
         }
     }
 
@@ -431,6 +451,73 @@ impl ManualWinNet {
         } else {
             self.logit(&win_input(me, opp))
         }
+    }
+
+    /// The net with its auxiliary heads.
+    pub fn with_aux(mut self, heads: &AuxHeads<MyBackend>) -> Self {
+        self.aux = Some(ManualAux {
+            marks: Dense::from_linear(&heads.marks),
+            strikes: Dense::from_linear(&heads.strikes),
+            diff: Dense::from_linear(&heads.diff),
+        });
+        self
+    }
+
+    /// Each row's encoding and the head's last hidden layer for one input:
+    /// [`ManualWinNet::g`] without its output layer. Kept apart from `g`,
+    /// which play calls in its hot loop and reuses its buffers.
+    fn trunk(&self, x: &[f32]) -> ([Vec<f32>; 4], Vec<f32>) {
+        let (w, t) = (self.width, self.token);
+        let mut h = Vec::with_capacity(2 * w);
+        let mut rows: [Vec<f32>; 4] = Default::default();
+        let mut pooled = [vec![0.0f32; w], vec![0.0f32; w]];
+        for (r, e) in rows.iter_mut().enumerate() {
+            self.row1.apply(&x[t * r..t * (r + 1)], &mut h, true);
+            self.row2.apply(&h, e, true);
+            for (p, v) in pooled[r / 2].iter_mut().zip(e.iter()) {
+                *p += v;
+            }
+        }
+        let (mut e, mut cat) = (Vec::with_capacity(w), vec![0.0f32; w]);
+        for p in &pooled {
+            self.pair.apply(p, &mut e, true);
+            for (c, v) in cat.iter_mut().zip(&e) {
+                *c += v;
+            }
+        }
+        cat.extend_from_slice(&x[4 * t..]);
+        self.head1.apply(&cat, &mut h, true);
+        self.head2.apply(&h, &mut e, true);
+        (rows, e)
+    }
+
+    /// The auxiliary heads' predictions for `me` against `opp`; `None`
+    /// without heads.
+    pub fn aux_states(&self, me: &State, opp: &State) -> Option<AuxPred> {
+        let aux = self.aux.as_ref()?;
+        let (x, s): (Vec<f32>, Vec<f32>) = if self.is_thermo() {
+            let x = thermo_input(me, opp);
+            (x.to_vec(), swap_thermo(&x).to_vec())
+        } else {
+            let x = win_input(me, opp);
+            (x.to_vec(), swap_input(&x).to_vec())
+        };
+        let ((ex, hx), (es, hs)) = (self.trunk(&x), self.trunk(&s));
+        let one = |d: &Dense, v: &[f32]| {
+            let mut o = Vec::with_capacity(1);
+            d.apply(v, &mut o, false);
+            o[0]
+        };
+        let mut marks = [0.0f32; 8];
+        for r in 0..4 {
+            marks[r] = 12.0 * one(&aux.marks, &[ex[r].as_slice(), hx.as_slice()].concat());
+            marks[4 + r] = 12.0 * one(&aux.marks, &[es[r].as_slice(), hs.as_slice()].concat());
+        }
+        Some(AuxPred {
+            marks,
+            strikes: [4.0 * one(&aux.strikes, &hx), 4.0 * one(&aux.strikes, &hs)],
+            diff: 100.0 * (one(&aux.diff, &hx) - one(&aux.diff, &hs)),
+        })
     }
 
     pub fn logits(&self, xs: &[[f32; WIN_INPUTS]]) -> Vec<f32> {
@@ -515,7 +602,8 @@ impl WinStrategy {
         }
     }
 
-    /// Load `dir/config.json` (width and encoding) and `dir/model.mpk`.
+    /// Load `dir/config.json` (width, encoding, heads), `dir/model.mpk`, and
+    /// `dir/aux.mpk` when the config says the dir has heads.
     pub fn load(dir: &str) -> Self {
         let device = Default::default();
         let cfg = WinModelConfig::load(format!("{dir}/config.json")).expect("Failed to load win model config");
@@ -523,7 +611,14 @@ impl WinStrategy {
             .init::<MyBackend>(&device)
             .load_file(format!("{dir}/model"), &CompactRecorder::new(), &device)
             .expect("Failed to load win model");
-        Self::from_model(&model)
+        let mut net = ManualWinNet::from_model(&model);
+        if cfg.has_aux() {
+            let heads = AuxHeads::<MyBackend>::new(cfg.width, &device)
+                .load_file(format!("{dir}/aux"), &CompactRecorder::new(), &device)
+                .expect("Failed to load the auxiliary heads");
+            net = net.with_aux(&heads);
+        }
+        WinStrategy { net: Arc::new(net) }
     }
 
     /// The single opponent; an empty board when there is none (solo is
