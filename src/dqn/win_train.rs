@@ -498,11 +498,11 @@ pub fn master_positions(count: usize, seed: u64, pair_dir: &str) -> Vec<([f32; W
 /// of my active turns: after phase 2, the boundary a rollout restarts from.
 /// With `capture`, also keeps the decisions win-search would search; that
 /// never changes a move.
-struct TurnEnds<B: Bot> {
-    bot: B,
-    recorded: Rc<RefCell<Vec<(State, State)>>>,
+pub(crate) struct TurnEnds<B: Bot> {
+    pub(crate) bot: B,
+    pub(crate) recorded: Rc<RefCell<Vec<(State, State)>>>,
     /// The close-gate margin and the captured decisions.
-    capture: Option<(f32, Rc<RefCell<Vec<CandDecision>>>)>,
+    pub(crate) capture: Option<(f32, Rc<RefCell<Vec<CandDecision>>>)>,
 }
 
 impl<B: Bot> TurnEnds<B> {

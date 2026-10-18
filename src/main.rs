@@ -469,6 +469,30 @@ enum Commands {
         #[arg(long, default_value = "1")]
         cand_m: usize,
     },
+    /// Win-net dataset: a player's turn ends and gated candidates with win and auxiliary rollout labels, held out by game
+    #[cfg(feature = "dqn")]
+    WinData {
+        /// Win model dir that plays the games and the rollouts
+        #[arg(long)]
+        player: String,
+        /// Output dir (must not exist): meta.json, data.bin
+        #[arg(long)]
+        out: String,
+        /// Turn ends to reach (whole games are kept)
+        #[arg(long, default_value = "400000")]
+        positions: usize,
+        /// Rollouts per turn end
+        #[arg(long, default_value = "64")]
+        rollouts: usize,
+        /// Rollouts per candidate
+        #[arg(long, default_value = "64")]
+        cand_rollouts: usize,
+        /// Share of games held out
+        #[arg(long, default_value = "0.1")]
+        holdout: f64,
+        #[arg(long, default_value = "42")]
+        seed: u64,
+    },
 }
 
 fn run_play(bots: Vec<BotType>, verbose: bool) {
@@ -1072,6 +1096,46 @@ fn main() {
                 std::process::exit(2);
             }
             dqn::win_pi::policy_iteration(&cfg);
+        }
+        #[cfg(feature = "dqn")]
+        Some(Commands::WinData {
+            player,
+            out,
+            positions,
+            rollouts,
+            cand_rollouts,
+            holdout,
+            seed,
+        }) => {
+            let cfg = dqn::win_data::DataCfg {
+                player,
+                out,
+                positions,
+                rollouts,
+                cand_rollouts,
+                holdout,
+                seed,
+            };
+            if let Err(e) = cfg.validate() {
+                eprintln!("win-data: {e}");
+                std::process::exit(2);
+            }
+            let start = std::time::Instant::now();
+            let win = dqn::win::WinStrategy::load(&cfg.player);
+            let ds = dqn::win_data::generate(&cfg, &|| win.clone());
+            dqn::win_data::save(&cfg.out, &ds).expect("Failed to write the dataset");
+            let m = &ds.meta;
+            println!(
+                "win-data: {} games; train {} turn ends + {} decisions ({} samples); held out {} + {} ({} samples); {}s",
+                m.games,
+                m.train_turns,
+                m.train_decisions,
+                ds.train.cand_samples(),
+                m.heldout_turns,
+                m.heldout_decisions,
+                ds.heldout.cand_samples(),
+                start.elapsed().as_secs()
+            );
         }
         None => {
             // Default: play against MCTS
