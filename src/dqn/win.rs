@@ -61,6 +61,72 @@ pub fn swap_input(x: &[f32; WIN_INPUTS]) -> [f32; WIN_INPUTS] {
     s
 }
 
+/// Thermometer row half: a player's 4 row scalars, 10 progress bits
+/// (cells passed ≥ j), 12 mark bits (row total ≥ j).
+pub const T_HALF: usize = 26;
+/// Thermometer row token: my half, then the opponent's.
+pub const T_TOKEN: usize = 2 * T_HALF;
+/// Thermometer globals: today's 9, then 3 strike bits per player (≥ 1, 2, 3).
+pub const T_GLOBALS: usize = GLOBALS + 6;
+/// Full thermometer input.
+pub const WIN_INPUTS_T: usize = 4 * T_TOKEN + T_GLOBALS;
+
+/// One player's row bits: `progress` is the row's `row_progress` (cells
+/// passed / 10; a locked row is 1), `total` its mark count.
+fn row_bits(out: &mut [f32], progress: f32, total: u8) {
+    let cells = (progress * 10.0).round() as usize;
+    for j in 1..=10 {
+        out[j - 1] = (cells >= j) as u8 as f32;
+    }
+    for j in 1..=12 {
+        out[9 + j] = (total as usize >= j) as u8 as f32;
+    }
+}
+
+/// [`win_input`] with each row's progress and mark count also as
+/// thermometer bits, and each player's strikes as 3 bits
+/// (docs/superpowers/specs/2026-10-19-win-thermo-aux-design.md). The bits
+/// are direction-free like the scalars, so colour relabellings still only
+/// permute the tokens.
+pub fn thermo_input(me: &State, opp: &State) -> [f32; WIN_INPUTS_T] {
+    let plain = win_input(me, opp);
+    let totals = [me.row_totals(), opp.row_totals()];
+    let mut x = [0.0f32; WIN_INPUTS_T];
+    for r in 0..4 {
+        for side in 0..2 {
+            let half = &mut x[T_TOKEN * r + T_HALF * side..][..T_HALF];
+            half[..4].copy_from_slice(&plain[TOKEN * r + 4 * side..][..4]);
+            row_bits(&mut half[4..], plain[TOKEN * r + 4 * side], totals[side][r]);
+        }
+    }
+    let g = 4 * T_TOKEN;
+    x[g..g + GLOBALS].copy_from_slice(&plain[4 * TOKEN..]);
+    for (side, strikes) in [me.strikes, opp.strikes].into_iter().enumerate() {
+        for j in 1..=3 {
+            x[g + GLOBALS + 3 * side + j - 1] = (strikes as usize >= j) as u8 as f32;
+        }
+    }
+    x
+}
+
+/// [`swap_input`] for [`thermo_input`]: swap the halves of every token, the
+/// per-player globals and the strike bits; negate the difference.
+pub fn swap_thermo(x: &[f32; WIN_INPUTS_T]) -> [f32; WIN_INPUTS_T] {
+    let mut s = *x;
+    for r in 0..4 {
+        let t = T_TOKEN * r;
+        s[t..t + T_HALF].copy_from_slice(&x[t + T_HALF..t + T_TOKEN]);
+        s[t + T_HALF..t + T_TOKEN].copy_from_slice(&x[t..t + T_HALF]);
+    }
+    let g = 4 * T_TOKEN;
+    s[g..g + 4].copy_from_slice(&x[g + 4..g + 8]);
+    s[g + 4..g + 8].copy_from_slice(&x[g..g + 4]);
+    s[g + 8] = -x[g + 8];
+    s[g + 9..g + 12].copy_from_slice(&x[g + 12..g + 15]);
+    s[g + 12..g + 15].copy_from_slice(&x[g + 9..g + 12]);
+    s
+}
+
 // ---- Model ----
 
 /// g(me, opp): shared row encoder φ (8 → W → W), sums within the colour
@@ -426,6 +492,66 @@ mod tests {
         let (a, b) = boards();
         assert_eq!(swap_input(&win_input(&a, &b)), win_input(&b, &a));
         assert_eq!(swap_input(&swap_input(&win_input(&a, &b))), win_input(&a, &b));
+    }
+
+    #[test]
+    fn thermometer_input_keeps_the_scalars_and_adds_level_bits() {
+        let (a, b) = boards();
+        let (p, x) = (win_input(&a, &b), thermo_input(&a, &b));
+        for r in 0..4 {
+            for side in 0..2 {
+                let half = &x[T_TOKEN * r + T_HALF * side..][..T_HALF];
+                assert_eq!(
+                    &half[..4],
+                    &p[TOKEN * r + 4 * side..][..4],
+                    "row {r} side {side} scalars"
+                );
+            }
+        }
+        assert_eq!(&x[4 * T_TOKEN..4 * T_TOKEN + GLOBALS], &p[4 * TOKEN..]);
+        // Me, red: marks 2 and 5, next free 6 → 4 cells passed, 2 marks.
+        let red = &x[4..T_HALF];
+        assert_eq!(&red[..10], &[1., 1., 1., 1., 0., 0., 0., 0., 0., 0.]);
+        assert_eq!(&red[10..], &[1., 1., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.]);
+        // Me, green (descending): mark 12, next free 11 → 1 cell, 1 mark.
+        let green = &x[2 * T_TOKEN + 4..2 * T_TOKEN + T_HALF];
+        assert_eq!(green[..10].iter().sum::<f32>(), 1.0);
+        assert_eq!(green[10..].iter().sum::<f32>(), 1.0);
+        // Opp, blue (descending): marks 9 and 7, next free 6 → 6 cells, 2 marks.
+        let blue = &x[3 * T_TOKEN + T_HALF + 4..4 * T_TOKEN];
+        assert_eq!(blue[..10].iter().sum::<f32>(), 6.0);
+        assert_eq!(blue[10..].iter().sum::<f32>(), 2.0);
+        // Strike bits: me one strike, opp none.
+        assert_eq!(&x[4 * T_TOKEN + GLOBALS..], &[1., 0., 0., 0., 0., 0.]);
+    }
+
+    #[test]
+    fn a_locked_row_sets_every_progress_bit() {
+        let mut a = State::default();
+        for n in [2, 3, 4, 5, 6, 12] {
+            a.apply_mark(Mark { row: 0, number: n });
+        }
+        for _ in 0..3 {
+            a.apply_strike();
+        }
+        let x = thermo_input(&a, &State::default());
+        assert_eq!(&x[4..14], &[1.0; 10]);
+        assert_eq!(x[14..T_HALF].iter().sum::<f32>(), 7.0, "6 marks and the lock bonus");
+        assert_eq!(&x[4 * T_TOKEN + GLOBALS..], &[1., 1., 1., 0., 0., 0.]);
+        // Fresh boards: no bits at all.
+        let f = thermo_input(&State::default(), &State::default());
+        for r in 0..4 {
+            for side in 0..2 {
+                assert!(f[T_TOKEN * r + T_HALF * side + 4..][..22].iter().all(|&v| v == 0.0));
+            }
+        }
+    }
+
+    #[test]
+    fn swapped_thermometer_input_equals_input_with_players_exchanged() {
+        let (a, b) = boards();
+        assert_eq!(swap_thermo(&thermo_input(&a, &b)), thermo_input(&b, &a));
+        assert_eq!(swap_thermo(&swap_thermo(&thermo_input(&a, &b))), thermo_input(&a, &b));
     }
 
     use crate::dqn::MyBackend;

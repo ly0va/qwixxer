@@ -71,6 +71,35 @@ impl State {
         core::array::from_fn(|i| self.rows[i].free)
     }
 
+    /// Raw form for storage: strikes, then per row (ascending, total, next
+    /// free number or 0 when locked).
+    pub fn to_bytes(&self) -> [u8; 13] {
+        let mut b = [0u8; 13];
+        b[0] = self.strikes;
+        for (i, r) in self.rows.iter().enumerate() {
+            b[1 + 3 * i] = r.ascending as u8;
+            b[2 + 3 * i] = r.total;
+            b[3 + 3 * i] = r.free.unwrap_or(0);
+        }
+        b
+    }
+
+    /// The inverse of [`State::to_bytes`].
+    pub fn from_bytes(b: [u8; 13]) -> State {
+        let mut s = State {
+            strikes: b[0],
+            rows: [Row::default(); 4],
+        };
+        for (i, r) in s.rows.iter_mut().enumerate() {
+            *r = Row {
+                ascending: b[1 + 3 * i] != 0,
+                total: b[2 + 3 * i],
+                free: (b[3 + 3 * i] != 0).then_some(b[3 + 3 * i]),
+            };
+        }
+        s
+    }
+
     pub fn count_locked(&self) -> u8 {
         self.rows.iter().map(|row| row.free.is_none() as u8).sum()
     }
@@ -1258,5 +1287,25 @@ mod tests {
             assert_eq!(rebuilt.strikes, orig.strikes);
             assert_eq!(rebuilt.count_points(), orig.count_points());
         }
+    }
+
+    #[test]
+    fn bytes_round_trip_keeps_every_row() {
+        let mut s = State::default();
+        for n in [2, 3, 4, 5, 6, 12] {
+            s.apply_mark(Mark { row: 0, number: n });
+        }
+        s.apply_mark(Mark { row: 3, number: 9 });
+        s.apply_strike();
+        s.apply_strike();
+        let b = s.to_bytes();
+        let t = State::from_bytes(b);
+        assert_eq!(t.to_bytes(), b);
+        assert_eq!(t.row_totals(), s.row_totals());
+        assert_eq!(t.row_free_values(), s.row_free_values());
+        assert_eq!((t.strikes, t.count_points()), (s.strikes, s.count_points()));
+        assert_eq!(b[3], 0, "a locked row stores free 0");
+        let fresh = State::default().to_bytes();
+        assert_eq!(State::from_bytes(fresh).to_bytes(), fresh);
     }
 }
