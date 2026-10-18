@@ -320,7 +320,9 @@ pub fn policy_iteration(cfg: &WinPiCfg) -> Option<WinStrategy> {
     // `None` = Master is the champion (round 1 of a from-scratch run).
     let (mcfg, mut champion): (WinModelConfig, Option<WinModel<Ad>>) = match &cfg.init {
         Some(dir) => {
-            let (mcfg, model) = load_win_ad(dir);
+            let (mut mcfg, model) = load_win_ad(dir);
+            // win-pi saves the net only: its dirs must not claim the init's heads.
+            mcfg.aux = None;
             (mcfg, Some(model))
         }
         None => (WinModelConfig::new().with_width(cfg.width), None),
@@ -828,6 +830,31 @@ mod tests {
         assert_eq!(win_gate(&dir, &dir, 8, 7, "pair_model"), (8, 0.5, 0.0));
         let (games, share, _) = win_gate(&dir, "master", 4, 7, "pair_model");
         assert!(games == 4 && (0.0..=1.0).contains(&share));
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn a_run_from_an_init_with_heads_writes_loadable_dirs() {
+        let base = tmp("aux-init");
+        let init = format!("{base}/init");
+        let device = Default::default();
+        let mcfg = WinModelConfig::new().with_width(4).with_aux(Some(true));
+        save_win(&init, &mcfg, &mcfg.init::<MyBackend>(&device));
+        crate::dqn::win::save_aux(&init, &crate::dqn::win::AuxHeads::<MyBackend>::new(4, &device));
+        let cfg = WinPiCfg {
+            rounds: 1,
+            ..tiny_cfg(format!("{base}/run"), Some(init))
+        };
+        assert!(policy_iteration(&cfg).is_some());
+        // win-pi saves the net only, so its dirs must not claim heads.
+        for d in ["round-1", "champion"] {
+            let dir = format!("{}/{d}", cfg.dir);
+            assert!(
+                !WinModelConfig::load(format!("{dir}/config.json")).unwrap().has_aux(),
+                "{d}"
+            );
+            WinStrategy::load(&dir);
+        }
         std::fs::remove_dir_all(&base).unwrap();
     }
 }
