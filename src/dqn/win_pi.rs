@@ -228,6 +228,15 @@ impl WinPiCfg {
                     return Err(format!("--init {init}: {f} not found"));
                 }
             }
+            match WinModelConfig::load(format!("{init}/config.json")) {
+                Ok(c) if c.is_thermo() => {
+                    return Err(format!(
+                        "--init {init}: win-pi trains plain nets only (this is a thermometer net)"
+                    ))
+                }
+                Ok(_) => {}
+                Err(e) => return Err(format!("--init {init}: unreadable config.json ({e:?})")),
+            }
         }
         if Path::new(&self.dir).exists() {
             return Err(format!(
@@ -250,7 +259,7 @@ pub fn save_win(dir: &str, mcfg: &WinModelConfig, model: &WinModel<MyBackend>) {
         .expect("Failed to save win model");
 }
 
-fn load_win_ad(dir: &str) -> (WinModelConfig, WinModel<Ad>) {
+pub(crate) fn load_win_ad(dir: &str) -> (WinModelConfig, WinModel<Ad>) {
     let device = Default::default();
     let mcfg = WinModelConfig::load(format!("{dir}/config.json")).expect("Failed to load win model config");
     let model = mcfg
@@ -672,6 +681,18 @@ mod tests {
         .contains("--cand-m"));
         std::fs::create_dir_all(&ok.dir).unwrap();
         assert!(err(tiny_cfg(ok.dir.clone(), None)).contains("already exists"));
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn win_pi_refuses_a_thermometer_init() {
+        let base = tmp("thermo-init");
+        let init = format!("{base}/init");
+        let device = Default::default();
+        let mcfg = WinModelConfig::new().with_width(4).with_thermo(Some(true));
+        save_win(&init, &mcfg, &mcfg.init::<MyBackend>(&device));
+        let err = tiny_cfg(format!("{base}/run"), Some(init)).validate().unwrap_err();
+        assert!(err.contains("plain nets only"), "{err}");
         std::fs::remove_dir_all(&base).unwrap();
     }
 

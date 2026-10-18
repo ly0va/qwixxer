@@ -873,7 +873,7 @@ pub fn value_gap(dir: &str, count: usize, k: usize, seed: u64) -> GapReport {
         .iter()
         .map(|(me, opp)| {
             let b = phase2_entry(*me, &[*opp]).0;
-            sigmoid(win.net.logit(&win_input(&b[0], &b[1])))
+            sigmoid(win.net.logit_states(&b[0], &b[1]))
         })
         .collect();
     gap_stats(&preds, &labels, k)
