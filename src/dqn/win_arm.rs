@@ -936,7 +936,24 @@ mod tests {
         let init = format!("{base}/init");
         let device = Default::default();
         let mcfg = WinModelConfig::new().with_width(4);
-        save_win(&init, &mcfg, &mcfg.init::<MyBackend>(&device));
+        let mut model = mcfg.init::<MyBackend>(&device);
+        // Positive biases: a random W=4 net otherwise often starts with a
+        // whole layer dead (every ReLU zero on every input), and then no
+        // gradient reaches the row encoder at all.
+        for l in [
+            &mut model.row1,
+            &mut model.row2,
+            &mut model.pair,
+            &mut model.head1,
+            &mut model.head2,
+        ] {
+            let d = l.weight.shape().dims[1];
+            l.bias = Some(Param::from_tensor(Tensor::from_data(
+                TensorData::new(vec![0.1f32; d], [d]),
+                &device,
+            )));
+        }
+        save_win(&init, &mcfg, &model);
         (data, init)
     }
 
@@ -1002,6 +1019,9 @@ mod tests {
         let s = fit(&ArmCfg {
             thermo: true,
             aux: true,
+            // The live weights, so two steps visibly move the new columns
+            // (averaging has its own tests).
+            ema: 0.0,
             ..arm(&data, out.clone(), Some(init))
         })
         .unwrap();
@@ -1021,12 +1041,14 @@ mod tests {
         // The heads are saved beside the net.
         assert!(Path::new(&format!("{out}/aux.mpk")).exists());
         assert!(WinModelConfig::load(format!("{out}/config.json")).unwrap().has_aux());
-        // The widened bit columns trained: some weight of the first progress
-        // bit (input 4 of the row encoder) moved off zero.
+        // The widened bit columns trained: some weight of the 22 bit inputs
+        // of each half (inputs 4..26 and 30..52 of the row encoder) moved
+        // off zero.
         let (_, m) = load_win_ad(&out);
         let w = m.row1.weight.val().into_data().to_vec::<f32>().unwrap();
         let width = m.row1.weight.shape().dims[1];
-        assert!(w[4 * width..5 * width].iter().any(|&v| v != 0.0));
+        let bits = |from: usize, to: usize| w[from * width..to * width].iter().any(|&v| v != 0.0);
+        assert!(bits(4, 26) && bits(30, 52));
         std::fs::remove_dir_all(&base).unwrap();
     }
 
