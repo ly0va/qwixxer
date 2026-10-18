@@ -28,14 +28,18 @@ limit.
 - New: a stored dataset with auxiliary labels (`win-data`), a fit command
   for one arm with held-out measurement (`win-arm`), and a head-to-head
   command between two win model dirs (`win-gate`).
-- `WinModel` gains two config options, thermometer inputs and auxiliary
-  heads, both off by default; `ManualWinNet` and `WinStrategy` play
-  thermometer nets.
+- `WinModel` gains one config option, thermometer inputs (off by
+  default); `ManualWinNet` and `WinStrategy` play thermometer nets. The
+  auxiliary heads are trained by `win-arm --aux` and saved beside the net
+  in `aux.mpk`; `WinStrategy::load` loads them for a hand-written forward
+  pass (`ManualWinNet::aux_states`) that play never calls, so a later web
+  explorer can show them.
 - 2-player only. Same trunk shape as today (W = 64).
 - Not touched: `win-pi`, `win-search`, `pair-train`, model artifacts
   (`win_model/`, `pair_model/`, `champion.txt`, `dqn_model/`), the web app.
 - Out of scope: SPRT, the decision benchmark, wiring the new fit into
-  `win-pi`, shipping a thermometer net to WASM. Each is a follow-up once
+  `win-pi`, shipping a thermometer net to WASM, showing the heads'
+  predictions in the web explorer. Each is a follow-up once
   this experiment has a result.
 
 ## Data: `win-data`
@@ -48,7 +52,8 @@ win model dir, required), plus the candidates of the decisions
 win-search would search (top 3 by static value, production gate and
 margin), built by
 `phase1_entry` / `phase2_entry` / `passive_entry`. Default size 400,000
-turn ends (two rounds' worth, about 1.7M candidate samples), `k = 64`
+turn ends (two rounds' worth, about 1.7M candidate samples; whole games
+are kept, so the count is reached or just passed), `k = 64`
 rollouts for both kinds (`--rollouts`, `--cand-rollouts`).
 
 **Labels**, all means over the sample's `k` full-game CRN rollouts by the
@@ -87,9 +92,10 @@ dependency. Generation is deterministic from `--seed`.
 
 ## Model
 
-`WinModelConfig` gains `thermo: bool` and `aux: bool` (both default
-false). Existing model dirs, whose `config.json` lacks them, load
-unchanged and play bit-for-bit as before.
+`WinModelConfig` gains `thermo: Option<bool>` (absent or `false` = the
+plain net). It is an `Option` because burn's config loader rejects a
+missing plain field: existing model dirs, whose `config.json` lacks it,
+load unchanged and play bit-for-bit as before.
 
 ### Thermometer inputs (`thermo`)
 
@@ -122,7 +128,7 @@ P(me ahead) = sigmoid(g(x) − g(swap x))     ← the only output used in play
 
 Unchanged from today except the token and globals widths.
 
-### Auxiliary heads (`aux`), training only
+### Auxiliary heads (`win-arm --aux`), training only
 
 All linear, all reading the trunk on both orientations (the forward pass
 already runs x and swap x as one batch):
@@ -136,7 +142,17 @@ already runs x and swap x as one batch):
 
 Swapping the players exchanges the marks and strikes predictions and
 negates the difference; a colour relabelling permutes the row
-predictions with the rows. `ManualWinNet` and play ignore the heads.
+predictions with the rows.
+
+**Saved, not played.** A fit with heads saves them to `aux.mpk` beside
+`model.mpk`, and `config.json` gains `aux: Option<bool>` (`Some(true)` =
+the dir has `aux.mpk`; an `Option` for the same reason as `thermo`). The
+model file itself is unchanged, so every reader of `model.mpk` works as
+before. `WinStrategy::load` loads the heads when the config says so, and
+`ManualWinNet::aux_states(me, opp)` returns their predictions in game
+units: final row totals, final strikes, and the final score difference
+in points. Play never calls them. The heads live in `src/dqn/win.rs`,
+which the web build compiles.
 
 ### Warm start
 
@@ -177,12 +193,16 @@ win-arm --data DIR --out DIR [--init DIR] [--thermo] [--aux]
   - each aux head's MSE (with `--aux`);
   - candidate difference error: `diff_stats` on the held-out decisions
     (difference RMSE, its noise, flips);
-  - the same win loss on the training set, for the train/held-out gap.
+  - the same win excess on a fixed subset of the training set (its
+    first 50,000 turn ends and the first decisions up to 50,000
+    samples), for the train/held-out gap.
 - **Early stopping:** keep the epoch with the lowest held-out difference
-  RMSE; save its averaged weights to `--out`.
-- **Output:** `--out/config.json`, `--out/model.mpk`, and
-  `--out/fit.csv` with one row per epoch:
-  `epoch,train_win_loss,heldout_excess,heldout_floor,heldout_marks,heldout_strikes,heldout_diff,diff_rmse,diff_noise,flip_share,best,elapsed_s`
+  RMSE (the lowest held-out win excess when the held-out games have no
+  decisions); save its averaged weights to `--out`. A dataset with no
+  held-out games is refused.
+- **Output:** `--out/config.json`, `--out/model.mpk`, `--out/aux.mpk`
+  (with `--aux`), and `--out/fit.csv` with one row per epoch:
+  `epoch,train_excess,heldout_excess,heldout_floor,heldout_marks,heldout_strikes,heldout_diff,diff_rmse,diff_noise,flip_share,best,elapsed_s`
   (aux columns empty without `--aux`).
 
 ## Gate: `win-gate`
@@ -234,7 +254,8 @@ prints games, a's share and z. With `--b master` it plays Master
 - **Old dirs:** a model dir without the new config fields loads and gives
   the same logits as before (golden values).
 - **ManualWinNet:** matches the burn forward for a thermometer net
-  (tolerance).
+  (tolerance); its hand-written heads match the burn heads; a fitted dir
+  with heads loads them, one without has none.
 - **Labels:** aux labels for a hand-built ended position are exact; a
   passive candidate's sample has the players exchanged with `1 − win`,
   exchanged marks and strikes, and negated diff.
