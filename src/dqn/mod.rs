@@ -32,6 +32,8 @@ pub mod win_pi;
 pub mod win_data;
 #[cfg(feature = "dqn")]
 pub mod win_arm;
+#[cfg(all(test, feature = "dqn"))]
+mod ply_probe;
 
 pub mod pair;
 pub mod win;
