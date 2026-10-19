@@ -370,7 +370,61 @@ impl Dense {
             }
         }
     }
+
+    /// [`Dense::apply`] for `n` inputs, `n` a multiple of [`LANES`]: input
+    /// s is `x[s * stride..][..d_in]`, its output `out[s * d_out..][..d_out]`.
+    /// Each weight tile is loaded once for [`LANES`] inputs, and each
+    /// input's sums run in `apply`'s order, so the results are bit-identical.
+    /// Zero inputs are not skipped (a branch per input costs more than it
+    /// saves here); adding 0·w leaves a sum unchanged.
+    fn apply_batch(&self, x: &[f32], stride: usize, n: usize, out: &mut Vec<f32>, relu: bool) {
+        debug_assert_eq!(n % LANES, 0);
+        out.clear();
+        out.resize(n * self.d_out, 0.0);
+        for s0 in (0..n).step_by(LANES) {
+            let mut t0 = 0;
+            while t0 + TILE <= self.d_out {
+                self.block::<TILE>(x, stride, s0, t0, out, relu);
+                t0 += TILE;
+            }
+            for t in t0..self.d_out {
+                self.block::<1>(x, stride, s0, t, out, relu);
+            }
+        }
+    }
+
+    /// Outputs `t0..t0 + T` of inputs `s0..s0 + LANES`, the accumulators
+    /// held in registers across the input loop.
+    fn block<const T: usize>(&self, x: &[f32], stride: usize, s0: usize, t0: usize, out: &mut [f32], relu: bool) {
+        let d_in = self.w.len() / self.d_out;
+        let bias: &[f32; T] = self.b[t0..t0 + T].try_into().unwrap();
+        let mut acc = [*bias; LANES];
+        for i in 0..d_in {
+            let w: &[f32; T] = self.w[i * self.d_out + t0..][..T].try_into().unwrap();
+            for (l, a) in acc.iter_mut().enumerate() {
+                let xi = x[(s0 + l) * stride + i];
+                for k in 0..T {
+                    a[k] += xi * w[k];
+                }
+            }
+        }
+        for (l, a) in acc.iter().enumerate() {
+            let o = &mut out[(s0 + l) * self.d_out + t0..][..T];
+            for k in 0..T {
+                o[k] = if relu { a[k].max(0.0) } else { a[k] };
+            }
+        }
+    }
 }
+
+/// Output-tile width of [`Dense::apply_batch`]: two AVX2 vectors.
+const TILE: usize = 16;
+/// Inputs per pass of [`Dense::apply_batch`]: each weight tile loaded is
+/// used this many times.
+const LANES: usize = 4;
+/// Positions per pass of [`ManualWinNet::logit_batch`] (fastest of 4–256
+/// on an i7-1355U).
+const CHUNK: usize = 16;
 
 /// Plain-array copy of a [`WinModel`] for inference (burn's per-call
 /// overhead dominates at these sizes, as for `ManualPairNet`). Numerics
@@ -451,6 +505,57 @@ impl ManualWinNet {
         } else {
             self.logit(&win_input(me, opp))
         }
+    }
+
+    /// [`ManualWinNet::logit_states`] for many positions at once, bit for
+    /// bit: every input and its swap go through each layer together, in
+    /// chunks of [`CHUNK`] positions so the activations stay in cache.
+    pub fn logit_batch(&self, pairs: &[(&State, &State)]) -> Vec<f32> {
+        pairs.chunks(CHUNK).flat_map(|c| self.logit_chunk(c)).collect()
+    }
+
+    fn logit_chunk(&self, pairs: &[(&State, &State)]) -> Vec<f32> {
+        let (w, t) = (self.width, self.token);
+        let len = 4 * t + if self.is_thermo() { T_GLOBALS } else { GLOBALS };
+        // Input 2k is position k, input 2k + 1 its swap; padded to whole lanes.
+        let m = (2 * pairs.len()).next_multiple_of(LANES);
+        let mut xs = vec![0.0f32; m * len];
+        for (k, (me, opp)) in pairs.iter().enumerate() {
+            let (a, b) = xs[2 * k * len..(2 * k + 2) * len].split_at_mut(len);
+            if self.is_thermo() {
+                let x = thermo_input(me, opp);
+                a.copy_from_slice(&x);
+                b.copy_from_slice(&swap_thermo(&x));
+            } else {
+                let x = win_input(me, opp);
+                a.copy_from_slice(&x);
+                b.copy_from_slice(&swap_input(&x));
+            }
+        }
+        let (mut h, mut e) = (Vec::new(), Vec::new());
+        // Row encoder: every input's 4 tokens, back to back.
+        let tokens: Vec<f32> = xs.chunks(len).flat_map(|x| &x[..4 * t]).copied().collect();
+        self.row1.apply_batch(&tokens, t, 4 * m, &mut h, true);
+        self.row2.apply_batch(&h, w, 4 * m, &mut e, true);
+        let mut pooled = vec![0.0f32; 2 * m * w];
+        for (p, rows) in pooled.chunks_mut(w).zip(e.chunks(2 * w)) {
+            for (k, v) in p.iter_mut().enumerate() {
+                *v = (*v + rows[k]) + rows[w + k];
+            }
+        }
+        self.pair.apply_batch(&pooled, w, 2 * m, &mut h, true);
+        let g_len = len - 4 * t;
+        let mut cat = vec![0.0f32; m * (w + g_len)];
+        for ((c, pp), x) in cat.chunks_mut(w + g_len).zip(h.chunks(2 * w)).zip(xs.chunks(len)) {
+            for k in 0..w {
+                c[k] = (c[k] + pp[k]) + pp[w + k];
+            }
+            c[w..].copy_from_slice(&x[4 * t..]);
+        }
+        self.head1.apply_batch(&cat, w + g_len, m, &mut h, true);
+        self.head2.apply_batch(&h, 2 * w, m, &mut e, true);
+        self.out.apply_batch(&e, w, m, &mut h, false);
+        h.chunks(2).take(pairs.len()).map(|g| g[0] - g[1]).collect()
     }
 
     /// The net with its auxiliary heads.
@@ -645,25 +750,25 @@ impl Bot for WinStrategy {
     /// Probit-unit values (see [`probit_of_logit`]); move order equals the
     /// order of P(win).
     fn evaluate_batch_multi(&self, groups: &[(&[State], &[State])]) -> Vec<Vec<f32>> {
+        let opps: Vec<State> = groups.iter().map(|(_, opps)| Self::opponent(opps)).collect();
+        let pairs: Vec<(&State, &State)> = groups
+            .iter()
+            .zip(&opps)
+            .flat_map(|((candidates, _), opp)| candidates.iter().map(move |c| (c, opp)))
+            .collect();
+        let mut values = self.net.logit_batch(&pairs).into_iter().map(probit_of_logit);
         groups
             .iter()
-            .map(|(candidates, opps)| {
-                let opp = Self::opponent(opps);
-                candidates
-                    .iter()
-                    .map(|c| probit_of_logit(self.net.logit_states(c, &opp)))
-                    .collect()
-            })
+            .map(|(candidates, _)| values.by_ref().take(candidates.len()).collect())
             .collect()
     }
 }
 
 impl WinProb for WinStrategy {
     fn win_prob_multi(&self, groups: &[(&State, &[State])]) -> Vec<f32> {
-        groups
-            .iter()
-            .map(|(our, opps)| sigmoid(self.net.logit_states(our, &Self::opponent(opps))))
-            .collect()
+        let opps: Vec<State> = groups.iter().map(|(_, opps)| Self::opponent(opps)).collect();
+        let pairs: Vec<(&State, &State)> = groups.iter().zip(&opps).map(|((our, _), opp)| (*our, opp)).collect();
+        self.net.logit_batch(&pairs).into_iter().map(sigmoid).collect()
     }
 }
 
@@ -938,6 +1043,71 @@ mod tests {
             let zm = net.logit_states(me, opp);
             assert!((zb - zm).abs() < 1e-4, "burn {zb} vs manual {zm}");
         }
+    }
+
+    /// Random legal positions: random marks (rows lock when they finish)
+    /// and 0–3 strikes per player.
+    fn random_pairs(n: usize, seed: u64) -> Vec<(State, State)> {
+        let mut rng = SmallRng::seed_from_u64(seed);
+        let mut board = || {
+            let mut s = State::default();
+            for _ in 0..rng.gen_range(0..40) {
+                let (row, number) = (rng.gen_range(0..4), rng.gen_range(2..=12));
+                if s.can_mark(row, number) {
+                    s.apply_mark(Mark { row, number });
+                }
+            }
+            for _ in 0..rng.gen_range(0..4) {
+                s.apply_strike();
+            }
+            s
+        };
+        (0..n).map(|_| (board(), board())).collect()
+    }
+
+    #[test]
+    fn a_batch_gives_each_positions_logit_bit_for_bit() {
+        // 37 positions: 74 inputs, not a whole number of lanes. Widths 48
+        // and 4 leave outputs past the last whole tile.
+        let ps = random_pairs(37, 5);
+        let refs: Vec<(&State, &State)> = ps.iter().map(|(a, b)| (a, b)).collect();
+        let models = [
+            ("plain 64", random_model(30, 64)),
+            ("thermo 64", random_thermo(31, 64)),
+            ("thermo 48", random_thermo(32, 48)),
+            ("thermo 4", random_thermo(33, 4)),
+        ];
+        for (label, model) in models {
+            let net = ManualWinNet::from_model(&model);
+            let got: Vec<u32> = net.logit_batch(&refs).iter().map(|z| z.to_bits()).collect();
+            let want: Vec<u32> = ps.iter().map(|(a, b)| net.logit_states(a, b).to_bits()).collect();
+            assert_eq!(got, want, "{label}");
+            assert!(net.logit_batch(&[]).is_empty());
+        }
+    }
+
+    #[test]
+    fn win_strategy_batches_give_each_positions_value() {
+        let bot = WinStrategy::from_model(&random_thermo(34, 16));
+        let ps = random_pairs(9, 6);
+        let cands: Vec<State> = ps.iter().map(|p| p.0).collect();
+        let (o1, o2) = (ps[0].1, ps[1].1);
+        let groups: [(&[State], &[State]); 3] = [
+            (&cands[..4], std::slice::from_ref(&o1)),
+            (&cands[4..4], std::slice::from_ref(&o2)),
+            (&cands[4..], std::slice::from_ref(&o2)),
+        ];
+        let values = bot.evaluate_batch_multi(&groups);
+        for ((cs, opps), vs) in groups.iter().zip(&values) {
+            let want: Vec<f32> = cs
+                .iter()
+                .map(|c| probit_of_logit(bot.net.logit_states(c, &opps[0])))
+                .collect();
+            assert_eq!(vs, &want);
+        }
+        let leaves: Vec<(&State, &[State])> = ps.iter().map(|(a, b)| (a, std::slice::from_ref(b))).collect();
+        let want: Vec<f32> = ps.iter().map(|(a, b)| sigmoid(bot.net.logit_states(a, b))).collect();
+        assert_eq!(bot.win_prob_multi(&leaves), want);
     }
 
     #[test]
