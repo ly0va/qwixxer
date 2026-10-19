@@ -2019,3 +2019,167 @@ now always prints `cands`, since Phase 26 logs show the 2-candidate
 production as `k=512,passive,lock=256,blend=0.7,seq=32`. `legacy()` keeps
 2 candidates. Checked: production and `QWIXXER_SEARCH=cands=3` give
 identical 200-game benches vs GA.
+
+## Phase 28: Win net — direct P(win), rollout-labelled, fitted from scratch
+
+Branch `win-net`. A second static net that predicts P(win) directly instead
+of the pair net's Gaussian score difference. Specs:
+`docs/superpowers/specs/2026-10-15-win-net-design.md`,
+`…-10-17-win-policy-iteration-design.md`,
+`…-10-17-win-candidate-distillation-design.md`,
+`…-10-19-win-thermo-aux-design.md`.
+
+### The model
+
+Two players only. Inputs are the pair net's board features regrouped as 4
+row tokens (one row of both players) and 9 globals. A shared row encoder,
+summed within the colour pairs, feeds a shared pair encoder summed over
+both pairs, then a head g(me, opp). The logit is g(me, opp) − g(opp, me),
+so P(a ahead) + P(b ahead) = 1 and the 8 colour relabellings leave it
+unchanged, both exactly. With thermometer inputs each row half is coded as
+10 progress bits and 12 mark bits (a closed row reads as fully passed:
+all progress bits set) next to the plain scalars. Auxiliary heads predict
+each row's final marks, the final strikes and the final score difference;
+they are trained alongside the win output and saved to `aux.mpk`, never
+used in play. `WinStrategy` reports values in probit units, so the
+search's gate and blend apply unchanged (`win`, `win-search`).
+
+### How it got here
+
+- **TD(λ) self-play from scratch** (`win-train`), then a width check by
+  fitting to today's P(win) (`win-fit`): W16 / W32 / W64 scored 48.4% /
+  49.2% / 49.4% vs Master (1M games).
+- **Rollout labels** (`win-fit --rollouts --player`): two manual rounds
+  took the net from 50.56% to 51.0% vs Master (pi2); a third fell back.
+- **Gated policy iteration** (`win-pi`): turn-end rounds 2–7 were all
+  rejected (z −1.20 … −2.30); the loss sat at the label-noise floor.
+- **Candidate distillation** (`win-pi --labels cand`): the decisions
+  win-search would search, every shortlisted candidate labelled by
+  full-game CRN rollouts. Round 1 promoted (z 2.69): **51.31%** vs Master
+  (`51736f2`). Later warm-started rounds were rejected (z −0.13, −1.06,
+  −4.10).
+- **Fit diagnosis** (`win-data`, `win-arm`, `win-gate`, thermo-aux spec):
+  every rejected fit restarted Adam at a constant lr from the champion
+  and kept the last epoch, unmeasured on held-out data. The new fit
+  fixes that; and fitted from scratch, the net beat every warm start.
+
+### Current recipe
+
+1. **Data** (`win-data`, `win_data_r1`): the champion plays itself
+   (18,944 games, seed 42). Every turn end is labelled with 64 rollouts
+   of the champion (Lite fidelity, as search rollouts), and every
+   decision win-search would search gets each shortlisted candidate
+   labelled with 64 CRN rollouts. Labels: mean win (tie ½), final row
+   marks, strikes, score difference. 10% of games held out: 395k turn
+   ends + 611k decisions to train on, 44k + 69k held out. The file
+   saves after every batch and resumes a stopped run.
+2. **Fit** (`win-arm --thermo --aux --lr 1e-3 --epochs 20`, from
+   scratch, W64): AdamW (wd 1e-4), batch 1024, 1% linear warmup then
+   cosine to 0, weight average (EMA 0.999), aux loss weights 1.0 / 0.5 /
+   0.5 (marks / strikes / difference). The held-out set is measured every
+   epoch and the best epoch by held-out candidate-difference RMSE is
+   kept.
+3. **Gate** (`win-gate`): paired games against the champion, seats swapped
+   on every dice seed; promote at z > 2. Then the same against Master for
+   the long-run yardstick.
+
+How to read `fit.csv`: *excess* = BCE − label entropy; *floor* = the excess
+a perfect predictor scores from 64-rollout label noise (0.00737 here);
+*diff RMSE* is the error on candidate value differences against the
+rollout-noise RMSE (0.0514), so the net's own error is
+√(RMSE² − 0.0514²).
+
+### Results
+
+| Net | Fit | Held-out diff RMSE (own error) | vs champion | vs Master |
+|---|---|---|---|---|
+| `win_pi_cand/round-1` (old champion) | warm-started `win-pi` rounds | not measured on `win_data_r1` | — | 51.31% |
+| **E** (W64, from scratch) | recipe above | 0.0535 at epoch 9 (0.0148) | **50.31%, z 6.98** (500k) | **51.66%** |
+| F (W48, from scratch) | recipe above | 0.0534, best epoch 17 of 20 | 50.04% vs E, z 0.61 (200k) | — |
+
+E's held-out excess fell with train excess throughout (no overfitting;
+its final epochs are not recorded here); F's full curve has the same
+shape and flattens from epoch 14. **E is the
+champion** (promoted into `win_model/` on the big machine; not yet
+committed here). F plays as well as E at three quarters of the width.
+
+vs GA (user, big machine): static win net (E) **61.6%**, static pair net
+60.1%, pair-search 62.7% (Phase 27). The static win net closes about
+1.5pp of the 2.6pp between the pair net and its search. win-search vs GA
+is not yet recorded.
+
+Arms A0–D (warm-started controls: legacy fit, new fit, +thermo, +aux,
++both) were planned but their results are not recorded; with E changing three things at
+once (thermo, aux, from scratch at lr 1e-3), which one carried the gain
+is not separated.
+
+### Inference speed
+
+win-search was a few times slower than pair-search: the same searches
+and samples, but a win evaluation cost ~4.3µs against the pair net's
+~1.3µs. Two exact (bit-for-bit) changes: batched evaluation of 16
+positions at a time with register-tiled layers (no zero-skip branch;
+`de1ea59`), and a lookup table for the row encoder, whose output depends
+only on the two row halves' (total, free) — 79 halves, 79² = 6,241
+entries, 1.2MB at W48 (`e303b10`). Per evaluation on an i7-1355U
+(thermometer nets): W64 8.0 → 2.8µs, W48 6.2 → 2.0µs, W32 4.0 → 1.35µs.
+`bench win-search ga -n 120` locally: 27–32s → 18–19s, identical results
+(pair-search ≈ 8s).
+
+### Luck-adjusted rollouts: rejected
+
+Idea (GNUbg-style variance reduction): subtract each turn's dice luck,
+L = f(roll) − E[f], from the rollout outcome. Unbiased whenever E[f] is
+exact; the cheap stand-in E[f] ≈ V(pre-roll) is not usable here, because
+the post-turn state is the next pre-roll state and the sum telescopes to
+the net's own V₀.
+
+E[f] is computable exactly and cheaply in structure: f = root's win value
+after a rule-free greedy turn (the bot's own passive response, a function
+of the white sum; the active player's best of strike / white / colour /
+white-then-colour by the win net). Given the white dice, every colour
+option uses exactly one colour die, so the active's best is
+max(K, max_c G_c(d_c)) over independent dice and E[max] follows from a
+product of per-colour CDFs: 21 white outcomes × 4 colours × 6 faces,
+never the 6⁶ rolls. Checked exact: each luck term averages to 0 (≈1e-16)
+over all 46,656 rolls at three positions.
+
+Throwaway probe (not committed): the local `win_model` (old champion,
+plain W64), 200 positions from its self-play at a random turn 0–39, 32
+rollouts each with the Lite rollout bot, as `win-data` uses; four seed
+sets. Variance per rollout of the win label, and net evaluations per
+rollout (13.5 turns):
+
+| Estimator | Variance | Reduction | Extra evals |
+|---|---:|---:|---:|
+| raw outcome | 0.19 | 1× | (rollout itself: 123) |
+| full exact (f with doubles) | 0.006–0.008 | **24–31×** | 3,600 |
+| two-stage: exact colour luck + white luck from h(sum) | 0.033 | 5.5–5.8× | 920 |
+| full exact, f without doubles | 0.037 | 5.1–5.3× | 1,350 |
+| colour luck only | 0.090 | 2.1× | — |
+| white luck only | 0.137 | 1.4× | — |
+
+Mean shift of the adjusted labels against raw across runs: +0.017,
++0.004, −0.011, −0.0004 (SE ≈ 0.005): noise, as the exact check says.
+
+The reduction is real, but the Lite rollout bot is very cheap (~9
+evaluations per turn) and the exact luck needs ~260 per turn. A
+luck-adjusted rollout costs ~30 raw ones, which remove as much variance:
+efficiency ≈ 0.9× (full), 0.7× (two-stage). Adjusting only late turns
+does not rescue it: turns with ≥ 40 marks on the two boards carry 52% of
+the luck variance for 5% of the luck evaluations, but that is still ~180
+evaluations per rollout against the rollout's 123 — 2× less variance for
+2.5× the cost. Every cut-off tried landed at 0.75–1.0×.
+
+Sampling E[f] instead (m rolls per turn, each played by the policy) is
+worse: a sampled roll costs about one rollout turn, and the sample mean
+adds explained-variance/m back. With the probe's split (0.007
+unexplained, 0.183 explained) it reaches 0.5×, 0.6×, 0.7×, 0.7× of the
+efficiency of plain extra rollouts at m = 1, 2, 4, 8 (projection, not
+run), and can never beat them: a sampled roll is a one-turn mini-rollout,
+while a whole extra rollout averages every turn's dice.
+
+**Verdict:** not adopted. It would pay only with a luck function about 4×
+cheaper than the policy's net that keeps most of the correlation (f need
+not be the policy), or with an expensive rollout policy (full fidelity,
+search), where the luck cost is small by comparison.
