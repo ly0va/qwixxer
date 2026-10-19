@@ -158,6 +158,10 @@ pub struct WinModelConfig {
     /// The dir also holds trained [`AuxHeads`] in `aux.mpk`. `None` in
     /// older dirs (an `Option` for the same reason as `thermo`).
     pub aux: Option<bool>,
+    /// The dir also holds a tempo head in `tempo.mpk` (the value of moving
+    /// next; docs/superpowers/specs/2026-10-20-win-tempo-design.md). `None`
+    /// in older dirs (an `Option` for the same reason as `thermo`).
+    pub tempo: Option<bool>,
 }
 
 impl WinModelConfig {
@@ -167,6 +171,10 @@ impl WinModelConfig {
 
     pub fn has_aux(&self) -> bool {
         self.aux == Some(true)
+    }
+
+    pub fn is_tempo(&self) -> bool {
+        self.tempo == Some(true)
     }
 
     pub fn init<B: Backend>(&self, device: &B::Device) -> WinModel<B> {
@@ -316,6 +324,31 @@ pub fn save_aux(dir: &str, heads: &AuxHeads<MyBackend>) {
         .expect("Failed to save the auxiliary heads");
 }
 
+/// A tempo head (W → 1, with bias) that adds nothing: a net given it plays
+/// exactly as the antisymmetric net it extends.
+pub fn zero_tempo<B: Backend>(width: usize, device: &B::Device) -> Linear<B> {
+    let mut head = LinearConfig::new(width, 1).with_bias(true).init(device);
+    head.weight = Param::from_tensor(Tensor::zeros([width, 1], device));
+    head.bias = Some(Param::from_tensor(Tensor::zeros([1], device)));
+    head
+}
+
+/// Write `dir/tempo.mpk`; the dir's `config.json` says `tempo: true`.
+pub fn save_tempo(dir: &str, head: &Linear<MyBackend>) {
+    head.clone()
+        .save_file(format!("{dir}/tempo"), &CompactRecorder::new())
+        .expect("Failed to save the tempo head");
+}
+
+/// Read `dir/tempo.mpk` for a net of `width`.
+pub fn load_tempo<B: Backend>(dir: &str, width: usize, device: &B::Device) -> Linear<B> {
+    LinearConfig::new(width, 1)
+        .with_bias(true)
+        .init(device)
+        .load_file(format!("{dir}/tempo"), &CompactRecorder::new(), device)
+        .expect("Failed to load the tempo head")
+}
+
 /// What the auxiliary heads predict for a position, in game units: final
 /// row totals (mine red, yellow, green, blue, then the opponent's), final
 /// strikes (mine, the opponent's), and the final (my − opponent's) points.
@@ -441,6 +474,8 @@ pub struct ManualWinNet {
     out: Dense,
     /// Trained auxiliary heads, when the model dir has them (never used in play).
     aux: Option<ManualAux>,
+    /// The tempo head t: the logit gains t(x) + t(swap x) (who moves next).
+    tempo: Option<Dense>,
     /// The row encoder's output for every token a game can reach:
     /// `[HALVES × HALVES × width]`, my half's [`half_index`] major.
     row_codes: Vec<f32>,
@@ -478,6 +513,7 @@ impl ManualWinNet {
             head2: Dense::from_linear(&model.head2),
             out: Dense::from_linear(&model.out),
             aux: None,
+            tempo: None,
             row_codes: Vec::new(),
         };
         net.row_codes = net.row_table();
@@ -514,7 +550,8 @@ impl ManualWinNet {
         table
     }
 
-    fn g(&self, x: &[f32]) -> f32 {
+    /// g(x), and t(x) when the net has a tempo head.
+    fn g_t(&self, x: &[f32]) -> (f32, Option<f32>) {
         let (w, t) = (self.width, self.token);
         let (mut h, mut e) = (Vec::with_capacity(2 * w), Vec::with_capacity(w));
         let mut pooled = [vec![0.0f32; w], vec![0.0f32; w]];
@@ -536,28 +573,51 @@ impl ManualWinNet {
         self.head1.apply(&cat, &mut h, true);
         self.head2.apply(&h, &mut e, true);
         self.out.apply(&e, &mut h, false);
-        h[0]
+        let g = h[0];
+        let t = self.tempo.as_ref().map(|t| {
+            t.apply(&e, &mut h, false);
+            h[0]
+        });
+        (g, t)
+    }
+
+    /// The logit from both orientations' (g, t).
+    fn combine((gx, tx): (f32, Option<f32>), (gs, ts): (f32, Option<f32>)) -> f32 {
+        match (tx, ts) {
+            (Some(a), Some(b)) => (gx - gs) + (a + b),
+            _ => gx - gs,
+        }
     }
 
     pub fn is_thermo(&self) -> bool {
         self.token == T_TOKEN
     }
 
-    /// Antisymmetric logit z = g(x) − g(swap x) of a plain input; a
-    /// thermometer net takes [`ManualWinNet::logit_states`].
+    /// The net with a tempo head.
+    pub fn with_tempo(mut self, head: &Linear<MyBackend>) -> Self {
+        self.tempo = Some(Dense::from_linear(head));
+        self
+    }
+
+    pub fn has_tempo(&self) -> bool {
+        self.tempo.is_some()
+    }
+
+    /// Logit z = g(x) − g(swap x) (+ t(x) + t(swap x) with a tempo head) of
+    /// a plain input; a thermometer net takes [`ManualWinNet::logit_states`].
     pub fn logit(&self, x: &[f32; WIN_INPUTS]) -> f32 {
         assert!(
             !self.is_thermo(),
             "a thermometer net takes logit_states, not plain inputs"
         );
-        self.g(x) - self.g(&swap_input(x))
+        Self::combine(self.g_t(x), self.g_t(&swap_input(x)))
     }
 
     /// The logit for `me` against `opp` in the net's own input encoding.
     pub fn logit_states(&self, me: &State, opp: &State) -> f32 {
         if self.is_thermo() {
             let x = thermo_input(me, opp);
-            self.g(&x) - self.g(&swap_thermo(&x))
+            Self::combine(self.g_t(&x), self.g_t(&swap_thermo(&x)))
         } else {
             self.logit(&win_input(me, opp))
         }
@@ -630,7 +690,17 @@ impl ManualWinNet {
         self.head1.apply_batch(&cat, w + g_len, m, &mut h, true);
         self.head2.apply_batch(&h, 2 * w, m, &mut e, true);
         self.out.apply_batch(&e, w, m, &mut h, false);
-        h.chunks(2).take(pairs.len()).map(|g| g[0] - g[1]).collect()
+        let g: Vec<f32> = h;
+        match &self.tempo {
+            Some(head) => {
+                let mut t = Vec::new();
+                head.apply_batch(&e, w, m, &mut t, false);
+                (0..pairs.len())
+                    .map(|k| (g[2 * k] - g[2 * k + 1]) + (t[2 * k] + t[2 * k + 1]))
+                    .collect()
+            }
+            None => g.chunks(2).take(pairs.len()).map(|g| g[0] - g[1]).collect(),
+        }
     }
 
     /// The net with its auxiliary heads.
@@ -783,7 +853,7 @@ impl WinStrategy {
     }
 
     /// Load `dir/config.json` (width, encoding, heads), `dir/model.mpk`, and
-    /// `dir/aux.mpk` when the config says the dir has heads.
+    /// `dir/aux.mpk` and `dir/tempo.mpk` when the config says the dir has them.
     pub fn load(dir: &str) -> Self {
         let device = Default::default();
         let cfg = WinModelConfig::load(format!("{dir}/config.json")).expect("Failed to load win model config");
@@ -797,6 +867,9 @@ impl WinStrategy {
                 .load_file(format!("{dir}/aux"), &CompactRecorder::new(), &device)
                 .expect("Failed to load the auxiliary heads");
             net = net.with_aux(&heads);
+        }
+        if cfg.is_tempo() {
+            net = net.with_tempo(&load_tempo::<MyBackend>(dir, cfg.width, &device));
         }
         WinStrategy { net: Arc::new(net) }
     }
@@ -1368,5 +1441,166 @@ mod tests {
         let bot = WinStrategy::from_model(&random_model(15, 32));
         let (a, b) = boards();
         bot.evaluate(&a, &[b, b]);
+    }
+
+    fn random_tempo_head(seed: u64, width: usize) -> burn::nn::Linear<MyBackend> {
+        let device = Default::default();
+        <MyBackend as burn::tensor::backend::Backend>::seed(&device, seed);
+        burn::nn::LinearConfig::new(width, 1).with_bias(true).init(&device)
+    }
+
+    #[test]
+    fn a_zero_tempo_head_changes_no_logit() {
+        let device = Default::default();
+        for model in [random_model(40, 16), random_thermo(41, 16)] {
+            let plain = ManualWinNet::from_model(&model);
+            let tempo = ManualWinNet::from_model(&model).with_tempo(&zero_tempo(16, &device));
+            assert!(tempo.has_tempo() && !plain.has_tempo());
+            let ps = random_pairs(9, 7);
+            let refs: Vec<(&State, &State)> = ps.iter().map(|(a, b)| (a, b)).collect();
+            for (a, b) in &ps {
+                assert_eq!(tempo.logit_states(a, b), plain.logit_states(a, b));
+            }
+            assert_eq!(tempo.logit_batch(&refs), plain.logit_batch(&refs));
+        }
+    }
+
+    #[test]
+    fn a_tempo_logit_splits_into_its_antisymmetric_and_symmetric_parts() {
+        let net = ManualWinNet::from_model(&random_thermo(42, 16)).with_tempo(&random_tempo_head(43, 16));
+        for (a, b) in random_pairs(9, 8) {
+            let x = thermo_input(&a, &b);
+            let ((gx, tx), (gs, ts)) = (net.g_t(&x), net.g_t(&swap_thermo(&x)));
+            let (tx, ts) = (tx.unwrap(), ts.unwrap());
+            let (zab, zba) = (net.logit_states(&a, &b), net.logit_states(&b, &a));
+            assert!((zab + zba - 2.0 * (tx + ts)).abs() < 1e-4, "symmetric part");
+            assert!((zab - zba - 2.0 * (gx - gs)).abs() < 1e-4, "antisymmetric part");
+            assert!((tx + ts).abs() > 1e-6, "a random head adds a symmetric part");
+        }
+    }
+
+    #[test]
+    fn manual_tempo_net_matches_the_burn_trunk_and_head() {
+        for thermo in [false, true] {
+            let model = if thermo {
+                random_thermo(44, 16)
+            } else {
+                random_model(44, 16)
+            };
+            let head = random_tempo_head(45, 16);
+            let net = ManualWinNet::from_model(&model).with_tempo(&head);
+            let ps = random_pairs(7, 9);
+            let device = Default::default();
+            let (xs, ss): (Vec<f32>, Vec<f32>) = if thermo {
+                (
+                    ps.iter().flat_map(|(a, b)| thermo_input(a, b)).collect(),
+                    ps.iter().flat_map(|(a, b)| swap_thermo(&thermo_input(a, b))).collect(),
+                )
+            } else {
+                (
+                    ps.iter().flat_map(|(a, b)| win_input(a, b)).collect(),
+                    ps.iter().flat_map(|(a, b)| swap_input(&win_input(a, b))).collect(),
+                )
+            };
+            let d = if thermo { WIN_INPUTS_T } else { WIN_INPUTS };
+            let n = ps.len();
+            let both = Tensor::cat(
+                vec![flat_tensor::<MyBackend>(&xs, d, &device), flat_tensor(&ss, d, &device)],
+                0,
+            );
+            let (_, h) = model.trunk(both);
+            let g = model.out.forward(h.clone());
+            let t = head.forward(h);
+            let z = g.clone().narrow(0, 0, n) - g.narrow(0, n, n) + t.clone().narrow(0, 0, n) + t.narrow(0, n, n);
+            let want = z.into_data().to_vec::<f32>().unwrap();
+            for ((a, b), zb) in ps.iter().zip(want) {
+                let zm = net.logit_states(a, b);
+                assert!((zb - zm).abs() < 1e-4, "thermo {thermo}: burn {zb} vs manual {zm}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_tempo_batch_gives_each_positions_logit_bit_for_bit() {
+        let ps = random_pairs(37, 10);
+        let refs: Vec<(&State, &State)> = ps.iter().map(|(a, b)| (a, b)).collect();
+        for (model, w) in [
+            (random_model(46, 64), 64),
+            (random_thermo(47, 48), 48),
+            (random_thermo(48, 4), 4),
+        ] {
+            let net = ManualWinNet::from_model(&model).with_tempo(&random_tempo_head(49, w));
+            let got: Vec<u32> = net.logit_batch(&refs).iter().map(|z| z.to_bits()).collect();
+            let want: Vec<u32> = ps.iter().map(|(a, b)| net.logit_states(a, b).to_bits()).collect();
+            assert_eq!(got, want, "width {w}");
+        }
+    }
+
+    #[test]
+    fn zero_tempo_is_all_zero() {
+        let head = zero_tempo::<MyBackend>(8, &Default::default());
+        assert_eq!(head.weight.shape().dims, [8, 1]);
+        assert!(head
+            .weight
+            .val()
+            .into_data()
+            .to_vec::<f32>()
+            .unwrap()
+            .iter()
+            .all(|&v| v == 0.0));
+        assert_eq!(head.bias.unwrap().val().into_data().to_vec::<f32>().unwrap(), vec![0.0]);
+    }
+
+    /// A model dir by hand (`win_pi::save_win` needs the `dqn` feature).
+    fn save_dir(dir: &str, mcfg: &WinModelConfig, model: &WinModel<MyBackend>) {
+        std::fs::create_dir_all(dir).unwrap();
+        mcfg.save(format!("{dir}/config.json")).unwrap();
+        model
+            .clone()
+            .save_file(format!("{dir}/model"), &CompactRecorder::new())
+            .unwrap();
+    }
+
+    #[test]
+    fn tempo_dirs_round_trip_and_old_dirs_have_no_head() {
+        let base = std::env::temp_dir().join(format!("qwixxer-win-tempo-dirs-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let dir = base.to_string_lossy().into_owned();
+        let model = random_thermo(50, 8);
+        let head = random_tempo_head(51, 8);
+        let mcfg = WinModelConfig::new()
+            .with_width(8)
+            .with_thermo(Some(true))
+            .with_tempo(Some(true));
+        save_dir(&dir, &mcfg, &model);
+        save_tempo(&dir, &head);
+        let loaded = WinStrategy::load(&dir);
+        assert!(loaded.net.has_tempo());
+        let (a, b) = boards();
+        let want = ManualWinNet::from_model(&model).with_tempo(&head).logit_states(&a, &b);
+        let got = loaded.net.logit_states(&a, &b);
+        // The files are half precision: close, not equal.
+        assert!((want - got).abs() < 0.05, "{want} vs {got}");
+        // A config written before `tempo` existed: no head.
+        std::fs::write(
+            format!("{dir}/config.json"),
+            "{\n  \"width\": 8,\n  \"thermo\": true\n}",
+        )
+        .unwrap();
+        let cfg = WinModelConfig::load(format!("{dir}/config.json")).unwrap();
+        assert_eq!((cfg.tempo, cfg.is_tempo()), (None, false));
+        assert!(!WinStrategy::load(&dir).net.has_tempo());
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    #[should_panic(expected = "Failed to load the tempo head")]
+    fn a_tempo_dir_without_its_head_fails_to_load() {
+        let base = std::env::temp_dir().join(format!("qwixxer-win-tempo-missing-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let dir = base.to_string_lossy().into_owned();
+        let mcfg = WinModelConfig::new().with_width(8).with_tempo(Some(true));
+        save_dir(&dir, &mcfg, &random_model(52, 8));
+        WinStrategy::load(&dir);
     }
 }
