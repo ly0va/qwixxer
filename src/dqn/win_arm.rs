@@ -8,7 +8,7 @@ use crate::dqn::win::{
     flat_tensor, sigmoid, swap_input, swap_thermo, thermo_input, win_input, AuxHeads, WinModel, WIN_INPUTS,
     WIN_INPUTS_T,
 };
-use crate::dqn::win::{save_aux, widen_to_thermo, WinModelConfig};
+use crate::dqn::win::{load_tempo, save_aux, save_tempo, widen_to_thermo, zero_tempo, WinModelConfig};
 use crate::dqn::win_data::{self, Dataset};
 use crate::dqn::win_data::{DecisionData, Sample, Split};
 use crate::dqn::win_distill::{diff_stats_views, DiffReport, GroupView};
@@ -25,12 +25,15 @@ use burn::{module::Param, nn::Linear, prelude::*, tensor::TensorData};
 use rand::{rngs::SmallRng, seq::SliceRandom, SeedableRng};
 use std::path::Path;
 
-/// The net being fitted, with its auxiliary heads when the arm has them.
-/// The net goes to `model.mpk`, the heads to `aux.mpk`.
+/// The net being fitted, with its auxiliary heads and tempo head when the
+/// arm has them. The net goes to `model.mpk`, the heads to `aux.mpk` and
+/// `tempo.mpk`.
 #[derive(Module, Debug)]
 pub struct ArmModel<B: Backend> {
     pub net: WinModel<B>,
     pub aux: Option<AuxHeads<B>>,
+    /// The tempo head when the arm has one; saved to `tempo.mpk`.
+    pub tempo: Option<Linear<B>>,
 }
 
 /// Outputs for n input rows: the antisymmetric logit `[n, 1]`, and with
@@ -59,6 +62,13 @@ impl<B: Backend> ArmModel<B> {
         let (e, h) = self.net.trunk(Tensor::cat(vec![x, swapped], 0));
         let g = self.net.out.forward(h.clone());
         let z = g.clone().narrow(0, 0, n) - g.narrow(0, n, n);
+        let z = match &self.tempo {
+            Some(head) => {
+                let t = head.forward(h.clone());
+                z + t.clone().narrow(0, 0, n) + t.narrow(0, n, n)
+            }
+            None => z,
+        };
         let Some(aux) = &self.aux else {
             return ArmOut {
                 z,
@@ -189,6 +199,9 @@ fn linears<B: Backend>(m: &ArmModel<B>) -> Vec<&Linear<B>> {
     if let Some(a) = &m.aux {
         v.extend([&a.marks, &a.strikes, &a.diff]);
     }
+    if let Some(t) = &m.tempo {
+        v.push(t);
+    }
     v
 }
 
@@ -204,6 +217,9 @@ fn linears_mut<B: Backend>(m: &mut ArmModel<B>) -> Vec<&mut Linear<B>> {
     ];
     if let Some(a) = &mut m.aux {
         v.extend([&mut a.marks, &mut a.strikes, &mut a.diff]);
+    }
+    if let Some(t) = &mut m.tempo {
+        v.push(t);
     }
     v
 }
@@ -414,6 +430,8 @@ pub struct ArmCfg {
     pub thermo: bool,
     /// Auxiliary heads.
     pub aux: bool,
+    /// Tempo head (the value of moving next).
+    pub tempo: bool,
     pub epochs: usize,
     /// Peak learning rate (the constant one with `legacy`).
     pub lr: f64,
@@ -449,8 +467,8 @@ impl ArmCfg {
         if self.aux_weights.len() != 3 || self.aux_weights.iter().any(|&w| !(w >= 0.0)) {
             return Err("--aux-weights takes 3 non-negative weights: marks,strikes,difference".into());
         }
-        if self.legacy && (self.thermo || self.aux) {
-            return Err("--legacy-fit refits the plain net without aux heads: drop --thermo and --aux".into());
+        if self.legacy && (self.thermo || self.aux || self.tempo) {
+            return Err("--legacy-fit refits the plain net without aux heads: drop --thermo, --aux and --tempo".into());
         }
         for f in ["meta.json", "data.bin"] {
             if !Path::new(&format!("{}/{f}", self.data)).exists() {
@@ -468,6 +486,9 @@ impl ArmCfg {
                     .map_err(|e| format!("--init {init}: unreadable config.json ({e:?})"))?;
                 if c.is_thermo() && !self.thermo {
                     return Err(format!("--init {init} is a thermometer net: add --thermo"));
+                }
+                if c.is_tempo() && !self.tempo {
+                    return Err(format!("--init {init} has a tempo head: add --tempo"));
                 }
             }
             None if self.width == 0 => return Err("--width must be at least 1".into()),
@@ -492,7 +513,8 @@ pub struct FitSummary {
 
 /// Fit one arm (docs/superpowers/specs/2026-10-19-win-thermo-aux-design.md,
 /// "Fit"): writes `out/config.json`, `out/model.mpk` (the best epoch's
-/// averaged net, without heads) and `out/fit.csv`.
+/// averaged net, without heads), `out/aux.mpk` and `out/tempo.mpk` when the
+/// arm has them, and `out/fit.csv`.
 pub fn fit(cfg: &ArmCfg) -> Result<FitSummary, String> {
     cfg.validate()?;
     let ds = win_data::load(&cfg.data).map_err(|e| format!("--data {}: {e}", cfg.data))?;
@@ -522,13 +544,23 @@ pub fn fit(cfg: &ArmCfg) -> Result<FitSummary, String> {
             .init(&device),
     };
     let width = net.row1.weight.shape().dims[1];
+    let init_tempo = cfg
+        .init
+        .as_ref()
+        .filter(|dir| WinModelConfig::load(format!("{dir}/config.json")).is_ok_and(|c| c.is_tempo()));
+    let tempo = cfg.tempo.then(|| match init_tempo {
+        Some(dir) => load_tempo::<Ad>(dir, width, &device),
+        None => zero_tempo::<Ad>(width, &device),
+    });
     let mcfg = WinModelConfig::new()
         .with_width(width)
         .with_thermo(net.is_thermo().then_some(true))
-        .with_aux(cfg.aux.then_some(true));
+        .with_aux(cfg.aux.then_some(true))
+        .with_tempo(cfg.tempo.then_some(true));
     let model = ArmModel {
         net,
         aux: cfg.aux.then(|| AuxHeads::new(width, &device)),
+        tempo,
     };
     std::fs::create_dir_all(&cfg.out).map_err(|e| format!("{}: {e}", cfg.out))?;
     if cfg.legacy {
@@ -638,6 +670,9 @@ fn run<O: Optimizer<ArmModel<Ad>, Ad>>(
     if let Some(heads) = &best_model.aux {
         save_aux(&cfg.out, heads);
     }
+    if let Some(head) = &best_model.tempo {
+        save_tempo(&cfg.out, head);
+    }
     Ok(FitSummary {
         best_epoch,
         epochs: cfg.epochs,
@@ -648,13 +683,14 @@ fn run<O: Optimizer<ArmModel<Ad>, Ad>>(
 mod tests {
     use super::*;
     use crate::dqn::pair::PairStrategy;
+    use crate::dqn::win::{save_tempo, zero_tempo, WinModelConfig, TOKEN, T_TOKEN};
     use crate::dqn::win::{AuxPred, ManualWinNet, WinStrategy};
-    use crate::dqn::win::{WinModelConfig, TOKEN, T_TOKEN};
     use crate::dqn::win_data::{generate, load, save, DataCfg};
     use crate::dqn::win_distill::sample_var;
     use crate::dqn::win_pi::{load_win_ad, save_win};
     use crate::dqn::win_train::train_epochs;
     use crate::state::Mark;
+    use crate::strategy::search::WinProb;
     use burn::module::AutodiffModule;
     use burn::tensor::ElementConversion;
     use rand::{Rng, SeedableRng};
@@ -672,6 +708,7 @@ mod tests {
         ArmModel {
             net,
             aux: aux.then(|| AuxHeads::new(8, &device)),
+            tempo: None,
         }
     }
 
@@ -966,6 +1003,7 @@ mod tests {
             init,
             thermo: false,
             aux: false,
+            tempo: false,
             epochs: 2,
             lr: 3e-4,
             wd: 1e-4,
@@ -1192,6 +1230,213 @@ mod tests {
         let p = WinStrategy::load(&with).net.aux_states(&a, &b).unwrap();
         assert!(p.marks.iter().chain(&p.strikes).all(|v| v.is_finite()) && p.diff.is_finite());
         assert!(WinStrategy::load(&without).net.aux_states(&a, &b).is_none());
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    fn with_random_tempo(mut arm: ArmModel<MyBackend>, seed: u64) -> ArmModel<MyBackend> {
+        let _guard = SEEDING.lock().unwrap();
+        let device = Default::default();
+        <MyBackend as Backend>::seed(&device, seed);
+        arm.tempo = Some(burn::nn::LinearConfig::new(8, 1).with_bias(true).init(&device));
+        arm
+    }
+
+    fn some_samples() -> Vec<Sample> {
+        let (a, b) = boards();
+        [(a, b), (b, a), (a, a), (State::default(), b)]
+            .into_iter()
+            .map(|(me, opp)| Sample {
+                me,
+                opp,
+                win: 0.5,
+                win_var: 0.25,
+                marks: [0.0; 8],
+                strikes: [0.0; 2],
+                diff: 0.0,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_zero_tempo_head_leaves_the_arm_forward_unchanged() {
+        for aux in [false, true] {
+            let plain = random_arm(70, true, aux);
+            let tempo = ArmModel {
+                tempo: Some(zero_tempo(8, &Default::default())),
+                ..plain.clone()
+            };
+            let s = some_samples();
+            let refs: Vec<&Sample> = s.iter().collect();
+            assert_eq!(predict(&plain, &refs).p, predict(&tempo, &refs).p, "aux {aux}");
+        }
+    }
+
+    #[test]
+    fn arm_forward_matches_the_manual_net_with_a_tempo_head() {
+        for aux in [false, true] {
+            let arm = with_random_tempo(random_arm(71, true, aux), 72);
+            let net = ManualWinNet::from_model(&arm.net).with_tempo(arm.tempo.as_ref().unwrap());
+            let s = some_samples();
+            let refs: Vec<&Sample> = s.iter().collect();
+            for (x, p) in s.iter().zip(predict(&arm, &refs).p) {
+                let q = sigmoid(net.logit_states(&x.me, &x.opp));
+                assert!((p - q).abs() < 1e-5, "aux {aux}: burn {p} vs manual {q}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_weight_average_covers_the_tempo_head() {
+        let arm = with_random_tempo(random_arm(73, false, false), 74);
+        let n_plain = weights(&random_arm(73, false, false)).len();
+        let ema = Ema::new(&arm, 0.5);
+        assert_eq!(ema.values.len(), n_plain + 2, "tempo weight and bias");
+        let zeroed = ema.apply(ArmModel {
+            tempo: Some(zero_tempo(8, &Default::default())),
+            ..arm.clone()
+        });
+        assert_eq!(
+            weights(&zeroed),
+            weights(&arm),
+            "apply restores the averaged tempo head"
+        );
+    }
+
+    #[test]
+    fn validate_refuses_a_tempo_init_without_tempo() {
+        let base = tmp("tempo-init");
+        let (data, init) = tiny(&base);
+        // Make the init a tempo dir.
+        let mut cfg = WinModelConfig::load(format!("{init}/config.json")).unwrap();
+        cfg.tempo = Some(true);
+        cfg.save(format!("{init}/config.json")).unwrap();
+        save_tempo(&init, &zero_tempo(4, &Default::default()));
+        let err = arm(&data, format!("{base}/out"), Some(init.clone()))
+            .validate()
+            .unwrap_err();
+        assert!(err.contains("--tempo"), "{err}");
+        assert!(ArmCfg {
+            tempo: true,
+            ..arm(&data, format!("{base}/out"), Some(init))
+        }
+        .validate()
+        .is_ok());
+        assert!(ArmCfg {
+            tempo: true,
+            legacy: true,
+            ..arm(&data, format!("{base}/out2"), None)
+        }
+        .validate()
+        .unwrap_err()
+        .contains("--legacy-fit"));
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn a_tempo_arm_saves_its_head_and_plays() {
+        let base = tmp("tempo-fit");
+        let (data, init) = tiny(&base);
+        for (out, init) in [(format!("{base}/scratch"), None), (format!("{base}/warm"), Some(init))] {
+            fit(&ArmCfg {
+                tempo: true,
+                ..arm(&data, out.clone(), init)
+            })
+            .unwrap();
+            let cfg = WinModelConfig::load(format!("{out}/config.json")).unwrap();
+            assert!(cfg.is_tempo());
+            assert!(Path::new(&format!("{out}/tempo.mpk")).exists());
+            let bot = WinStrategy::load(&out);
+            assert!(bot.net.has_tempo());
+        }
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    /// Mirror pairs, each side "just moved" with label 0.45: the player to
+    /// move next has the edge. Only a tempo net can fit both at 0.45.
+    fn mirror_data(dir: &str) {
+        let mut rng = SmallRng::seed_from_u64(9);
+        let mut board = || {
+            let mut s = State::default();
+            for _ in 0..rng.gen_range(0..12) {
+                let (row, number) = (rng.gen_range(0..4), rng.gen_range(2..=12));
+                if s.can_mark(row, number) {
+                    s.apply_mark(Mark { row, number });
+                }
+            }
+            s
+        };
+        let sample = |me: State, opp: State| Sample {
+            me,
+            opp,
+            win: 0.45,
+            win_var: 0.25,
+            marks: [0.0; 8],
+            strikes: [0.0; 2],
+            diff: 0.0,
+        };
+        let mut split = || {
+            let mut turns = Vec::new();
+            for _ in 0..200 {
+                let (a, b) = (board(), board());
+                turns.push(sample(a, b));
+                turns.push(sample(b, a));
+            }
+            Split {
+                turns,
+                decisions: Vec::new(),
+            }
+        };
+        let (train, heldout) = (split(), split());
+        let meta = win_data::DataMeta {
+            player: "synthetic".into(),
+            seed: 0,
+            games: 2,
+            rollouts: 64,
+            cand_rollouts: 64,
+            holdout: 0.5,
+            keep: None,
+            train_turns: 0,
+            train_decisions: 0,
+            heldout_turns: 0,
+            heldout_decisions: 0,
+            bytes: 0,
+        };
+        save(dir, &Dataset { meta, train, heldout }).unwrap();
+    }
+
+    #[test]
+    fn a_tempo_arm_learns_the_value_of_moving_next() {
+        let base = tmp("tempo-learns");
+        let data = format!("{base}/data");
+        mirror_data(&data);
+        let ds = load(&data).unwrap();
+        let mean_p = |out: &str| {
+            let bot = WinStrategy::load(out);
+            let leaves: Vec<(&State, &[State])> = ds
+                .heldout
+                .turns
+                .iter()
+                .map(|s| (&s.me, std::slice::from_ref(&s.opp)))
+                .collect();
+            let p = bot.win_prob_multi(&leaves);
+            p.iter().sum::<f32>() / p.len() as f32
+        };
+        let run = |out: String, tempo: bool| {
+            fit(&ArmCfg {
+                tempo,
+                epochs: 40,
+                lr: 1e-2,
+                ema: 0.0,
+                width: 8,
+                ..arm(&data, out.clone(), None)
+            })
+            .unwrap();
+            mean_p(&out)
+        };
+        let plain = run(format!("{base}/plain"), false);
+        let tempo = run(format!("{base}/tempo"), true);
+        assert!((plain - 0.5).abs() < 1e-3, "antisymmetric over mirror pairs: {plain}");
+        assert!(tempo < 0.47, "the tempo net learns the mover's edge: {tempo}");
         std::fs::remove_dir_all(&base).unwrap();
     }
 }

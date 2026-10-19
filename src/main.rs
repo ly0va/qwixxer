@@ -518,6 +518,9 @@ enum Commands {
         /// Auxiliary heads: final row marks, strikes, score difference (saved to aux.mpk, never used in play)
         #[arg(long)]
         aux: bool,
+        /// Tempo head: the value of moving next (saved to tempo.mpk, used in play)
+        #[arg(long)]
+        tempo: bool,
         #[arg(long, default_value = "10")]
         epochs: usize,
         /// Peak learning rate (cosine decay to 0)
@@ -1225,6 +1228,7 @@ fn main() {
             init,
             thermo,
             aux,
+            tempo,
             epochs,
             lr,
             wd,
@@ -1240,6 +1244,7 @@ fn main() {
                 init,
                 thermo,
                 aux,
+                tempo,
                 epochs,
                 lr,
                 wd,
