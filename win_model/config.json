@@ -1,3 +1,5 @@
 {
+  "thermo": true,
+  "aux": true,
   "width": 64
 }
