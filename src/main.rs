@@ -487,9 +487,12 @@ enum Commands {
         /// Rollouts per candidate [default: 64]
         #[arg(long)]
         cand_rollouts: Option<usize>,
-        /// Share of games held out [default: 0.1]
+        /// Share of games held out; 1 holds out every game (a benchmark) [default: 0.1]
         #[arg(long)]
         holdout: Option<f64>,
+        /// Share of each game's turn ends and decisions kept and labelled (--positions counts kept turn ends) [default: 1]
+        #[arg(long)]
+        keep: Option<f64>,
         /// [default: 42]
         #[arg(long)]
         seed: Option<u64>,
@@ -1165,6 +1168,7 @@ fn main() {
             rollouts,
             cand_rollouts,
             holdout,
+            keep,
             seed,
             resume,
         }) => {
@@ -1173,7 +1177,7 @@ fn main() {
                 std::process::exit(2);
             };
             let cfg = if resume {
-                dqn::win_data::resume_cfg(&out, positions, player, rollouts, cand_rollouts, holdout, seed)
+                dqn::win_data::resume_cfg(&out, positions, player, rollouts, cand_rollouts, holdout, keep, seed)
                     .unwrap_or_else(|e| fail(e))
             } else {
                 dqn::win_data::DataCfg {
@@ -1183,6 +1187,7 @@ fn main() {
                     rollouts: rollouts.unwrap_or(64),
                     cand_rollouts: cand_rollouts.unwrap_or(64),
                     holdout: holdout.unwrap_or(0.1),
+                    keep: keep.unwrap_or(1.0),
                     seed: seed.unwrap_or(42),
                     resume: false,
                 }

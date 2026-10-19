@@ -201,6 +201,9 @@ pub struct DataMeta {
     pub rollouts: usize,
     pub cand_rollouts: usize,
     pub holdout: f64,
+    /// Share of turn ends and decisions kept (and labelled). `None` in
+    /// datasets written before it existed, which kept everything.
+    pub keep: Option<f64>,
     pub train_turns: usize,
     pub train_decisions: usize,
     pub heldout_turns: usize,
@@ -230,8 +233,11 @@ pub struct DataCfg {
     pub rollouts: usize,
     /// Rollouts per candidate.
     pub cand_rollouts: usize,
-    /// Share of games held out.
+    /// Share of games held out (1 = all, as a benchmark).
     pub holdout: f64,
+    /// Share of each game's turn ends and decisions kept, drawn per item
+    /// before labelling.
+    pub keep: f64,
     pub seed: u64,
     /// Continue the dataset already in `out`.
     pub resume: bool,
@@ -249,8 +255,11 @@ impl DataCfg {
         if self.cand_rollouts < 2 {
             return Err("--cand-rollouts must be at least 2".into());
         }
-        if !(0.0..1.0).contains(&self.holdout) {
-            return Err("--holdout must be in [0, 1)".into());
+        if !(0.0..=1.0).contains(&self.holdout) {
+            return Err("--holdout must be in [0, 1]".into());
+        }
+        if !(self.keep > 0.0 && self.keep <= 1.0) {
+            return Err("--keep must be in (0, 1]".into());
         }
         for f in ["config.json", "model.mpk"] {
             if !Path::new(&format!("{}/{f}", self.player)).exists() {
@@ -268,6 +277,7 @@ impl DataCfg {
             differs("--rollouts", &self.rollouts, &m.rollouts)?;
             differs("--cand-rollouts", &self.cand_rollouts, &m.cand_rollouts)?;
             differs("--holdout", &self.holdout, &m.holdout)?;
+            differs("--keep", &self.keep, &m.keep.unwrap_or(1.0))?;
             differs("--seed", &self.seed, &m.seed)?;
         } else if Path::new(&self.out).exists() {
             return Err(format!(
@@ -296,6 +306,7 @@ pub fn resume_cfg(
     rollouts: Option<usize>,
     cand_rollouts: Option<usize>,
     holdout: Option<f64>,
+    keep: Option<f64>,
     seed: Option<u64>,
 ) -> Result<DataCfg, String> {
     let m = read_meta(out).map_err(|e| format!("--resume {out}: {e}"))?;
@@ -312,6 +323,7 @@ pub fn resume_cfg(
         rollouts: take("--rollouts", rollouts, m.rollouts)?,
         cand_rollouts: take("--cand-rollouts", cand_rollouts, m.cand_rollouts)?,
         holdout: take("--holdout", holdout, m.holdout)?,
+        keep: take("--keep", keep, m.keep.unwrap_or(1.0))?,
         seed: take("--seed", seed, m.seed)?,
         resume: true,
     })
@@ -324,10 +336,31 @@ pub fn held_out(seed: u64, game: u64, share: f64) -> bool {
     ((h >> 11) as f64 / (1u64 << 53) as f64) < share
 }
 
+/// Whether item `item` of game `game` is kept, at share `p` (always at 1).
+fn kept(seed: u64, game: u64, item: u64, p: f64) -> bool {
+    if p >= 1.0 {
+        return true;
+    }
+    let h = splitmix64(seed ^ splitmix64(game ^ 0x6B33_0002) ^ splitmix64(item));
+    ((h >> 11) as f64 / (1u64 << 53) as f64) < p
+}
+
+/// [`kept`]'s item for a game's `i`-th turn end.
+fn turn_item(i: u64) -> u64 {
+    i
+}
+
+/// [`kept`]'s item for a game's `j`-th decision.
+fn decision_item(j: u64) -> u64 {
+    j | 1 << 32
+}
+
 /// One self-play game's labelled turn ends and candidate decisions. Game
 /// `g` is seeded `seed + 1000·g` and its turn ends are rolled out from seed
 /// `game seed ^ 0x5011_0075`, as in `rollout_round_by`, so the win labels
-/// are the ones `win-pi --labels cand` would give.
+/// are the ones `win-pi --labels cand` would give. Only the [`kept`] turn
+/// ends and decisions are labelled; the turn ends' rollouts share their
+/// seeds, so a kept item's labels do not depend on `cfg.keep`.
 fn game_samples<P: Bot + Clone + 'static>(player: &P, cfg: &DataCfg, g: u64) -> (Vec<Sample>, Vec<DecisionData>) {
     let game_seed = cfg.seed.wrapping_add(g.wrapping_mul(1000));
     let bufs: [Rc<RefCell<Vec<(State, State)>>>; 2] = Default::default();
@@ -350,7 +383,9 @@ fn game_samples<P: Bot + Clone + 'static>(player: &P, cfg: &DataCfg, g: u64) -> 
     let entries: Vec<(Vec<State>, bool)> = bufs
         .iter()
         .flat_map(|b| b.take())
-        .map(|(me, opp)| phase2_entry(me, &[opp]))
+        .enumerate()
+        .filter(|&(i, _)| kept(cfg.seed, g, turn_item(i as u64), cfg.keep))
+        .map(|(_, (me, opp))| phase2_entry(me, &[opp]))
         .collect();
     let turns = if entries.is_empty() {
         Vec::new()
@@ -364,7 +399,9 @@ fn game_samples<P: Bot + Clone + 'static>(player: &P, cfg: &DataCfg, g: u64) -> 
     let decisions = caps
         .iter()
         .flat_map(|c| c.take())
-        .map(|d| label_decision_full(player, &d, cfg.cand_rollouts))
+        .enumerate()
+        .filter(|&(j, _)| kept(cfg.seed, g, decision_item(j as u64), cfg.keep))
+        .map(|(_, d)| label_decision_full(player, &d, cfg.cand_rollouts))
         .collect();
     (turns, decisions)
 }
@@ -389,12 +426,12 @@ fn run_games<P: Bot + Clone + 'static, E>(
     mut turns: usize,
     mut on_batch: impl FnMut(Vec<GameData>, usize) -> Result<(), E>,
 ) -> Result<(), E> {
-    let (start, mut kept) = (turns, 0usize);
+    let (start, mut games) = (turns, 0usize);
     while turns < cfg.positions {
-        let per_game = if kept == 0 {
-            25.0
+        let per_game = if games == 0 {
+            25.0 * cfg.keep
         } else {
-            (turns - start) as f64 / kept as f64
+            ((turns - start) as f64 / games as f64).max(0.1)
         };
         let batch = (((cfg.positions - turns) as f64 / per_game).ceil() as u64).clamp(1, batch_cap());
         let chunk: Vec<(Vec<Sample>, Vec<DecisionData>)> = (game..game + batch)
@@ -409,7 +446,7 @@ fn run_games<P: Bot + Clone + 'static, E>(
             turns += t.len();
             out.push((held_out(cfg.seed, g, cfg.holdout), t, d));
         }
-        kept += out.len();
+        games += out.len();
         game += out.len() as u64;
         on_batch(out, turns)?;
     }
@@ -425,6 +462,7 @@ impl DataMeta {
             rollouts: cfg.rollouts,
             cand_rollouts: cfg.cand_rollouts,
             holdout: cfg.holdout,
+            keep: Some(cfg.keep),
             train_turns: 0,
             train_decisions: 0,
             heldout_turns: 0,
@@ -814,9 +852,72 @@ mod tests {
             rollouts: 2,
             cand_rollouts: 4,
             holdout,
+            keep: 1.0,
             seed,
             resume: false,
         }
+    }
+
+    #[test]
+    fn kept_share_is_close_and_deterministic() {
+        let share = (0..20_000u64).filter(|&i| kept(7, i / 40, i % 40, 0.15)).count();
+        assert!((2700..=3300).contains(&share), "{share}");
+        assert!((0..1000u64).all(|i| kept(7, i, i, 1.0)));
+        assert_eq!(kept(7, 3, 9, 0.5), kept(7, 3, 9, 0.5));
+        // Turn ends and decisions of one game are drawn apart.
+        let both = (0..2000u64)
+            .filter(|&i| kept(7, 0, turn_item(i), 0.5) == kept(7, 0, decision_item(i), 0.5))
+            .count();
+        assert!((800..=1200).contains(&both), "{both}");
+    }
+
+    #[test]
+    fn a_kept_share_keeps_its_items_labels_unchanged() {
+        let bot = PairStrategy::load("pair_model");
+        let some = DataCfg {
+            keep: 0.4,
+            ..cfg(1, 0.0, 3)
+        };
+        let (mut turns, mut decisions) = (0, 0);
+        for g in 0..6u64 {
+            let (t, d) = game_samples(&bot, &cfg(1, 0.0, 3), g);
+            let (kt, kd) = game_samples(&bot, &some, g);
+            let want_t: Vec<Sample> = (0..t.len() as u64)
+                .filter(|&i| kept(3, g, turn_item(i), 0.4))
+                .map(|i| t[i as usize])
+                .collect();
+            let want_d: Vec<DecisionData> = (0..d.len() as u64)
+                .filter(|&j| kept(3, g, decision_item(j), 0.4))
+                .map(|j| d[j as usize].clone())
+                .collect();
+            assert_eq!((&kt, &kd), (&want_t, &want_d));
+            assert!(kt.len() < t.len() || t.is_empty());
+            turns += kt.len();
+            decisions += kd.len();
+        }
+        assert!(turns > 0 && decisions > 0);
+    }
+
+    #[test]
+    fn holdout_one_holds_out_every_game() {
+        let ds = generate(&cfg(40, 1.0, 5), &|| PairStrategy::load("pair_model"));
+        assert!(ds.train.turns.is_empty() && ds.train.decisions.is_empty());
+        assert!(ds.heldout.turns.len() >= 40 && !ds.heldout.decisions.is_empty());
+    }
+
+    #[test]
+    fn a_meta_without_keep_reads_as_keeping_everything() {
+        let dir = tmp("old-meta");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            format!("{dir}/meta.json"),
+            r#"{"player":"p","seed":42,"games":1,"rollouts":64,"cand_rollouts":64,"holdout":0.1,
+               "train_turns":1,"train_decisions":0,"heldout_turns":0,"heldout_decisions":0,"bytes":8}"#,
+        )
+        .unwrap();
+        let r = resume_cfg(&dir, 10, None, None, None, None, None, None).unwrap();
+        assert_eq!(r.keep, 1.0);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
@@ -938,7 +1039,11 @@ mod tests {
         assert!(err(with(&|c| c.positions = 0)).contains("--positions"));
         assert!(err(with(&|c| c.rollouts = 1)).contains("--rollouts"));
         assert!(err(with(&|c| c.cand_rollouts = 1)).contains("--cand-rollouts"));
-        assert!(err(with(&|c| c.holdout = 1.0)).contains("--holdout"));
+        assert!(err(with(&|c| c.holdout = 1.5)).contains("--holdout"));
+        assert!(err(with(&|c| c.holdout = -0.1)).contains("--holdout"));
+        assert_eq!(with(&|c| c.holdout = 1.0).validate(), Ok(()));
+        assert!(err(with(&|c| c.keep = 0.0)).contains("--keep"));
+        assert!(err(with(&|c| c.keep = 1.5)).contains("--keep"));
         assert!(err(with(&|c| c.player = format!("{base}/nope"))).contains("--player"));
         std::fs::create_dir_all(&ok.out).unwrap();
         assert!(err(with(&|_| {})).contains("already exists"));
@@ -1046,28 +1151,52 @@ mod tests {
         };
         write_dataset(&c, &|| PairStrategy::load("pair_model")).unwrap();
         // Nothing given: everything comes from the dataset.
-        let r = resume_cfg(&dir, 80, None, None, None, None, None).unwrap();
+        let r = resume_cfg(&dir, 80, None, None, None, None, None, None).unwrap();
         assert_eq!(
-            (r.player.as_str(), r.rollouts, r.cand_rollouts, r.holdout, r.seed),
-            (player.as_str(), 2, 4, 0.5, 5)
+            (
+                r.player.as_str(),
+                r.rollouts,
+                r.cand_rollouts,
+                r.holdout,
+                r.keep,
+                r.seed
+            ),
+            (player.as_str(), 2, 4, 0.5, 1.0, 5)
         );
         assert!(r.resume && r.positions == 80 && r.validate().is_ok());
         // Given and equal: fine; given and different: refused.
-        assert!(resume_cfg(&dir, 80, Some(player.clone()), Some(2), Some(4), Some(0.5), Some(5)).is_ok());
+        assert!(resume_cfg(
+            &dir,
+            80,
+            Some(player.clone()),
+            Some(2),
+            Some(4),
+            Some(0.5),
+            Some(1.0),
+            Some(5)
+        )
+        .is_ok());
         let refuse = |r: Result<DataCfg, String>, flag: &str| assert!(r.unwrap_err().contains(flag));
         refuse(
-            resume_cfg(&dir, 80, Some(format!("{base}/other")), None, None, None, None),
+            resume_cfg(&dir, 80, Some(format!("{base}/other")), None, None, None, None, None),
             "--player",
         );
-        refuse(resume_cfg(&dir, 80, None, Some(64), None, None, None), "--rollouts");
         refuse(
-            resume_cfg(&dir, 80, None, None, Some(64), None, None),
+            resume_cfg(&dir, 80, None, Some(64), None, None, None, None),
+            "--rollouts",
+        );
+        refuse(
+            resume_cfg(&dir, 80, None, None, Some(64), None, None, None),
             "--cand-rollouts",
         );
-        refuse(resume_cfg(&dir, 80, None, None, None, Some(0.1), None), "--holdout");
-        refuse(resume_cfg(&dir, 80, None, None, None, None, Some(6)), "--seed");
         refuse(
-            resume_cfg(&format!("{base}/nope"), 80, None, None, None, None, None),
+            resume_cfg(&dir, 80, None, None, None, Some(0.1), None, None),
+            "--holdout",
+        );
+        refuse(resume_cfg(&dir, 80, None, None, None, None, Some(0.5), None), "--keep");
+        refuse(resume_cfg(&dir, 80, None, None, None, None, None, Some(6)), "--seed");
+        refuse(
+            resume_cfg(&format!("{base}/nope"), 80, None, None, None, None, None, None),
             "--resume",
         );
         // A resume config that disagrees with the dataset fails validation too.

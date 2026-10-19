@@ -925,6 +925,7 @@ mod tests {
             rollouts: 2,
             cand_rollouts: 2,
             holdout: 0.5,
+            keep: 1.0,
             seed: 3,
             resume: false,
         };
