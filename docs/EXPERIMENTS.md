@@ -2122,9 +2122,59 @@ curves not recorded). From scratch is therefore the recipe; whether the
 thermometer inputs or the aux heads add anything on their own is not
 separated, since no from-scratch arm drops them.
 
-**Round 2 (in progress):** `win-data` from E, 800k turn ends with 64
-rollouts each, then a from-scratch fit at W64 and at W48 on it, compared
-by held-out curves and gates.
+**Round 2:** `win-data` from E, 800k turn ends with 64 rollouts each
+(about twice r1), then from-scratch fits at W64 (E2) and W48 (F2).
+
+- **E2** (W64, recipe above, `--epochs 20`): best at epoch 7, diff RMSE
+  0.0533 (noise 0.0513, own error ≈ 0.0145; a different held-out set
+  from r1's, so not directly comparable with E's 0.0148). From epoch 8
+  train and held-out excess rose *together* (0.00932 → 0.00950 and
+  0.00943 → 0.00960 by epoch 13): drift at a still-high learning rate,
+  not overfitting. E peaked on r1 at about the same number of optimizer
+  steps, so for data this size `--epochs 10` (r1's step count) is the
+  suggested schedule.
+- **E2 vs E: 50.12%, z 4.30** (1M games). About +0.1pp over E against
+  Master and against GA as well (user). E2 is the new champion.
+- F2: pending.
+
+Doubling the data bought little own error, which with W48 ≈ W64 points
+at systematic error rather than label noise or capacity.
+
+### Static vs 1-ply: where the error is (old champion, r1 held-out)
+
+A throwaway probe (branch `ply-probe`) compares each held-out candidate's
+static value with its exact 1-ply value (exact expectation over the next
+turn's dice of a rule-free greedy turn on the net) and groups decisions
+by how much 1-ply moves any candidate difference:
+
+| decisions (by disagreement) | static own error | 1-ply own error | share of static error² |
+|---|---:|---:|---:|
+| top 2% | 0.053 | 0.027 | 17.5% |
+| top 2–5% | 0.031 | 0.015 | 10% |
+| top 5–15% | 0.021 | 0.012 | 17.5% |
+| top 15–40% | 0.016 | 0.012 | 27% |
+| bottom 60% | 0.011 | 0.009 | 28% |
+
+The error concentrates (top 15% of decisions hold 45% of it) and 1-ply is
+more accurate everywhere. Where 1-ply picks a different candidate (6.8%
+of decisions) its pick is better by +0.0069 (8σ), though the static error
+there is not larger: those are near ties. Screening costs 1.6 ms a
+candidate against 25 ms for 64 rollouts, so mining the top ~10–15% for
+labels (gnubg-style) adds about 40% per label for 1.5–2× the error per
+label; not yet tried. The old champion also favours the player who has
+just moved: turn-end bias +0.021 (static 0.521 against label 0.498).
+
+### Benchmark
+
+`win-data --keep p --holdout 1` labels a hashed share of each game's
+items and holds out every game; `win-eval --model --data` reports own
+error on candidate differences with a bootstrap standard error, pick
+agreement and regret, win excess and the turn-end bias. On r1's held-out
+set the old champion scores own error 0.0185 ± 0.0006 at 64 rollouts:
+69k decisions already average the noise well, so a 1024-rollout
+benchmark (~5k decisions, ~17M rollouts, about ±0.0003) is mainly a
+**fixed yardstick** across rounds and arms, not a big gain in precision.
+It is built on the champion (E2), whose rollouts define the labels.
 
 ### Inference speed
 
