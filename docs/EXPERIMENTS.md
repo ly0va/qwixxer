@@ -2184,6 +2184,20 @@ a position-dependent one does not, and the constraint also forces a
 compromise wherever a position and its mirror both occur. How much this
 costs in play is untested.
 
+**Tempo arm (in progress).** A tempo head t on the trunk (logit
+g(x) − g(x′) + t(x) + t(x′), zero-initialised, `tempo.mpk`) and a
+who-moves-next flag on every evaluation: passive decisions and search
+leaves where seat 0 moves next ask 1 − V(opp, me); every bot without a
+tempo head is unchanged bit for bit
+(docs/superpowers/specs/2026-10-20-win-tempo-design.md). Arms on r2, from
+scratch, matched schedules:
+
+    $Q win-arm --data win_data_r2 --out arm_e2p --thermo --aux --lr 1e-3 --epochs 10
+    $Q win-arm --data win_data_r2 --out arm_t   --thermo --aux --lr 1e-3 --epochs 10 --tempo
+
+Measured by `win-eval` (bias, own error) on `bench_e2` and r2, and
+`win-gate` T vs E2′ and T vs E2 (1M games).
+
 ### Benchmark
 
 `win-data --keep p --holdout 1` labels a hashed share of each game's
