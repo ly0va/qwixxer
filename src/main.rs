@@ -556,6 +556,16 @@ enum Commands {
         #[arg(long, default_value = "42")]
         seed: u64,
     },
+    /// A win model measured on a win-data dataset's held-out games: own error on candidate differences, picks, bias
+    #[cfg(feature = "dqn")]
+    WinEval {
+        /// Win model dir
+        #[arg(long)]
+        model: String,
+        /// win-data dir (a benchmark: --holdout 1, many rollouts)
+        #[arg(long)]
+        data: String,
+    },
 }
 
 fn run_play(bots: Vec<BotType>, verbose: bool) {
@@ -1246,6 +1256,40 @@ fn main() {
                     std::process::exit(2);
                 }
             }
+        }
+        #[cfg(feature = "dqn")]
+        Some(Commands::WinEval { model, data }) => {
+            let fail = |e: String| -> ! {
+                eprintln!("win-eval: {e}");
+                std::process::exit(2);
+            };
+            if !std::path::Path::new(&format!("{model}/model.mpk")).exists() {
+                fail(format!("{model}/model.mpk not found"));
+            }
+            let ds = dqn::win_data::load(&data).unwrap_or_else(|e| fail(e.to_string()));
+            if ds.heldout.decisions.is_empty() {
+                fail(format!("{data} has no held-out decisions"));
+            }
+            let (kt, kc) = (ds.meta.rollouts, ds.meta.cand_rollouts);
+            let net = dqn::win::WinStrategy::load(&model);
+            let r = dqn::win_bench::bench(&net, &ds.heldout, kt, kc);
+            println!(
+                "win-eval: {model} on {data} ({kt}/{kc} rollouts): {} turn ends, {} decisions ({} differences)",
+                r.turns, r.decisions, r.pairs
+            );
+            println!(
+                "  own error {:.4} ± {:.4}  (diff RMSE {:.4}, label noise {:.4})",
+                r.own, r.own_se, r.diff_rmse, r.diff_noise
+            );
+            println!(
+                "  picks the best-labelled candidate in {:.1}% of decisions, mean regret {:.4}",
+                100.0 * r.agree,
+                r.regret
+            );
+            println!(
+                "  win excess {:.5} (floor {:.5}); turn-end bias {:+.4}",
+                r.excess, r.floor, r.bias
+            );
         }
         #[cfg(feature = "dqn")]
         Some(Commands::WinGate { a, b, games, seed }) => {
