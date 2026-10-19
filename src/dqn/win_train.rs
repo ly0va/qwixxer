@@ -342,6 +342,14 @@ pub fn self_play_train(cfg: &WinTrainCfg) -> WinStrategy {
         cfg.init.is_none() || cfg.start_iteration == 0,
         "--init starts a fresh run; it cannot be combined with --start-iteration"
     );
+    if let Some(init) = &cfg.init {
+        // win-train saves the net only: a tempo init would lose its head.
+        let tempo = WinModelConfig::load(format!("{init}/config.json")).is_ok_and(|c| c.is_tempo());
+        assert!(
+            !tempo,
+            "--init {init} has a tempo head: win-train trains nets without one"
+        );
+    }
     if cfg.start_iteration == 0 {
         let taken = ["model.mpk", "training.csv"]
             .iter()
@@ -1519,5 +1527,23 @@ mod tests {
         assert!(r.rmse.is_finite() && r.rmse <= r.rmse_raw + 1e-6);
         assert_eq!(r.calibration.iter().map(|b| b.0).sum::<usize>(), 20);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    #[should_panic(expected = "has a tempo head")]
+    fn a_tempo_init_is_refused() {
+        let base = std::env::temp_dir().join(format!("qwixxer-win-train-tempo-{}", std::process::id()));
+        let base = base.to_str().unwrap().to_string();
+        let _ = std::fs::remove_dir_all(&base);
+        let init = format!("{base}/init");
+        std::fs::create_dir_all(&init).unwrap();
+        WinModelConfig::new()
+            .with_width(4)
+            .with_tempo(Some(true))
+            .save(format!("{init}/config.json"))
+            .unwrap();
+        let mut cfg = smoke_cfg(&format!("{base}/run"));
+        cfg.init = Some(init);
+        self_play_train(&cfg);
     }
 }

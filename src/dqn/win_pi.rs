@@ -250,6 +250,11 @@ impl WinPiCfg {
                         "--init {init}: win-pi trains plain nets only (this is a thermometer net)"
                     ))
                 }
+                Ok(c) if c.is_tempo() => {
+                    return Err(format!(
+                        "--init {init}: win-pi trains plain nets only (this net has a tempo head)"
+                    ))
+                }
                 Ok(_) => {}
                 Err(e) => return Err(format!("--init {init}: unreadable config.json ({e:?})")),
             }
@@ -855,6 +860,17 @@ mod tests {
             );
             WinStrategy::load(&dir);
         }
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn validate_refuses_a_tempo_init() {
+        let base = tmp("tempo-init");
+        let init = format!("{base}/init");
+        let mcfg = WinModelConfig::new().with_width(4).with_tempo(Some(true));
+        save_win(&init, &mcfg, &mcfg.init::<crate::dqn::MyBackend>(&Default::default()));
+        let err = tiny_cfg(format!("{base}/run"), Some(init)).validate().unwrap_err();
+        assert!(err.contains("tempo"), "{err}");
         std::fs::remove_dir_all(&base).unwrap();
     }
 }
