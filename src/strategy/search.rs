@@ -4,12 +4,12 @@
 //! Design: docs/superpowers/specs/2026-06-10-pair-search-design.md
 
 use super::bot_impl::{
-    active_phase1_choices, active_phase2_choices, eval_decision, is_safe_lock, mark_choices_with,
+    active_phase1_choices, active_phase2_choices, eval_decision, eval_decision_next, is_safe_lock, mark_choices_with,
     opp_best_phase1_score, passive_phase1_choices, passive_phase1_impl, phase1_plan_choices_with, Decision,
 };
 use super::sim::{BatchedRollouts, SimGame};
-use super::Bot;
 use super::Strategy;
+use super::{Bot, Next};
 use crate::game::DiceSource;
 use crate::state::{Mark, State};
 use rand::rngs::SmallRng;
@@ -697,12 +697,20 @@ impl<B: WinProb> SearchBot<B> {
             .iter()
             .map(|&i| SimGame::opp_view(&driver.sims[i].states, 0))
             .collect();
-        let groups: Vec<(&State, &[State])> = survivor_idx
+        // A survivor's next mover is its sim's `active`: seat 0 is me.
+        let groups: Vec<(&State, &[State], Next)> = survivor_idx
             .iter()
             .zip(&survivor_views)
-            .map(|(&i, view)| (&driver.sims[i].states[0], view.as_slice()))
+            .map(|(&i, view)| {
+                let next = if driver.sims[i].active == 0 {
+                    Next::Me
+                } else {
+                    Next::Opp
+                };
+                (&driver.sims[i].states[0], view.as_slice(), next)
+            })
             .collect();
-        let probs = self.bot.win_prob_multi(&groups);
+        let probs = self.bot.win_prob_multi_next(&groups);
         let mut prob_iter = probs.into_iter();
         let mut out: Vec<Vec<f32>> = entries
             .iter()
@@ -793,6 +801,7 @@ impl<B: WinProb> SearchBot<B> {
         entry: impl Fn(Option<Mark>, State) -> (Vec<State>, bool),
         seed: u64,
         first_active: usize,
+        next: Next,
     ) -> Option<Mark> {
         let Some(k) = self.cfg.lock_k else {
             return Some(lock);
@@ -810,7 +819,7 @@ impl<B: WinProb> SearchBot<B> {
             Decision::Forced(alt) => vec![(Some(lock), post_of(Some(lock))), (alt, post_of(alt))],
             Decision::Choices(plans) => {
                 let states: Vec<State> = plans.iter().map(|(_, s)| *s).collect();
-                let values = self.bot.evaluate_batch(&states, eval_opps);
+                let values = self.bot.evaluate_batch_next(&states, eval_opps, next);
                 let mut cands: Vec<(Option<Mark>, State, f32)> = Vec::new();
                 for ((m, s), &v) in plans.iter().zip(&values) {
                     match cands.iter_mut().find(|c| collapse && c.0 == *m) {
@@ -914,6 +923,7 @@ impl<B: WinProb> SearchBot<B> {
                     |m, _| phase1_entry(&self.bot, state, &sim_opp, dice, m),
                     context_seed(state, opp_states, dice),
                     1 % (opp_states.len() + 1),
+                    Next::Opp,
                 ));
             }
             Decision::Forced(m) => return Explanation::forced(m),
@@ -1000,6 +1010,7 @@ impl<B: WinProb> SearchBot<B> {
                     |_, post| phase2_entry(post, opp_states),
                     context_seed(state, opp_states, dice),
                     1 % (opp_states.len() + 1),
+                    Next::Opp,
                 ));
             }
             Decision::Forced(m) => return Explanation::forced(m),
@@ -1089,16 +1100,22 @@ impl<B: WinProb> SearchBot<B> {
                     |m, _| passive_entry(&self.bot, state, opp_states, dice, active_player, m),
                     context_seed(state, opp_states, dice),
                     passive_first_active(active_player, opp_states.len() + 1),
+                    Next::Me,
                 ));
             }
             Decision::Forced(m) => return Explanation::forced(m),
             Decision::Choices(c) => c,
         };
         if !self.cfg.search_passive {
-            return Explanation::unsearched(eval_decision(&self.bot, Decision::Choices(choices), opp_states));
+            return Explanation::unsearched(eval_decision_next(
+                &self.bot,
+                Decision::Choices(choices),
+                opp_states,
+                Next::Me,
+            ));
         }
         let states: Vec<State> = choices.iter().map(|(_, s)| *s).collect();
-        let values = self.bot.evaluate_batch(&states, opp_states);
+        let values = self.bot.evaluate_batch_next(&states, opp_states, Next::Me);
         let mut cands: Vec<Candidate> = choices
             .iter()
             .zip(&values)
@@ -1798,5 +1815,58 @@ mod tests {
         assert_eq!(s.active_decisions, 1);
         assert!(s.eligible <= 1);
         assert_eq!(s.gaps.len() as u32, s.eligible);
+    }
+
+    use crate::strategy::recorder::Recorder;
+    use crate::strategy::Next;
+
+    fn forced(cfg: SearchConfig) -> SearchBot<Recorder> {
+        let mut bot = SearchBot::with_config(Recorder::default(), cfg);
+        bot.force = true;
+        bot
+    }
+
+    #[test]
+    fn passive_search_values_and_leaves_have_me_moving_next() {
+        let mut bot = forced(SearchConfig::default());
+        let (state, opps) = (State::default(), [State::default()]);
+        bot.explain_passive_phase1(&state, &opps, [3, 4, 2, 3, 5, 1], 0);
+        let calls = bot.bot.take();
+        assert_eq!(calls[0].next, Next::Me, "static values of the shortlist");
+        let leaves: Vec<_> = calls.iter().filter(|c| c.leaf).collect();
+        assert!(!leaves.is_empty() && leaves.iter().all(|c| c.next == Next::Me));
+    }
+
+    #[test]
+    fn active_search_values_and_leaves_have_the_opponent_moving_next() {
+        let mut bot = forced(SearchConfig::default());
+        let (state, opps) = (State::default(), [State::default()]);
+        bot.explain_active_phase2(&state, &opps, [3, 4, 2, 3, 5, 1], false);
+        let calls = bot.bot.take();
+        assert_eq!(calls[0].next, Next::Opp);
+        let leaves: Vec<_> = calls.iter().filter(|c| c.leaf).collect();
+        assert!(!leaves.is_empty() && leaves.iter().all(|c| c.next == Next::Opp));
+    }
+
+    #[test]
+    fn the_unsearched_passive_fallback_has_me_moving_next() {
+        let mut bot = forced(SearchConfig {
+            search_passive: false,
+            ..Default::default()
+        });
+        bot.explain_passive_phase1(&State::default(), &[State::default()], [3, 4, 2, 3, 5, 1], 0);
+        let calls: Vec<Next> = bot.bot.take().into_iter().map(|c| c.next).collect();
+        assert_eq!(calls, [Next::Me]);
+    }
+
+    #[test]
+    fn a_passive_lock_is_adjudicated_with_me_moving_next() {
+        let mut bot = forced(SearchConfig {
+            lock_k: Some(2),
+            ..Default::default()
+        });
+        // White sum 12 locks red (2..6 marked).
+        bot.explain_passive_phase1(&lockable_state(), &[State::default()], [6, 6, 2, 3, 5, 1], 0);
+        assert_eq!(bot.bot.take()[0].next, Next::Me);
     }
 }

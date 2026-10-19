@@ -12,7 +12,7 @@ use crate::strategy::search::{
     SEARCH_CANDS,
 };
 use crate::strategy::sim::SimGame;
-use crate::strategy::Bot;
+use crate::strategy::{Bot, Next};
 
 /// A decision win-search would search, ready to label: one entry per kept
 /// candidate (best static value first), built as win-search builds it.
@@ -45,9 +45,14 @@ fn gated(
 }
 
 /// Each choice with its static value against `eval_opps`.
-fn valued(bot: &impl Bot, choices: &[(Option<Mark>, State)], eval_opps: &[State]) -> Vec<(Option<Mark>, State, f32)> {
+fn valued(
+    bot: &impl Bot,
+    choices: &[(Option<Mark>, State)],
+    eval_opps: &[State],
+    next: Next,
+) -> Vec<(Option<Mark>, State, f32)> {
     let posts: Vec<State> = choices.iter().map(|c| c.1).collect();
-    let values = bot.evaluate_batch(&posts, eval_opps);
+    let values = bot.evaluate_batch_next(&posts, eval_opps, next);
     choices.iter().zip(values).map(|(&(m, s), v)| (m, s, v)).collect()
 }
 
@@ -68,7 +73,7 @@ pub fn capture_active1(
         return None;
     };
     let mut cands: Vec<(Option<Mark>, State, f32)> = Vec::new();
-    for (m, s, v) in valued(bot, &plans, &sim_opp) {
+    for (m, s, v) in valued(bot, &plans, &sim_opp, Next::Opp) {
         match cands.iter_mut().find(|c| c.0 == m) {
             Some(c) if v > c.2 => {
                 c.1 = s;
@@ -104,7 +109,7 @@ pub fn capture_active2(
     let Decision::Choices(choices) = active_phase2_choices(state, opps, dice, has_marked) else {
         return None;
     };
-    let kept = gated(valued(bot, &choices, opps), state, opps, margin)?;
+    let kept = gated(valued(bot, &choices, opps, Next::Opp), state, opps, margin)?;
     Some(CandDecision {
         entries: kept.iter().map(|&(_, post)| phase2_entry(post, opps)).collect(),
         first_active: 1 % (opps.len() + 1),
@@ -129,7 +134,7 @@ pub fn capture_passive(
     let Decision::Choices(choices) = passive_phase1_choices(state, opps, dice) else {
         return None;
     };
-    let kept = gated(valued(bot, &choices, opps), state, opps, margin)?;
+    let kept = gated(valued(bot, &choices, opps, Next::Me), state, opps, margin)?;
     Some(CandDecision {
         entries: kept
             .iter()
@@ -480,5 +485,18 @@ mod tests {
     #[test]
     fn no_decisions_no_report() {
         assert!(diff_stats(&[], &[], 4).is_none());
+    }
+
+    #[test]
+    fn passive_captures_are_valued_with_me_moving_next() {
+        use crate::strategy::recorder::Recorder;
+        use crate::strategy::Next;
+        let bot = Recorder::default();
+        let (me, opps) = (State::default(), [State::default()]);
+        let dice = [3, 4, 2, 3, 5, 1];
+        assert!(capture_passive(&bot, &me, &opps, dice, 0, f32::INFINITY).is_some());
+        assert_eq!(bot.take()[0].next, Next::Me);
+        assert!(capture_active2(&bot, &me, &opps, dice, false, f32::INFINITY).is_some());
+        assert_eq!(bot.take()[0].next, Next::Opp);
     }
 }
