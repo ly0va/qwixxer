@@ -2166,6 +2166,24 @@ labels (gnubg-style) adds about 40% per label for 1.5–2× the error per
 label; not yet tried. The old champion also favours the player who has
 just moved: turn-end bias +0.021 (static 0.521 against label 0.498).
 
+**E2 on r2's held-out set** (127k decisions, 81k turn ends): the same
+picture. Top 2% own error 0.054 against 0.009 for the bottom 60%; the top
+15% hold 50% of the static error²; 1-ply better in every group; where its
+pick differs (6.4%) it gains +0.0063 (10σ), and there the static error is
+higher (0.0178 against 0.0136). Turn-end bias unchanged at **+0.022**
+(0.5207 against 0.4983), although E2 was fitted from scratch on exactly
+these labels.
+
+**The bias is tempo.** The antisymmetric logit forces V(a, b) = 1 − V(b, a),
+so the net cannot tell who moves next; every label has the opponent to
+move, and that opponent's active roll is worth something. Self-play from
+the empty board (old champion, 40k games): the first player to roll
+scores **0.531 ± 0.0025**, where the net must say 0.5. Within a decision
+every candidate has the same player to move, so a constant offset cancels;
+a position-dependent one does not, and the constraint also forces a
+compromise wherever a position and its mirror both occur. How much this
+costs in play is untested.
+
 ### Benchmark
 
 `win-data --keep p --holdout 1` labels a hashed share of each game's
