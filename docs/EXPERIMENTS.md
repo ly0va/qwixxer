@@ -2095,7 +2095,7 @@ rollout-noise RMSE (0.0514), so the net's own error is
 |---|---|---|---|---|
 | `win_pi_cand/round-1` (old champion) | warm-started `win-pi` rounds | not measured on `win_data_r1` | — | 51.31% |
 | **E** (W64, from scratch) | recipe above | 0.0535 at epoch 9 (0.0148) | **50.31%, z 6.98** (500k) | **51.66%** |
-| F (W48, from scratch) | recipe above | 0.0534, best epoch 17 of 20 | 50.04% vs E, z 0.61 (200k) | — |
+| F (W48, from scratch) | recipe above | 0.0534, best epoch 17 of 20 | 50.04% vs E, z 0.61 (200k) | — (61.5% vs GA) |
 
 E's held-out excess fell with train excess throughout (no overfitting;
 its final epochs are not recorded here); F's full curve has the same
@@ -2103,15 +2103,29 @@ shape and flattens from epoch 14. **E is the
 champion** (promoted into `win_model/` on the big machine; not yet
 committed here). F plays as well as E at three quarters of the width.
 
-vs GA (user, big machine): static win net (E) **61.6%**, static pair net
-60.1%, pair-search 62.7% (Phase 27). The static win net closes about
-1.5pp of the 2.6pp between the pair net and its search. win-search vs GA
-is not yet recorded.
+vs GA (user, big machine):
+
+| Bot | vs GA |
+|---|---:|
+| **win-search (E)** | **63.3%** |
+| pair-search (Phase 27) | 62.7% |
+| win, static (E) | 61.6% |
+| win, static (F, W48) | 61.5% |
+| pair, static | 60.1% |
+
+The static win net closes about 1.5pp of the 2.6pp between the pair net
+and its search, and win-search is the strongest bot so far, +0.6pp over
+pair-search on this yardstick (no head-to-head between the two yet).
 
 Arms A0–D (warm-started controls: legacy fit, new fit, +thermo, +aux,
-+both) were planned but their results are not recorded; with E changing three things at
-once (thermo, aux, from scratch at lr 1e-3), which one carried the gain
-is not separated.
++both) all fitted considerably worse than E from scratch (user; exact
+curves not recorded). From scratch is therefore the recipe; whether the
+thermometer inputs or the aux heads add anything on their own is not
+separated, since no from-scratch arm drops them.
+
+**Round 2 (in progress):** `win-data` from E, 800k turn ends with 64
+rollouts each, then a from-scratch fit at W64 and at W48 on it, compared
+by held-out curves and gates.
 
 ### Inference speed
 
