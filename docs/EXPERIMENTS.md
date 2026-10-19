@@ -2133,8 +2133,9 @@ separated, since no from-scratch arm drops them.
   not overfitting. E peaked on r1 at about the same number of optimizer
   steps, so for data this size `--epochs 10` (r1's step count) is the
   suggested schedule.
-- **E2 vs E: 50.12%, z 4.30** (1M games). About +0.1pp over E against
-  Master and against GA as well (user). E2 is the new champion.
+- **E2 vs E: 50.12%, z 4.30** (1M games). E2 vs Master 51.7% (about 1%
+  of games tied), against E's 51.66%; E2 static vs GA 61.7% (ties
+  excluded), against E's 61.6%. E2 is the new champion.
 - F2: pending.
 
 Doubling the data bought little own error, which with W48 ≈ W64 points
