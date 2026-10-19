@@ -2094,7 +2094,7 @@ rollout-noise RMSE (0.0514), so the net's own error is
 | Net | Fit | Held-out diff RMSE (own error) | vs champion | vs Master |
 |---|---|---|---|---|
 | `win_pi_cand/round-1` (old champion) | warm-started `win-pi` rounds | not measured on `win_data_r1` | — | 51.31% |
-| **E** (W64, from scratch) | recipe above | 0.0535 at epoch 9 (0.0148) | **50.31%, z 6.98** (500k) | **51.66%** |
+| **E** (W64, from scratch) | recipe above | 0.0535 at epoch 14/20 (0.0148) | **50.31%, z 6.98** (500k) | **51.66%** |
 | F (W48, from scratch) | recipe above | 0.0534, best epoch 17 of 20 | 50.04% vs E, z 0.61 (200k) | 51.5% |
 
 E's held-out excess fell with train excess throughout (no overfitting;
