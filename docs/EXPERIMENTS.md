@@ -2103,7 +2103,8 @@ shape and flattens from epoch 14. **E is the
 champion** (promoted into `win_model/` on the big machine; not yet
 committed here). F plays as well as E at three quarters of the width.
 
-vs GA (user, big machine):
+vs GA (user, big machine; `bench`, which lists ties separately, so these
+are win shares without ties; `win-gate` shares count a tie as half):
 
 | Bot | vs GA |
 |---|---:|
@@ -2134,8 +2135,8 @@ separated, since no from-scratch arm drops them.
   steps, so for data this size `--epochs 10` (r1's step count) is the
   suggested schedule.
 - **E2 vs E: 50.12%, z 4.30** (1M games). E2 vs Master 51.7% (about 1%
-  of games tied), against E's 51.66%; E2 static vs GA 61.7% (ties
-  excluded), against E's 61.6%. E2 is the new champion.
+  of games tied), against E's 51.66%; E2 static vs GA 61.7%, against
+  E's 61.6% (both from `bench`, ties excluded). E2 is the new champion.
 - F2: pending.
 
 Doubling the data bought little own error, which with W48 ≈ W64 points
