@@ -441,11 +441,34 @@ pub struct ManualWinNet {
     out: Dense,
     /// Trained auxiliary heads, when the model dir has them (never used in play).
     aux: Option<ManualAux>,
+    /// The row encoder's output for every token a game can reach:
+    /// `[HALVES × HALVES × width]`, my half's [`half_index`] major.
+    row_codes: Vec<f32>,
 }
+
+/// One player's half of a row token as an index into
+/// [`ManualWinNet::row_codes`]: an open row with c cells passed and t ≤ c
+/// marks at c(c + 1)/2 + t (0–65), a closed row with t marks at 66 + t
+/// (66–78). `None` for a row no game reaches. A half depends only on
+/// these (the token is direction-free).
+fn half_index(total: u8, free: Option<u8>, ascending: bool) -> Option<usize> {
+    let t = total as usize;
+    match free {
+        Some(f) if (2..=12).contains(&f) => {
+            let c = if ascending { f - 2 } else { 12 - f } as usize;
+            (t <= c).then(|| c * (c + 1) / 2 + t)
+        }
+        Some(_) => None,
+        None => (t <= 12).then_some(66 + t),
+    }
+}
+
+/// Number of [`half_index`] values.
+const HALVES: usize = 79;
 
 impl ManualWinNet {
     pub fn from_model(model: &WinModel<MyBackend>) -> Self {
-        ManualWinNet {
+        let mut net = ManualWinNet {
             width: model.row1.weight.shape().dims[1],
             token: model.row1.weight.shape().dims[0],
             row1: Dense::from_linear(&model.row1),
@@ -455,7 +478,40 @@ impl ManualWinNet {
             head2: Dense::from_linear(&model.head2),
             out: Dense::from_linear(&model.out),
             aux: None,
+            row_codes: Vec::new(),
+        };
+        net.row_codes = net.row_table();
+        net
+    }
+
+    /// [`ManualWinNet::row_codes`], each entry computed as [`ManualWinNet::g`]
+    /// computes it, from an ascending first row in that state.
+    fn row_table(&self) -> Vec<f32> {
+        let halves: Vec<(u8, Option<u8>)> = (0..=10u8)
+            .flat_map(|c| (0..=c).map(move |t| (t, Some(2 + c))))
+            .chain((0..=12).map(|t| (t, None)))
+            .collect();
+        debug_assert_eq!(halves.len(), HALVES);
+        debug_assert!(halves
+            .iter()
+            .enumerate()
+            .all(|(i, &(t, f))| half_index(t, f, true) == Some(i)));
+        let board = |row| State::from_parts(0, [row, (0, Some(2)), (0, Some(12)), (0, Some(12))]);
+        let (mut h, mut e) = (Vec::new(), Vec::new());
+        let mut table = Vec::with_capacity(HALVES * HALVES * self.width);
+        for &mine in &halves {
+            for &theirs in &halves {
+                let (me, opp) = (board(mine), board(theirs));
+                if self.is_thermo() {
+                    self.row1.apply(&thermo_input(&me, &opp)[..T_TOKEN], &mut h, true);
+                } else {
+                    self.row1.apply(&win_input(&me, &opp)[..TOKEN], &mut h, true);
+                }
+                self.row2.apply(&h, &mut e, true);
+                table.extend_from_slice(&e);
+            }
         }
+        table
     }
 
     fn g(&self, x: &[f32]) -> f32 {
@@ -533,12 +589,31 @@ impl ManualWinNet {
             }
         }
         let (mut h, mut e) = (Vec::new(), Vec::new());
-        // Row encoder: every input's 4 tokens, back to back.
-        let tokens: Vec<f32> = xs.chunks(len).flat_map(|x| &x[..4 * t]).copied().collect();
-        self.row1.apply_batch(&tokens, t, 4 * m, &mut h, true);
-        self.row2.apply_batch(&h, w, 4 * m, &mut e, true);
+        // Row encoder: looked up, or computed for a row no game reaches.
+        let mut rows = vec![0.0f32; 4 * m * w];
+        for (k, (me, opp)) in pairs.iter().enumerate() {
+            let (mt, mf, ot, of) = (
+                me.row_totals(),
+                me.row_free_values(),
+                opp.row_totals(),
+                opp.row_free_values(),
+            );
+            for r in 0..4 {
+                let (a, b) = (half_index(mt[r], mf[r], r < 2), half_index(ot[r], of[r], r < 2));
+                for (j, halves) in [(2 * k, (a, b)), (2 * k + 1, (b, a))] {
+                    let dst = &mut rows[(4 * j + r) * w..][..w];
+                    if let (Some(mine), Some(theirs)) = halves {
+                        dst.copy_from_slice(&self.row_codes[(mine * HALVES + theirs) * w..][..w]);
+                    } else {
+                        self.row1.apply(&xs[j * len + r * t..][..t], &mut h, true);
+                        self.row2.apply(&h, &mut e, true);
+                        dst.copy_from_slice(&e);
+                    }
+                }
+            }
+        }
         let mut pooled = vec![0.0f32; 2 * m * w];
-        for (p, rows) in pooled.chunks_mut(w).zip(e.chunks(2 * w)) {
+        for (p, rows) in pooled.chunks_mut(w).zip(rows.chunks(2 * w)) {
             for (k, v) in p.iter_mut().enumerate() {
                 *v = (*v + rows[k]) + rows[w + k];
             }
@@ -1045,8 +1120,8 @@ mod tests {
         }
     }
 
-    /// Random legal positions: random marks (rows lock when they finish)
-    /// and 0–3 strikes per player.
+    /// Random legal positions: random marks (rows lock when they finish),
+    /// some rows closed by the opponent, and 0–3 strikes per player.
     fn random_pairs(n: usize, seed: u64) -> Vec<(State, State)> {
         let mut rng = SmallRng::seed_from_u64(seed);
         let mut board = || {
@@ -1057,6 +1132,7 @@ mod tests {
                     s.apply_mark(Mark { row, number });
                 }
             }
+            s.lock(std::array::from_fn(|_| rng.gen_bool(0.1)));
             for _ in 0..rng.gen_range(0..4) {
                 s.apply_strike();
             }
@@ -1083,6 +1159,45 @@ mod tests {
             let want: Vec<u32> = ps.iter().map(|(a, b)| net.logit_states(a, b).to_bits()).collect();
             assert_eq!(got, want, "{label}");
             assert!(net.logit_batch(&[]).is_empty());
+        }
+    }
+
+    #[test]
+    fn a_batch_of_positions_outside_the_row_table_is_still_exact() {
+        // More marks than cells passed: no game reaches these rows.
+        let odd = State::from_parts(1, [(5, Some(3)), (0, Some(2)), (13, None), (4, Some(11))]);
+        let (a, b) = boards();
+        let net = ManualWinNet::from_model(&random_thermo(35, 16));
+        let got = net.logit_batch(&[(&odd, &a), (&b, &odd), (&a, &b)]);
+        let want = [
+            net.logit_states(&odd, &a),
+            net.logit_states(&b, &odd),
+            net.logit_states(&a, &b),
+        ];
+        let got: Vec<u32> = got.iter().map(|z| z.to_bits()).collect();
+        assert_eq!(got, want.map(f32::to_bits));
+    }
+
+    #[test]
+    fn row_halves_are_the_same_in_both_directions() {
+        // Every open (cells passed c, marks t ≤ c) and locked row state,
+        // as an ascending row and as the mirrored descending row.
+        let mut rows: Vec<(u8, Option<u8>, Option<u8>)> = Vec::new();
+        for c in 0..=10u8 {
+            for t in 0..=c {
+                rows.push((t, Some(2 + c), Some(12 - c)));
+            }
+        }
+        rows.extend((0..=12).map(|t| (t, None, None)));
+        let empty = (0, Some(2));
+        for (t, asc, desc) in rows {
+            let a = State::from_parts(2, [(t, asc), empty, (0, Some(12)), (0, Some(12))]);
+            let d = State::from_parts(2, [empty, empty, (0, Some(12)), (t, desc)]);
+            let o = State::default();
+            let (xa, xd) = (thermo_input(&a, &o), thermo_input(&d, &o));
+            assert_eq!(&xa[..T_HALF], &xd[3 * T_TOKEN..3 * T_TOKEN + T_HALF], "{t} {asc:?}");
+            let (pa, pd) = (win_input(&a, &o), win_input(&d, &o));
+            assert_eq!(&pa[..TOKEN / 2], &pd[3 * TOKEN..3 * TOKEN + TOKEN / 2], "{t} {asc:?}");
         }
     }
 
