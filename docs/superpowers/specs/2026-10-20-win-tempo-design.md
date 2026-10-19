@@ -25,8 +25,8 @@ set, and beats the matched control and E2 head to head with z > 2.
 
 ## Scope
 
-- `WinModel` gains one config option, a tempo head (off by default);
-  `ManualWinNet` and `WinStrategy` play tempo nets; `win-arm --tempo`
+- `WinModelConfig` gains one option, a tempo head (off by default) saved in
+  `tempo.mpk`; `ManualWinNet` and `WinStrategy` play tempo nets; `win-arm --tempo`
   fits them.
 - The `Bot` and `WinProb` traits gain a who-moves-next flag whose default
   ignores it; the passive decisions and the search leaves pass it.
@@ -67,10 +67,12 @@ is what the symmetric part learns.
 `WinModelConfig` gains `tempo: Option<bool>` (`None` in older dirs, as
 `thermo` and `aux`; `is_tempo()` = `Some(true)`).
 
-`WinModel` gains `tempo: Option<Linear>` (W → 1, with bias), present iff the
-config says so, on the trunk's last hidden layer h (the input of `out`). Its
-weight and bias are initialised to **zero**, so a fresh tempo net starts as
-exactly the antisymmetric net it extends.
+The tempo head is one `Linear` (W → 1, with bias) on the trunk's last
+hidden layer h (the input of `out`). Like the auxiliary heads it lives
+beside the net, in `tempo.mpk`, so `WinModel` and `model.mpk` are unchanged
+and every existing dir loads exactly as today. Its weight and bias start at
+**zero**, so a fresh tempo net starts as exactly the antisymmetric net it
+extends.
 
 Logit, for input x and its player swap x′:
 
@@ -81,10 +83,11 @@ z is the logit of P(first player wins) in the frame above;
 logit units. The trunk already runs on both orientations, so the cost is
 one W-wide dot product per orientation.
 
-Implemented in `WinModel::forward`, `ArmModel::forward` (training) and
-`ManualWinNet` (`logit`, `logit_states`, `logit_batch`; `from_model`
-copies the head). `WinStrategy::load` and `save_win` handle the field
-through the config and the record; dirs without it load as today.
+Implemented in `ArmModel::forward` (training; `ArmModel` gains
+`tempo: Option<Linear>`) and `ManualWinNet` (`logit`, `logit_states`,
+`logit_batch`; `with_tempo` copies the head). `save_tempo` writes
+`tempo.mpk`; `WinStrategy::load` loads it when the config says
+`"tempo": true`.
 
 ## Who moves next: the traits
 
@@ -134,10 +137,10 @@ active player's own decisions), `win-eval`, the probes, `pair_train`
   to the arm dir records `"tempo": true`.
 - With `--init`: a net without a tempo head gains a zero one (as
   `widen_to_thermo` widens a plain net), so the warm start begins as the
-  init net.
+  init net; a tempo init loads its `tempo.mpk` and needs `--tempo`.
 - No other change: loss, schedule, EMA, best-epoch selection and the
   held-out measurements are as today; the tempo head is in the optimizer's
-  parameters with the rest of `WinModel`.
+  parameters and the weight average with the rest of `ArmModel`.
 
 ## The experiment
 
@@ -173,10 +176,10 @@ Model:
   without the head (burn and `ManualWinNet`).
 - With a non-zero head, z(a, b) + z(b, a) = 2·(t(x) + t(x′)) and
   z(a, b) − z(b, a) = 2·(g(x) − g(x′)).
-- `ManualWinNet` matches `WinModel::forward` for a tempo net, plain and
-  thermometer inputs.
-- Save and load round-trip a tempo net; a model dir without `tempo` in its
-  config loads as a non-tempo net.
+- `ManualWinNet` matches the burn forward (`ArmModel::forward`, and the
+  trunk plus head by hand) for a tempo net, plain and thermometer inputs.
+- Save and load round-trip a tempo net (`tempo.mpk`); a model dir without
+  `tempo` in its config loads as a non-tempo net.
 
 Traits and call sites:
 
