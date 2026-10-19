@@ -41,6 +41,13 @@ pub const HORIZON_ROUNDS: usize = 1;
 pub trait WinProb: Bot {
     /// P(group's player finishes ahead of its leading opponent), one per group.
     fn win_prob_multi(&self, groups: &[(&State, &[State])]) -> Vec<f32>;
+
+    /// [`WinProb::win_prob_multi`] with a frame per group; the default
+    /// ignores the frames.
+    fn win_prob_multi_next(&self, groups: &[(&State, &[State], crate::strategy::Next)]) -> Vec<f32> {
+        let plain: Vec<(&State, &[State])> = groups.iter().map(|g| (g.0, g.1)).collect();
+        self.win_prob_multi(&plain)
+    }
 }
 
 /// Standard normal CDF via the Abramowitz–Stegun erf approximation

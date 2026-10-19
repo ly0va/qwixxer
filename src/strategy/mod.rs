@@ -25,6 +25,18 @@ pub trait Strategy: std::fmt::Debug {
     }
 }
 
+/// Who moves next after the positions being evaluated: the frame a value
+/// is asked in. A net that cannot tell (every net but a tempo win net)
+/// ignores it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Next {
+    /// The opponent moves next (every active-player decision).
+    Opp,
+    /// I move next (2-player passive decisions; search leaves where seat 0
+    /// moves next).
+    Me,
+}
+
 pub trait Bot: std::fmt::Debug {
     fn evaluate(&self, our_state: &State, opp_states: &[State]) -> f32;
     fn evaluate_batch(&self, candidates: &[State], opp_states: &[State]) -> Vec<f32> {
@@ -35,6 +47,17 @@ pub trait Bot: std::fmt::Debug {
     /// this to run all groups in a single forward pass.
     fn evaluate_batch_multi(&self, groups: &[(&[State], &[State])]) -> Vec<Vec<f32>> {
         groups.iter().map(|(c, o)| self.evaluate_batch(c, o)).collect()
+    }
+    /// [`Bot::evaluate_batch`] in the frame `next`; the default ignores it.
+    fn evaluate_batch_next(&self, candidates: &[State], opp_states: &[State], next: Next) -> Vec<f32> {
+        let _ = next;
+        self.evaluate_batch(candidates, opp_states)
+    }
+    /// [`Bot::evaluate_batch_multi`] with a frame per group; the default
+    /// ignores the frames.
+    fn evaluate_batch_multi_next(&self, groups: &[(&[State], &[State], Next)]) -> Vec<Vec<f32>> {
+        let plain: Vec<(&[State], &[State])> = groups.iter().map(|g| (g.0, g.1)).collect();
+        self.evaluate_batch_multi(&plain)
     }
 }
 

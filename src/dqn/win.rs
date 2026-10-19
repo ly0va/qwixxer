@@ -8,7 +8,7 @@ use super::pair::board_features;
 use super::MyBackend;
 use crate::state::State;
 use crate::strategy::search::WinProb;
-use crate::strategy::Bot;
+use crate::strategy::{Bot, Next};
 use burn::{
     module::Param,
     nn::{Linear, LinearConfig, Relu},
@@ -884,6 +884,24 @@ impl WinStrategy {
         );
         opps.first().copied().unwrap_or_default()
     }
+
+    /// The logit of P(win) for each (candidate, opponent, frame): z(cand, opp)
+    /// when the opponent moves next, −z(opp, cand) when I do. One batch.
+    fn framed_logits(&self, items: &[(&State, State, Next)]) -> Vec<f32> {
+        let pairs: Vec<(&State, &State)> = items
+            .iter()
+            .map(|(c, o, n)| match n {
+                Next::Opp => (*c, o),
+                Next::Me => (o, *c),
+            })
+            .collect();
+        self.net
+            .logit_batch(&pairs)
+            .into_iter()
+            .zip(items)
+            .map(|(z, (_, _, n))| if *n == Next::Me { -z } else { z })
+            .collect()
+    }
 }
 
 impl Bot for WinStrategy {
@@ -910,6 +928,32 @@ impl Bot for WinStrategy {
             .map(|(candidates, _)| values.by_ref().take(candidates.len()).collect())
             .collect()
     }
+
+    fn evaluate_batch_next(&self, candidates: &[State], opp_states: &[State], next: Next) -> Vec<f32> {
+        self.evaluate_batch_multi_next(&[(candidates, opp_states, next)])
+            .pop()
+            .unwrap()
+    }
+
+    /// Without a tempo head the frame cannot matter: today's values.
+    fn evaluate_batch_multi_next(&self, groups: &[(&[State], &[State], Next)]) -> Vec<Vec<f32>> {
+        if !self.net.has_tempo() {
+            let plain: Vec<(&[State], &[State])> = groups.iter().map(|g| (g.0, g.1)).collect();
+            return self.evaluate_batch_multi(&plain);
+        }
+        let items: Vec<(&State, State, Next)> = groups
+            .iter()
+            .flat_map(|(cands, opps, n)| {
+                let o = Self::opponent(opps);
+                cands.iter().map(move |c| (c, o, *n))
+            })
+            .collect();
+        let mut values = self.framed_logits(&items).into_iter().map(probit_of_logit);
+        groups
+            .iter()
+            .map(|(c, _, _)| values.by_ref().take(c.len()).collect())
+            .collect()
+    }
 }
 
 impl WinProb for WinStrategy {
@@ -917,6 +961,15 @@ impl WinProb for WinStrategy {
         let opps: Vec<State> = groups.iter().map(|(_, opps)| Self::opponent(opps)).collect();
         let pairs: Vec<(&State, &State)> = groups.iter().zip(&opps).map(|((our, _), opp)| (*our, opp)).collect();
         self.net.logit_batch(&pairs).into_iter().map(sigmoid).collect()
+    }
+
+    fn win_prob_multi_next(&self, groups: &[(&State, &[State], Next)]) -> Vec<f32> {
+        if !self.net.has_tempo() {
+            let plain: Vec<(&State, &[State])> = groups.iter().map(|g| (g.0, g.1)).collect();
+            return self.win_prob_multi(&plain);
+        }
+        let items: Vec<(&State, State, Next)> = groups.iter().map(|(s, o, n)| (*s, Self::opponent(o), *n)).collect();
+        self.framed_logits(&items).into_iter().map(sigmoid).collect()
     }
 }
 
@@ -1602,5 +1655,101 @@ mod tests {
         let mcfg = WinModelConfig::new().with_width(8).with_tempo(Some(true));
         save_dir(&dir, &mcfg, &random_model(52, 8));
         WinStrategy::load(&dir);
+    }
+
+    use crate::strategy::Next;
+
+    fn tempo_bot(seed: u64) -> WinStrategy {
+        WinStrategy {
+            net: Arc::new(
+                ManualWinNet::from_model(&random_thermo(seed, 16)).with_tempo(&random_tempo_head(seed + 1, 16)),
+            ),
+        }
+    }
+
+    #[test]
+    fn me_next_is_one_minus_the_opponents_view_for_a_tempo_net() {
+        let bot = tempo_bot(60);
+        for (a, b) in random_pairs(9, 11) {
+            let z_ab = bot.net.logit_states(&a, &b);
+            let z_ba = bot.net.logit_states(&b, &a);
+            assert_eq!(
+                bot.evaluate_batch_next(&[a], &[b], Next::Opp),
+                vec![probit_of_logit(z_ab)]
+            );
+            assert_eq!(
+                bot.evaluate_batch_next(&[a], &[b], Next::Me),
+                vec![probit_of_logit(-z_ba)]
+            );
+            let leaf = [(&a, std::slice::from_ref(&b), Next::Me)];
+            assert_eq!(bot.win_prob_multi_next(&leaf), vec![sigmoid(-z_ba)]);
+            let leaf = [(&a, std::slice::from_ref(&b), Next::Opp)];
+            assert_eq!(bot.win_prob_multi_next(&leaf), vec![sigmoid(z_ab)]);
+            assert_ne!(z_ab, -z_ba, "the tempo head breaks antisymmetry");
+        }
+    }
+
+    #[test]
+    fn mixed_groups_equal_separate_calls() {
+        let bot = tempo_bot(62);
+        let ps = random_pairs(9, 12);
+        let cands: Vec<State> = ps.iter().map(|p| p.0).collect();
+        let (o1, o2) = (ps[0].1, ps[1].1);
+        let groups: [(&[State], &[State], Next); 3] = [
+            (&cands[..4], std::slice::from_ref(&o1), Next::Me),
+            (&cands[4..4], std::slice::from_ref(&o2), Next::Opp),
+            (&cands[4..], std::slice::from_ref(&o2), Next::Opp),
+        ];
+        let got = bot.evaluate_batch_multi_next(&groups);
+        for ((c, o, n), vs) in groups.iter().zip(&got) {
+            assert_eq!(vs, &bot.evaluate_batch_next(c, o, *n));
+        }
+        let leaves: Vec<(&State, &[State], Next)> = ps
+            .iter()
+            .enumerate()
+            .map(|(i, (a, b))| {
+                (
+                    a,
+                    std::slice::from_ref(b),
+                    if i % 2 == 0 { Next::Me } else { Next::Opp },
+                )
+            })
+            .collect();
+        let want: Vec<f32> = leaves
+            .iter()
+            .flat_map(|l| bot.win_prob_multi_next(std::slice::from_ref(l)))
+            .collect();
+        assert_eq!(bot.win_prob_multi_next(&leaves), want);
+    }
+
+    #[test]
+    fn next_changes_nothing_without_a_tempo_head() {
+        let ps = random_pairs(9, 13);
+        let cands: Vec<State> = ps.iter().map(|p| p.0).collect();
+        let opp = [ps[0].1];
+        let bits = |v: Vec<f32>| v.into_iter().map(f32::to_bits).collect::<Vec<_>>();
+        for bot in [
+            WinStrategy::from_model(&random_model(64, 16)),
+            WinStrategy::from_model(&random_thermo(65, 16)),
+        ] {
+            assert_eq!(
+                bits(bot.evaluate_batch_next(&cands, &opp, Next::Me)),
+                bits(bot.evaluate_batch(&cands, &opp))
+            );
+            let g = [(cands.as_slice(), opp.as_slice(), Next::Me)];
+            assert_eq!(
+                bits(bot.evaluate_batch_multi_next(&g).pop().unwrap()),
+                bits(bot.evaluate_batch(&cands, &opp))
+            );
+            let leaves: Vec<(&State, &[State], Next)> =
+                ps.iter().map(|(a, b)| (a, std::slice::from_ref(b), Next::Me)).collect();
+            let plain: Vec<(&State, &[State])> = ps.iter().map(|(a, b)| (a, std::slice::from_ref(b))).collect();
+            assert_eq!(bits(bot.win_prob_multi_next(&leaves)), bits(bot.win_prob_multi(&plain)));
+        }
+        let pair = crate::dqn::pair::PairStrategy::load("pair_model");
+        assert_eq!(
+            bits(pair.evaluate_batch_next(&cands, &opp, Next::Me)),
+            bits(pair.evaluate_batch(&cands, &opp))
+        );
     }
 }
