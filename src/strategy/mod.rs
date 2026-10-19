@@ -1,6 +1,8 @@
 pub mod bot_impl;
 pub mod search;
 pub mod sim;
+#[cfg(test)]
+pub(crate) mod recorder;
 pub(crate) use bot_impl::{active_phase1_impl, active_phase2_impl, passive_phase1_impl};
 
 use crate::state::{format_dice, Mark, State};

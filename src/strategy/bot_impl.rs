@@ -1,4 +1,4 @@
-use super::Bot;
+use super::{Bot, Next};
 use crate::state::{Mark, State};
 use std::cmp::Ordering;
 
@@ -103,11 +103,16 @@ pub fn argmax(values: &[f32]) -> usize {
 }
 
 pub fn eval_decision(bot: &impl Bot, decision: Decision, eval_opps: &[State]) -> Option<Mark> {
+    eval_decision_next(bot, decision, eval_opps, Next::Opp)
+}
+
+/// [`eval_decision`] with the candidates valued in the frame `next`.
+pub fn eval_decision_next(bot: &impl Bot, decision: Decision, eval_opps: &[State], next: Next) -> Option<Mark> {
     match decision {
         Decision::Forced(m) => m,
         Decision::Choices(cands) => {
             let states: Vec<State> = cands.iter().map(|(_, s)| *s).collect();
-            let values = bot.evaluate_batch(&states, eval_opps);
+            let values = bot.evaluate_batch_next(&states, eval_opps, next);
             cands[argmax(&values)].0
         }
     }
@@ -204,8 +209,14 @@ pub fn passive_phase1_choices(state: &State, opp_states: &[State], dice: [u8; 6]
     mark_choices(state, &marks, *state, opp_best)
 }
 
+/// The passive decision; in 2-player the passive player moves next.
 pub(crate) fn passive_phase1_impl(bot: &impl Bot, state: &State, opp_states: &[State], dice: [u8; 6]) -> Option<Mark> {
-    eval_decision(bot, passive_phase1_choices(state, opp_states, dice), opp_states)
+    eval_decision_next(
+        bot,
+        passive_phase1_choices(state, opp_states, dice),
+        opp_states,
+        Next::Me,
+    )
 }
 
 pub fn active_phase2_choices(state: &State, opp_states: &[State], dice: [u8; 6], has_marked: bool) -> Decision {
@@ -453,5 +464,28 @@ mod tests {
             }
             Decision::Forced(_) => panic!("rule-free phase-1 pipeline must not force here"),
         }
+    }
+
+    use crate::strategy::recorder::Recorder;
+    use crate::strategy::Next;
+
+    fn nexts(bot: &Recorder) -> Vec<Next> {
+        bot.take().into_iter().map(|c| c.next).collect()
+    }
+
+    #[test]
+    fn passive_decisions_say_i_move_next_and_active_ones_the_opponent() {
+        let bot = Recorder::default();
+        let (state, opps) = (State::default(), [State::default()]);
+        let dice = [3, 4, 2, 5, 6, 2];
+        passive_phase1_impl(&bot, &state, &opps, dice);
+        assert_eq!(nexts(&bot), [Next::Me]);
+        active_phase2_impl(&bot, &state, &opps, dice, false);
+        assert_eq!(nexts(&bot), [Next::Opp]);
+        // The opponent's simulated passive response, then my plans.
+        active_phase1_impl(&bot, &state, &opps, dice);
+        assert_eq!(nexts(&bot), [Next::Me, Next::Opp]);
+        assert!(eval_decision(&bot, passive_phase1_choices(&state, &opps, dice), &opps).is_some());
+        assert_eq!(nexts(&bot), [Next::Opp], "eval_decision is the opponent-next case");
     }
 }

@@ -4,9 +4,10 @@
 //! mid-turn, with all players' decisions driven by a `Bot`.
 
 use super::bot_impl::{
-    active_phase1_impl, active_phase2_choices, eval_decision, passive_phase1_choices, phase1_plan_choices, Decision,
+    active_phase1_impl, active_phase2_choices, eval_decision, eval_decision_next, passive_phase1_choices,
+    phase1_plan_choices, Decision,
 };
-use super::Bot;
+use super::{Bot, Next};
 use crate::game::DiceSource;
 use crate::state::{Mark, State};
 use rand::rngs::SmallRng;
@@ -93,7 +94,7 @@ pub fn play_sim_turn(bot: &impl Bot, sim: &mut SimGame, fidelity: Fidelity) {
                 Fidelity::Lite => eval_decision(bot, phase1_plan_choices(&snapshot[j], &view, dice), &view),
             }
         } else {
-            eval_decision(bot, passive_phase1_choices(&snapshot[j], &view, dice), &view)
+            eval_decision_next(bot, passive_phase1_choices(&snapshot[j], &view, dice), &view, Next::Me)
         };
         marks.push(m);
     }
@@ -141,6 +142,8 @@ struct PendingChoice {
     cands: Vec<(Option<Mark>, State)>,
     states: Vec<State>,
     view: Vec<State>,
+    /// Who moves next after this choice: `Me` for a passive player.
+    next: Next,
 }
 
 impl<'a, B: Bot> BatchedRollouts<'a, B> {
@@ -155,11 +158,11 @@ impl<'a, B: Bot> BatchedRollouts<'a, B> {
     /// Resolve a batch of pending choices with one multi-group evaluation.
     /// Returns (sim, player, chosen mark) triples.
     fn resolve(&self, pending: Vec<PendingChoice>) -> Vec<(usize, usize, Option<Mark>)> {
-        let groups: Vec<(&[State], &[State])> = pending
+        let groups: Vec<(&[State], &[State], Next)> = pending
             .iter()
-            .map(|p| (p.states.as_slice(), p.view.as_slice()))
+            .map(|p| (p.states.as_slice(), p.view.as_slice(), p.next))
             .collect();
-        let values = self.bot.evaluate_batch_multi(&groups);
+        let values = self.bot.evaluate_batch_multi_next(&groups);
         pending
             .into_iter()
             .zip(values)
@@ -207,6 +210,7 @@ impl<'a, B: Bot> BatchedRollouts<'a, B> {
                             cands,
                             states,
                             view,
+                            next: if j == sim.active { Next::Opp } else { Next::Me },
                         });
                     }
                 }
@@ -251,6 +255,7 @@ impl<'a, B: Bot> BatchedRollouts<'a, B> {
                         cands,
                         states,
                         view,
+                        next: Next::Opp,
                     });
                 }
             }
@@ -419,5 +424,49 @@ mod tests {
             batched.sims.iter().any(|s| s.over),
             "no sim finished — over-mask path untested"
         );
+    }
+
+    use crate::strategy::recorder::Recorder;
+    use crate::strategy::Next;
+
+    /// Seat 0 (active) has no strikes, seat 1 (passive) two: every
+    /// candidate with two or more strikes is the passive player's.
+    fn striped(seed: u64) -> SimGame {
+        let mut passive = State::default();
+        passive.apply_strike();
+        passive.apply_strike();
+        SimGame {
+            states: vec![State::default(), passive],
+            active: 0,
+            rngs: (0..2).map(|p| SmallRng::seed_from_u64(seed * 2 + p)).collect(),
+            over: false,
+        }
+    }
+
+    fn assert_frames(calls: &[crate::strategy::recorder::Call]) {
+        assert!(calls.iter().any(|c| c.next == Next::Me) && calls.iter().any(|c| c.next == Next::Opp));
+        for c in calls {
+            let passive = c.strikes >= 2;
+            assert_eq!(c.next, if passive { Next::Me } else { Next::Opp }, "{c:?}");
+        }
+    }
+
+    #[test]
+    fn a_sim_turn_evaluates_the_passive_player_with_it_moving_next() {
+        for fidelity in [Fidelity::Lite, Fidelity::Full] {
+            for seed in 0..6 {
+                let bot = Recorder::default();
+                play_sim_turn(&bot, &mut striped(seed), fidelity);
+                assert_frames(&bot.take());
+            }
+        }
+    }
+
+    #[test]
+    fn batched_rollouts_evaluate_the_passive_player_with_it_moving_next() {
+        let bot = Recorder::default();
+        let mut driver = BatchedRollouts::new(&bot, (0..8).map(striped).collect());
+        driver.step_turn();
+        assert_frames(&bot.take());
     }
 }
