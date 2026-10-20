@@ -885,14 +885,26 @@ impl WinStrategy {
         opps.first().copied().unwrap_or_default()
     }
 
+    /// `cand` and the opponent with each one's locks on the other's board,
+    /// as the game propagates them and as every training board has them: a
+    /// candidate that locks a row closes it for the opponent too. A no-op
+    /// unless `cand` makes a new lock.
+    fn propagated(cand: &State, opps: &[State]) -> (State, State) {
+        let (mut c, mut o) = (*cand, Self::opponent(opps));
+        let (lc, lo) = (c.locked(), o.locked());
+        c.lock(lo);
+        o.lock(lc);
+        (c, o)
+    }
+
     /// The logit of P(win) for each (candidate, opponent, frame): z(cand, opp)
     /// when the opponent moves next, −z(opp, cand) when I do. One batch.
-    fn framed_logits(&self, items: &[(&State, State, Next)]) -> Vec<f32> {
+    fn framed_logits(&self, items: &[(State, State, Next)]) -> Vec<f32> {
         let pairs: Vec<(&State, &State)> = items
             .iter()
             .map(|(c, o, n)| match n {
-                Next::Opp => (*c, o),
-                Next::Me => (o, *c),
+                Next::Opp => (c, o),
+                Next::Me => (o, c),
             })
             .collect();
         self.net
@@ -916,12 +928,11 @@ impl Bot for WinStrategy {
     /// Probit-unit values (see [`probit_of_logit`]); move order equals the
     /// order of P(win).
     fn evaluate_batch_multi(&self, groups: &[(&[State], &[State])]) -> Vec<Vec<f32>> {
-        let opps: Vec<State> = groups.iter().map(|(_, opps)| Self::opponent(opps)).collect();
-        let pairs: Vec<(&State, &State)> = groups
+        let boards: Vec<(State, State)> = groups
             .iter()
-            .zip(&opps)
-            .flat_map(|((candidates, _), opp)| candidates.iter().map(move |c| (c, opp)))
+            .flat_map(|(candidates, opps)| candidates.iter().map(move |c| Self::propagated(c, opps)))
             .collect();
+        let pairs: Vec<(&State, &State)> = boards.iter().map(|(c, o)| (c, o)).collect();
         let mut values = self.net.logit_batch(&pairs).into_iter().map(probit_of_logit);
         groups
             .iter()
@@ -941,11 +952,13 @@ impl Bot for WinStrategy {
             let plain: Vec<(&[State], &[State])> = groups.iter().map(|g| (g.0, g.1)).collect();
             return self.evaluate_batch_multi(&plain);
         }
-        let items: Vec<(&State, State, Next)> = groups
+        let items: Vec<(State, State, Next)> = groups
             .iter()
             .flat_map(|(cands, opps, n)| {
-                let o = Self::opponent(opps);
-                cands.iter().map(move |c| (c, o, *n))
+                cands.iter().map(move |c| {
+                    let (c, o) = Self::propagated(c, opps);
+                    (c, o, *n)
+                })
             })
             .collect();
         let mut values = self.framed_logits(&items).into_iter().map(probit_of_logit);
@@ -958,8 +971,8 @@ impl Bot for WinStrategy {
 
 impl WinProb for WinStrategy {
     fn win_prob_multi(&self, groups: &[(&State, &[State])]) -> Vec<f32> {
-        let opps: Vec<State> = groups.iter().map(|(_, opps)| Self::opponent(opps)).collect();
-        let pairs: Vec<(&State, &State)> = groups.iter().zip(&opps).map(|((our, _), opp)| (*our, opp)).collect();
+        let boards: Vec<(State, State)> = groups.iter().map(|(our, opps)| Self::propagated(our, opps)).collect();
+        let pairs: Vec<(&State, &State)> = boards.iter().map(|(c, o)| (c, o)).collect();
         self.net.logit_batch(&pairs).into_iter().map(sigmoid).collect()
     }
 
@@ -968,7 +981,13 @@ impl WinProb for WinStrategy {
             let plain: Vec<(&State, &[State])> = groups.iter().map(|g| (g.0, g.1)).collect();
             return self.win_prob_multi(&plain);
         }
-        let items: Vec<(&State, State, Next)> = groups.iter().map(|(s, o, n)| (*s, Self::opponent(o), *n)).collect();
+        let items: Vec<(State, State, Next)> = groups
+            .iter()
+            .map(|(s, o, n)| {
+                let (c, o) = Self::propagated(s, o);
+                (c, o, *n)
+            })
+            .collect();
         self.framed_logits(&items).into_iter().map(sigmoid).collect()
     }
 }
@@ -1342,12 +1361,21 @@ mod tests {
         for ((cs, opps), vs) in groups.iter().zip(&values) {
             let want: Vec<f32> = cs
                 .iter()
-                .map(|c| probit_of_logit(bot.net.logit_states(c, &opps[0])))
+                .map(|c| {
+                    let (c, o) = WinStrategy::propagated(c, opps);
+                    probit_of_logit(bot.net.logit_states(&c, &o))
+                })
                 .collect();
             assert_eq!(vs, &want);
         }
         let leaves: Vec<(&State, &[State])> = ps.iter().map(|(a, b)| (a, std::slice::from_ref(b))).collect();
-        let want: Vec<f32> = ps.iter().map(|(a, b)| sigmoid(bot.net.logit_states(a, b))).collect();
+        let want: Vec<f32> = ps
+            .iter()
+            .map(|(a, b)| {
+                let (a, b) = WinStrategy::propagated(a, std::slice::from_ref(b));
+                sigmoid(bot.net.logit_states(&a, &b))
+            })
+            .collect();
         assert_eq!(bot.win_prob_multi(&leaves), want);
     }
 
@@ -1671,6 +1699,8 @@ mod tests {
     fn me_next_is_one_minus_the_opponents_view_for_a_tempo_net() {
         let bot = tempo_bot(60);
         for (a, b) in random_pairs(9, 11) {
+            // The values are of the boards with each one's locks on the other.
+            let (a, b) = WinStrategy::propagated(&a, std::slice::from_ref(&b));
             let z_ab = bot.net.logit_states(&a, &b);
             let z_ba = bot.net.logit_states(&b, &a);
             assert_eq!(
@@ -1750,6 +1780,56 @@ mod tests {
         assert_eq!(
             bits(pair.evaluate_batch_next(&cands, &opp, Next::Me)),
             bits(pair.evaluate_batch(&cands, &opp))
+        );
+    }
+
+    #[test]
+    fn a_new_lock_reaches_the_opponent_before_the_net_sees_the_boards() {
+        use crate::strategy::Next;
+        // The champion has a tempo head, so both frames take their own path.
+        let net = WinStrategy::load("win_model");
+        assert!(net.net.has_tempo());
+        let mut lock = State::default();
+        for n in [2, 3, 4, 5, 6, 12] {
+            lock.apply_mark(Mark { row: 0, number: n });
+        }
+        assert!(lock.locked()[0]);
+        let mut opp = State::default();
+        for n in [3, 5, 7] {
+            opp.apply_mark(Mark { row: 0, number: n });
+        }
+        let mut closed = opp;
+        closed.lock(lock.locked());
+        let plain = boards().0;
+        let (with, without) = ([lock, lock], [closed]);
+        let bits = |v: Vec<f32>| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+        // Every path values the lock as if it had propagated, and that matters.
+        assert_eq!(
+            bits(net.evaluate_batch(&with, &[opp])),
+            bits(net.evaluate_batch(&with, &without))
+        );
+        for next in [Next::Opp, Next::Me] {
+            assert_eq!(
+                bits(net.evaluate_batch_next(&with, &[opp], next)),
+                bits(net.evaluate_batch_next(&with, &without, next))
+            );
+            assert_eq!(
+                bits(net.win_prob_multi_next(&[(&lock, &[opp], next)])),
+                bits(net.win_prob_multi_next(&[(&lock, &without, next)]))
+            );
+        }
+        assert_eq!(
+            bits(net.win_prob_multi(&[(&lock, &[opp])])),
+            bits(net.win_prob_multi(&[(&lock, &without)]))
+        );
+        assert_ne!(
+            net.win_prob_multi(&[(&lock, &[opp])])[0],
+            sigmoid(net.net.logit_states(&lock, &opp))
+        );
+        // A board without a new lock is valued exactly as before.
+        assert_eq!(
+            net.win_prob_multi(&[(&plain, &[opp])])[0].to_bits(),
+            sigmoid(net.net.logit_states(&plain, &opp)).to_bits()
         );
     }
 }
