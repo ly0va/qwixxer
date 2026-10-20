@@ -2073,8 +2073,8 @@ search's gate and blend apply unchanged (`win`, `win-search`).
    marks, strikes, score difference. 10% of games held out: 395k turn
    ends + 611k decisions to train on, 44k + 69k held out. The file
    saves after every batch and resumes a stopped run.
-2. **Fit** (`win-arm --thermo --aux --lr 1e-3 --epochs 20`, from
-   scratch, W64): AdamW (wd 1e-4), batch 1024, 1% linear warmup then
+2. **Fit** (`win-arm --thermo --aux --tempo --lr 1e-3 --epochs 10`, from
+   scratch, W64; `--epochs 20` on r1-sized data): AdamW (wd 1e-4), batch 1024, 1% linear warmup then
    cosine to 0, weight average (EMA 0.999), aux loss weights 1.0 / 0.5 /
    0.5 (marks / strikes / difference). The held-out set is measured every
    epoch and the best epoch by held-out candidate-difference RMSE is
@@ -2184,7 +2184,7 @@ a position-dependent one does not, and the constraint also forces a
 compromise wherever a position and its mirror both occur. How much this
 costs in play is untested.
 
-**Tempo arm (in progress).** A tempo head t on the trunk (logit
+**Tempo arm.** A tempo head t on the trunk (logit
 g(x) − g(x′) + t(x) + t(x′), zero-initialised, `tempo.mpk`) and a
 who-moves-next flag on every evaluation: passive decisions and search
 leaves where seat 0 moves next ask 1 − V(opp, me); every bot without a
@@ -2195,8 +2195,34 @@ scratch, matched schedules:
     $Q win-arm --data win_data_r2 --out arm_e2p --thermo --aux --lr 1e-3 --epochs 10
     $Q win-arm --data win_data_r2 --out arm_t   --thermo --aux --lr 1e-3 --epochs 10 --tempo
 
-Measured by `win-eval` (bias, own error) on `bench_e2` and r2, and
-`win-gate` T vs E2′ and T vs E2 (1M games).
+- **T** improved every epoch to the last: held-out diff RMSE 0.0525
+  (noise 0.0513, own error ≈ 0.0109), held-out excess 0.00784, no drift.
+- **E2′** (control) was stopped after 4 epochs: it tracked E2, not T.
+  At epoch 4, E2′ 0.0536 / 0.00964 against T 0.0529 / 0.00802 (diff
+  RMSE / held-out excess), so the gain is the head, not the shorter
+  schedule.
+
+`win-eval`:
+
+| | bench_e2 (1024 rollouts) T | E2 | r2 held-out (64) T | E2 |
+|---|---:|---:|---:|---:|
+| turn-end bias | **+0.0001** | +0.0206 | **−0.0000** | +0.0206 |
+| own error | **0.0104 ± 0.0005** | 0.0139 ± 0.0006 | **0.0108 ± 0.0004** | 0.0143 ± 0.0004 |
+| best pick | 87.5% | 86.6% | 72.9% | 72.6% |
+| mean regret | **0.0012** | 0.0015 | 0.0105 | 0.0107 |
+| win excess (floor) | **0.00081** (0.00046) | 0.00237 | **0.00784** (0.00734) | 0.00943 |
+
+The bias is gone and most of E2's excess above the floor was it (0.00191
+→ 0.00035 on the benchmark). Own error on candidate differences fell by
+a quarter as well, which a constant offset could not explain: the value
+of moving next depends on the position, and the antisymmetric net had to
+bend g to absorb it. The benchmark and r2's held-out set agree on own
+error for both nets (0.0104 / 0.0108, 0.0139 / 0.0143), so the
+3,500-position benchmark can stand in for the slow r2 eval.
+
+Play (1M games): **T vs E2 50.13%, z 3.99**; T vs Master **51.82%**
+(E2: 51.7%). **T is the new champion**; the recipe gains `--tempo` and
+`--epochs 10` for data of r2's size.
 
 ### Benchmark
 
