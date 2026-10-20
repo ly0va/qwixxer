@@ -19,7 +19,6 @@ use crate::game::{Game, Player};
 use crate::state::{Mark, State};
 use crate::strategy::bot_impl::{
     active_phase1_choices, active_phase1_impl, active_phase2_impl, is_safe_lock, passive_phase1_impl,
-    phase1_plan_choices_with, Decision,
 };
 use crate::strategy::search::{context_seed, passive_entry, passive_first_active, phase2_entry, WinProb};
 use crate::strategy::sim::SimGame;
@@ -167,8 +166,10 @@ fn ap2_post(e: &Event, m: Option<Mark>) -> State {
 }
 
 /// The net's own P(win) for the lock and for its pick, as the freed bot
-/// valued them (probit is monotone, so the same argmax).
-fn statics(bot: &WinStrategy, e: &Event, sim_opp: &[State]) -> [f64; 2] {
+/// valued them (probit is monotone, so the same argmax). Active phase 1:
+/// the completed turn of each arm (the lock's own plans can all be pruned
+/// as dominated, by a plan that locks the row in the colour phase).
+fn statics(bot: &WinStrategy, e: &Event, arms: &[(Vec<State>, bool); 2]) -> [f64; 2] {
     let one = |post: &State, opps: &[State], next: Next| bot.win_prob_multi_next(&[(post, opps, next)])[0] as f64;
     let marks = [e.lock, e.alt];
     match e.ctx {
@@ -180,18 +181,14 @@ fn statics(bot: &WinStrategy, e: &Event, sim_opp: &[State]) -> [f64; 2] {
             one(&post, &e.opps, Next::Me)
         }),
         Ctx::Ap2 => marks.map(|m| one(&ap2_post(e, m), &e.opps, Next::Opp)),
-        Ctx::Ap1 => {
-            let Decision::Choices(plans) = phase1_plan_choices_with(&e.state, sim_opp, e.dice, false) else {
-                panic!("a rule-free decline must come from choices");
-            };
-            marks.map(|m| {
-                plans
-                    .iter()
-                    .filter(|(p1, _)| *p1 == m)
-                    .map(|(_, s)| one(s, sim_opp, Next::Opp))
-                    .fold(f64::NEG_INFINITY, f64::max)
-            })
-        }
+        Ctx::Ap1 => [0, 1].map(|i| {
+            let (all, ended) = &arms[i];
+            if *ended {
+                SimGame::outcome(all) as f64
+            } else {
+                one(&all[0], &all[1..], Next::Opp)
+            }
+        }),
     }
 }
 
@@ -204,6 +201,9 @@ struct Res {
     se: f64,
     /// The net's static gap, same sign.
     sgap: f64,
+    /// The pick locks a row later in the same turn (active phase 1: the
+    /// colour phase).
+    relock: bool,
 }
 
 fn adjudicate(bot: &WinStrategy, e: &Event, k: usize) -> Res {
@@ -211,8 +211,11 @@ fn adjudicate(bot: &WinStrategy, e: &Event, k: usize) -> Res {
         Ctx::Ap1 => active_phase1_choices(bot, &e.state, &e.opps, e.dice).1,
         _ => e.opps.clone(),
     };
+    let arms = [entry(bot, e, e.lock, &sim_opp), entry(bot, e, e.alt, &sim_opp)];
+    let relock = arms[1].0[0].count_locked() > e.state.count_locked();
+    let s = statics(bot, e, &arms);
     let d = CandDecision {
-        entries: vec![entry(bot, e, e.lock, &sim_opp), entry(bot, e, e.alt, &sim_opp)],
+        entries: arms.to_vec(),
         first_active: match e.ctx {
             Ctx::Pp1 => passive_first_active(e.active_player, 2),
             _ => 1,
@@ -221,13 +224,13 @@ fn adjudicate(bot: &WinStrategy, e: &Event, k: usize) -> Res {
     };
     let g = label_decision(bot, &d, k);
     let mine = |y: f32| if g.swapped { 1.0 - y as f64 } else { y as f64 };
-    let s = statics(bot, e, &sim_opp);
     Res {
         ctx: e.ctx,
         cdiff: e.state.count_points() - e.opps[0].count_points(),
         gap: mine(g.samples[1].1) - mine(g.samples[0].1),
         se: (g.pair_var[0] as f64 / k as f64).sqrt(),
         sgap: s[1] - s[0],
+        relock,
     }
 }
 
@@ -319,6 +322,10 @@ fn lock_probe() {
         summary(label, &rs, gf);
     }
     summary("all", &res.iter().collect::<Vec<_>>(), gf);
+    let (re, other): (Vec<&Res>, Vec<&Res>) = res.iter().filter(|r| r.ctx == Ctx::Ap1).partition(|r| r.relock);
+    eprintln!("\nactive p1, by whether the pick locks in the colour phase instead:");
+    summary("locks later", &re, gf);
+    summary("no lock", &other, gf);
     eprintln!("\nby score margin (decider's points − opponent's), all contexts:");
     let bins: [(&str, fn(isize) -> bool); 5] = [
         ("≤ −10", |c| c <= -10),
