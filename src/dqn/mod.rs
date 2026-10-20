@@ -30,6 +30,8 @@ pub mod win_distill;
 pub mod win_pi;
 #[cfg(feature = "dqn")]
 pub mod win_data;
+#[cfg(all(test, feature = "dqn"))]
+mod lock_probe;
 #[cfg(feature = "dqn")]
 pub mod win_arm;
 #[cfg(feature = "dqn")]
