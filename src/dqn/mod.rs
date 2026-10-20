@@ -24,16 +24,18 @@ pub mod pair_train;
 #[cfg(feature = "dqn")]
 pub mod win_train;
 
-#[cfg(feature = "dqn")]
-pub mod win_distill;
-#[cfg(feature = "dqn")]
-pub mod win_pi;
-#[cfg(feature = "dqn")]
-pub mod win_data;
+#[cfg(all(test, feature = "dqn"))]
+mod lock_probe;
 #[cfg(feature = "dqn")]
 pub mod win_arm;
 #[cfg(feature = "dqn")]
 pub mod win_bench;
+#[cfg(feature = "dqn")]
+pub mod win_data;
+#[cfg(feature = "dqn")]
+pub mod win_distill;
+#[cfg(feature = "dqn")]
+pub mod win_pi;
 
 pub mod pair;
 pub mod win;
