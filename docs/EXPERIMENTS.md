@@ -2282,10 +2282,17 @@ Every rule site asks `Bot::force_lock()`; `WinStrategy` says no.
 pair net, GA and the other bots keep the rule. Rule-on T vs default T:
 49.70%, z −15.2 (200k, local).
 
-Open: win-search freed vs `win-search-lock` (the adjudication may have
-been doing better on lock decisions than ordinary search); a round fitted
-on freed-policy labels; the passive lookahead (passive is now the
-weakest context); the pair net's lock bug.
+Bench vs GA: `win` **62.1%**, `win-lock` 61.8% (+0.3pp, matching the
+probe's +0.37pp); `win-search` and `win-search-lock` both **63.3%**.
+Search gains nothing because `win-search-lock` was never bound by the
+rule at the root: lock adjudication already pitted the forced lock
+against the best rule-free alternatives by 256 full rollouts each and
+played the winner. Freed search reaches the same decisions through the
+ordinary gate and one-round search, without those rollouts. Keep
+adjudication for `win-search-lock` as the reference.
+
+Open: a round fitted on freed-policy labels; the passive lookahead
+(passive is now the weakest context); the pair net's lock bug.
 
 ### Benchmark
 
