@@ -2282,7 +2282,7 @@ Every rule site asks `Bot::force_lock()`; `WinStrategy` says no.
 pair net, GA and the other bots keep the rule. Rule-on T vs default T:
 49.70%, z −15.2 (200k, local).
 
-Bench vs GA: `win` **62.1%**, `win-lock` 61.8% (+0.3pp, matching the
+Bench vs GA: `win` **62.1%**, `win-lock` 61.8% (+0.3pp, in line with the
 probe's +0.37pp); `win-search` and `win-search-lock` both **63.3%**.
 Search gains nothing because `win-search-lock` was never bound by the
 rule at the root: lock adjudication already pitted the forced lock
