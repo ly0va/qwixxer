@@ -2291,8 +2291,69 @@ played the winner. Freed search reaches the same decisions through the
 ordinary gate and one-round search, without those rollouts. Keep
 adjudication for `win-search-lock` as the reference.
 
-Open: a round fitted on freed-policy labels; the passive lookahead
-(passive is now the weakest context); the pair net's lock bug.
+Open: a round fitted on freed-policy labels; the pair net's lock bug.
+
+### Passive lookahead
+
+A passive candidate was valued as V(my board after the mark, the active
+player's board before its turn, me next): a position that never occurs,
+which skips a turn whose dice are already known. It misses what our mark
+does to that turn and what that turn does to our mark: locks (mine closes
+its row before its colour phase; its white or colour lock voids my mark),
+game ends (two locks in phase 1, a colour lock or fourth strike in phase 2,
+valued by the net as if play went on), and its colour choice, which reads
+my board.
+
+Now (`Bot::passive_lookahead`, on for the win net only) each candidate is
+valued at the end of the active player's turn, in the engine's order: the
+active player's white mark (and every other passive player's) is decided
+once from the boards before phase 1, applied with mine, locks propagate;
+then its colour phase is decided against the boards it now sees. A
+finished game is its result (`Bot::terminal_value`: the probit of a sure
+win or loss, 0 for a tie), otherwise the net with whoever moves next.
+Predicted opponents never look ahead (the active player's predicted reply
+to us stays plain), so there is no recursion. `passive_entry`, which
+completes the turn for win-search's passive candidates, is the same
+completion; it used to apply my mark before deciding the active player's
+white mark. Win-search ranks and gates passive candidates by these values,
+the data capture shortlists them the same way, and data games play it.
+Rollouts stay Lite (unchanged). No retraining: the leaf is an ordinary
+start-of-turn position. `win-gate --a/b-lookahead`, `--a/b-plain-passive`;
+bots `win-plain`, `win-search-plain`. Static play is about 3× slower (20k
+self-play games: 24s against 8s).
+
+Gates, T, 200k, seed 42 (local):
+
+| | vs Master | vs plain-passive T |
+|---|---:|---:|
+| lookahead T | **53.47%**, z 39.7 | **51.59%**, z 22.6 |
+| plain-passive T | 52.27%, z 26.1 | 50% |
+
++1.20pp against Master, +1.59pp in self-play. Self-play flatters it: the
+predicted reply is the opponent's own plain decision, so there it is
+exact; against Master it is only close.
+
+The lock probe (20k games, K 512; the freed side is the default net, with
+or without `LOCK_PLAIN`; arms labelled by it):
+
+| passive p1 | declines | decline − lock | own error | a game, one freed seat |
+|---|---:|---:|---:|---:|
+| plain | 8.4% | −0.023 ± 0.016 | 0.335 | −0.025pp |
+| lookahead | 24.7% | +0.111 ± 0.006 | **0.013** | **+0.360pp** |
+
+Plain, the net declines the wrong locks (the lock is better as often as the
+decline); looking ahead it declines three times as often and wins 64% of
+those against 5%. Its error at passive lock decisions is now as low as
+the active contexts' (0.015, 0.018). Caveat: an arm's first turn is the
+bot's own predicted completion and the rollouts follow it, so this error
+excludes opponent-model error; it measures the leaf. All contexts freed
+with the lookahead: +0.73pp a game for one freed seat (+0.35pp plain).
+
+Open: bench `win` / `win-plain` and `win-search` / `win-search-plain` vs
+GA (the most different opponent, so the hardest test of the prediction);
+speed (batch the per-candidate colour-phase evaluations); whether Master
+gains from the lookahead too (`--b-lookahead`); a round fitted on
+freed-policy labels; the pair net's lock bug.
 
 ### Benchmark
 
