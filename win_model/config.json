@@ -1,5 +1,6 @@
 {
   "thermo": true,
   "aux": true,
+  "tempo": true,
   "width": 64
 }
