@@ -12,7 +12,7 @@ use crate::dqn::win_train::{bench_vs_pair, outcome, rollout_round_by, train_epoc
 use crate::dqn::MyBackend;
 use crate::game::{Game, Player};
 use crate::strategy::search::GATE_MARGIN;
-use crate::strategy::{Bot, Strategy};
+use crate::strategy::{Bot, NoLock, Strategy};
 use burn::{module::AutodiffModule, prelude::*, record::CompactRecorder};
 use rand::{rngs::SmallRng, SeedableRng};
 use rayon::prelude::*;
@@ -155,15 +155,23 @@ pub fn run_gate<A: Bot + Clone + 'static, B: Bot + Clone + 'static>(
 
 /// `win-gate`: `games` paired games (both seats per dice set) of the win
 /// net in dir `a` against the win net in dir `b`, or Master from
-/// `pair_dir` when `b` is "master". Returns (games played, a's share, z).
-pub fn win_gate(a: &str, b: &str, games: usize, seed: u64, pair_dir: &str) -> (usize, f64, f64) {
+/// `pair_dir` when `b` is "master". `a_lock = false` plays `a` without the
+/// safe-lock rule ([`NoLock`]). Returns (games played, a's share, z).
+pub fn win_gate(a: &str, b: &str, games: usize, seed: u64, pair_dir: &str, a_lock: bool) -> (usize, f64, f64) {
+    fn against<A: Bot + Clone + Sync + 'static>(a: A, b: &str, pairs: u64, seed: u64, pair_dir: &str) -> Vec<f32> {
+        if b == "master" {
+            head_to_head(&|| a.clone(), &|| PairStrategy::load(pair_dir), 0..pairs, seed)
+        } else {
+            let b = WinStrategy::load(b);
+            head_to_head(&|| a.clone(), &|| b.clone(), 0..pairs, seed)
+        }
+    }
     let pairs = (games / 2) as u64;
     let a = WinStrategy::load(a);
-    let scores = if b == "master" {
-        head_to_head(&|| a.clone(), &|| PairStrategy::load(pair_dir), 0..pairs, seed)
+    let scores = if a_lock {
+        against(a, b, pairs, seed, pair_dir)
     } else {
-        let b = WinStrategy::load(b);
-        head_to_head(&|| a.clone(), &|| b.clone(), 0..pairs, seed)
+        against(NoLock(a), b, pairs, seed, pair_dir)
     };
     let (_, share, z) = gate_decision(&scores, f64::INFINITY, true);
     (scores.len() * 2, share, z)
@@ -832,9 +840,11 @@ mod tests {
         let device = Default::default();
         let mcfg = WinModelConfig::new().with_width(4).with_thermo(Some(true));
         save_win(&dir, &mcfg, &mcfg.init::<MyBackend>(&device));
-        assert_eq!(win_gate(&dir, &dir, 8, 7, "pair_model"), (8, 0.5, 0.0));
-        let (games, share, _) = win_gate(&dir, "master", 4, 7, "pair_model");
+        assert_eq!(win_gate(&dir, &dir, 8, 7, "pair_model", true), (8, 0.5, 0.0));
+        let (games, share, _) = win_gate(&dir, "master", 4, 7, "pair_model", true);
         assert!(games == 4 && (0.0..=1.0).contains(&share));
+        let (games, share, _) = win_gate(&dir, &dir, 8, 7, "pair_model", false);
+        assert!(games == 8 && (0.0..=1.0).contains(&share));
         std::fs::remove_dir_all(&base).unwrap();
     }
 

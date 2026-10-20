@@ -1,8 +1,8 @@
 pub mod bot_impl;
-pub mod search;
-pub mod sim;
 #[cfg(test)]
 pub(crate) mod recorder;
+pub mod search;
+pub mod sim;
 pub(crate) use bot_impl::{active_phase1_impl, active_phase2_impl, passive_phase1_impl};
 
 use crate::state::{format_dice, Mark, State};
@@ -60,6 +60,38 @@ pub trait Bot: std::fmt::Debug {
     fn evaluate_batch_multi_next(&self, groups: &[(&[State], &[State], Next)]) -> Vec<Vec<f32>> {
         let plain: Vec<(&[State], &[State])> = groups.iter().map(|g| (g.0, g.1)).collect();
         self.evaluate_batch_multi(&plain)
+    }
+    /// Whether a safe lock is played without asking the net (the
+    /// production rule).
+    fn force_lock(&self) -> bool {
+        true
+    }
+}
+
+/// `B` without the safe-lock rule: a lock is an ordinary candidate, valued
+/// like any other. Its prediction of the opponent's passive reply keeps the
+/// rule, which the opponent plays by.
+#[derive(Debug, Clone)]
+pub struct NoLock<B>(pub B);
+
+impl<B: Bot> Bot for NoLock<B> {
+    fn evaluate(&self, our_state: &State, opp_states: &[State]) -> f32 {
+        self.0.evaluate(our_state, opp_states)
+    }
+    fn evaluate_batch(&self, candidates: &[State], opp_states: &[State]) -> Vec<f32> {
+        self.0.evaluate_batch(candidates, opp_states)
+    }
+    fn evaluate_batch_multi(&self, groups: &[(&[State], &[State])]) -> Vec<Vec<f32>> {
+        self.0.evaluate_batch_multi(groups)
+    }
+    fn evaluate_batch_next(&self, candidates: &[State], opp_states: &[State], next: Next) -> Vec<f32> {
+        self.0.evaluate_batch_next(candidates, opp_states, next)
+    }
+    fn evaluate_batch_multi_next(&self, groups: &[(&[State], &[State], Next)]) -> Vec<Vec<f32>> {
+        self.0.evaluate_batch_multi_next(groups)
+    }
+    fn force_lock(&self) -> bool {
+        false
     }
 }
 

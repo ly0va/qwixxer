@@ -123,13 +123,11 @@ pub fn eval_decision_next(bot: &impl Bot, decision: Decision, eval_opps: &[State
 /// Given candidate marks and a baseline state (skip for passive, skip-or-strike
 /// for phase2), applies meta-rules and returns either a forced move or a
 /// filtered+pruned candidate list for value-based selection.
-pub(crate) fn mark_choices(state: &State, marks: &[Mark], baseline: State, opp_best: isize) -> Decision {
-    mark_choices_with(state, marks, baseline, opp_best, true)
-}
-
-/// `mark_choices` with the safe-lock force gated by `force_lock`. With
-/// `force_lock = false` the lock becomes an ordinary candidate (rule-free
-/// pipeline used by search-value distillation); `true` reproduces production.
+///
+/// The safe-lock force is gated by `force_lock`. With `force_lock = false`
+/// the lock becomes an ordinary candidate (rule-free pipeline used by
+/// search-value distillation and [`NoLock`](super::NoLock) bots); `true`
+/// reproduces production.
 pub(crate) fn mark_choices_with(
     state: &State,
     marks: &[Mark],
@@ -203,23 +201,47 @@ pub(crate) fn mark_choices_with(
 // ---------------------------------------------------------------------------
 
 pub fn passive_phase1_choices(state: &State, opp_states: &[State], dice: [u8; 6]) -> Decision {
+    passive_phase1_choices_with(state, opp_states, dice, true)
+}
+
+fn passive_phase1_choices_with(state: &State, opp_states: &[State], dice: [u8; 6], force_lock: bool) -> Decision {
     let white_sum = dice[0] + dice[1];
     let marks = state.generate_white_moves(white_sum);
     let opp_best = opp_best_phase1_score(opp_states, white_sum);
-    mark_choices(state, &marks, *state, opp_best)
+    mark_choices_with(state, &marks, *state, opp_best, force_lock)
 }
 
 /// The passive decision; in 2-player the passive player moves next.
 pub(crate) fn passive_phase1_impl(bot: &impl Bot, state: &State, opp_states: &[State], dice: [u8; 6]) -> Option<Mark> {
+    passive_phase1_impl_with(bot, state, opp_states, dice, bot.force_lock())
+}
+
+fn passive_phase1_impl_with(
+    bot: &impl Bot,
+    state: &State,
+    opp_states: &[State],
+    dice: [u8; 6],
+    force_lock: bool,
+) -> Option<Mark> {
     eval_decision_next(
         bot,
-        passive_phase1_choices(state, opp_states, dice),
+        passive_phase1_choices_with(state, opp_states, dice, force_lock),
         opp_states,
         Next::Me,
     )
 }
 
 pub fn active_phase2_choices(state: &State, opp_states: &[State], dice: [u8; 6], has_marked: bool) -> Decision {
+    active_phase2_choices_with(state, opp_states, dice, has_marked, true)
+}
+
+fn active_phase2_choices_with(
+    state: &State,
+    opp_states: &[State],
+    dice: [u8; 6],
+    has_marked: bool,
+    force_lock: bool,
+) -> Decision {
     let opp_best = opp_states.iter().map(|s| s.count_points()).max().unwrap_or(0);
     let marks = state.generate_color_moves(dice);
     let baseline = if has_marked {
@@ -229,7 +251,7 @@ pub fn active_phase2_choices(state: &State, opp_states: &[State], dice: [u8; 6],
         s.apply_strike();
         s
     };
-    mark_choices(state, &marks, baseline, opp_best)
+    mark_choices_with(state, &marks, baseline, opp_best, force_lock)
 }
 
 pub(crate) fn active_phase2_impl(
@@ -241,7 +263,7 @@ pub(crate) fn active_phase2_impl(
 ) -> Option<Mark> {
     eval_decision(
         bot,
-        active_phase2_choices(state, opp_states, dice, has_marked),
+        active_phase2_choices_with(state, opp_states, dice, has_marked, bot.force_lock()),
         opp_states,
     )
 }
@@ -259,7 +281,8 @@ fn simulate_opp_phase1(bot: &impl Bot, state: &State, opp_states: &[State], dice
             let their_opps: Vec<State> = std::iter::once(*state)
                 .chain(opp_states.iter().enumerate().filter(|(j, _)| *j != i).map(|(_, s)| *s))
                 .collect();
-            match passive_phase1_impl(bot, opp, &their_opps, dice) {
+            // The opponent plays by the lock rule whatever `bot` does.
+            match passive_phase1_impl_with(bot, opp, &their_opps, dice, true) {
                 Some(m) => {
                     let mut s = *opp;
                     s.apply_mark(m);
@@ -382,7 +405,7 @@ pub fn active_phase1_choices(
     // removing plans that might be invalidated, we predict what opponents will
     // do and plan around it.
     let sim_opp = simulate_opp_phase1(bot, state, opp_states, dice);
-    let decision = phase1_plan_choices(state, &sim_opp, dice);
+    let decision = phase1_plan_choices_with(state, &sim_opp, dice, bot.force_lock());
     (decision, sim_opp)
 }
 
@@ -464,6 +487,31 @@ mod tests {
             }
             Decision::Forced(_) => panic!("rule-free phase-1 pipeline must not force here"),
         }
+    }
+
+    /// Values a state by minus its points, so it never wants a lock.
+    #[derive(Debug, Clone)]
+    struct ShunsPoints;
+    impl Bot for ShunsPoints {
+        fn evaluate(&self, s: &State, _: &[State]) -> f32 {
+            -(s.count_points() as f32)
+        }
+    }
+
+    #[test]
+    fn a_bot_without_the_lock_rule_may_decline_a_safe_lock() {
+        use crate::strategy::{NoLock, Strategy};
+        let (s, opps) = (lockable_state(), [State::default()]);
+        let lock = Some(Mark { row: 0, number: 12 });
+        let white = [6, 6, 1, 1, 1, 1]; // white sum 12
+        let colour = [6, 1, 6, 1, 1, 1]; // white 6 + red 6
+        let (mut on, mut off) = (ShunsPoints, NoLock(ShunsPoints));
+        assert_eq!(on.passive_phase1(&s, &opps, white, 1), lock);
+        assert_eq!(on.active_phase1(&s, &opps, white), lock);
+        assert_eq!(on.active_phase2(&s, &opps, colour, true), lock);
+        assert_eq!(off.passive_phase1(&s, &opps, white, 1), None);
+        assert_ne!(off.active_phase1(&s, &opps, white), lock);
+        assert_eq!(off.active_phase2(&s, &opps, colour, true), None);
     }
 
     use crate::strategy::recorder::Recorder;
