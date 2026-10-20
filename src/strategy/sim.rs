@@ -4,8 +4,8 @@
 //! mid-turn, with all players' decisions driven by a `Bot`.
 
 use super::bot_impl::{
-    active_phase1_impl, active_phase2_choices, eval_decision, eval_decision_next, passive_phase1_choices,
-    phase1_plan_choices, Decision,
+    active_phase1_impl, active_phase2_choices_with, eval_decision, eval_decision_next, passive_phase1_choices_with,
+    phase1_plan_choices_with, Decision,
 };
 use super::{Bot, Next};
 use crate::game::DiceSource;
@@ -91,10 +91,19 @@ pub fn play_sim_turn(bot: &impl Bot, sim: &mut SimGame, fidelity: Fidelity) {
         let m = if j == sim.active {
             match fidelity {
                 Fidelity::Full => active_phase1_impl(bot, &snapshot[j], &view, dice),
-                Fidelity::Lite => eval_decision(bot, phase1_plan_choices(&snapshot[j], &view, dice), &view),
+                Fidelity::Lite => eval_decision(
+                    bot,
+                    phase1_plan_choices_with(&snapshot[j], &view, dice, bot.force_lock()),
+                    &view,
+                ),
             }
         } else {
-            eval_decision_next(bot, passive_phase1_choices(&snapshot[j], &view, dice), &view, Next::Me)
+            eval_decision_next(
+                bot,
+                passive_phase1_choices_with(&snapshot[j], &view, dice, bot.force_lock()),
+                &view,
+                Next::Me,
+            )
         };
         marks.push(m);
     }
@@ -112,7 +121,7 @@ pub fn play_sim_turn(bot: &impl Bot, sim: &mut SimGame, fidelity: Fidelity) {
 
     // Phase 2: active player only.
     let view = SimGame::opp_view(&sim.states, sim.active);
-    let decision = active_phase2_choices(&sim.states[sim.active], &view, dice, has_marked);
+    let decision = active_phase2_choices_with(&sim.states[sim.active], &view, dice, has_marked, bot.force_lock());
     match eval_decision(bot, decision, &view) {
         Some(m) => sim.states[sim.active].apply_mark(m),
         None if !has_marked => sim.states[sim.active].apply_strike(),
@@ -196,9 +205,9 @@ impl<'a, B: Bot> BatchedRollouts<'a, B> {
             for j in 0..n {
                 let view = SimGame::opp_view(&snapshots[li], j);
                 let decision = if j == sim.active {
-                    phase1_plan_choices(&snapshots[li][j], &view, dice)
+                    phase1_plan_choices_with(&snapshots[li][j], &view, dice, self.bot.force_lock())
                 } else {
-                    passive_phase1_choices(&snapshots[li][j], &view, dice)
+                    passive_phase1_choices_with(&snapshots[li][j], &view, dice, self.bot.force_lock())
                 };
                 match decision {
                     Decision::Forced(m) => marks[li][j] = m,
@@ -245,7 +254,13 @@ impl<'a, B: Bot> BatchedRollouts<'a, B> {
                 continue;
             }
             let view = SimGame::opp_view(&sim.states, sim.active);
-            match active_phase2_choices(&sim.states[sim.active], &view, dice_of[li], has_marked[li]) {
+            match active_phase2_choices_with(
+                &sim.states[sim.active],
+                &view,
+                dice_of[li],
+                has_marked[li],
+                self.bot.force_lock(),
+            ) {
                 Decision::Forced(m) => phase2_marks[li] = Some(m),
                 Decision::Choices(cands) => {
                     let states: Vec<State> = cands.iter().map(|(_, s)| *s).collect();
@@ -468,5 +483,49 @@ mod tests {
         let mut driver = BatchedRollouts::new(&bot, (0..8).map(striped).collect());
         driver.step_turn();
         assert_frames(&bot.take());
+    }
+
+    /// Both seats can lock red with a 12; over many dice the rule makes
+    /// some sims lock, and a bot without it (that shuns points) never does.
+    fn red_locks(run: impl Fn(Vec<SimGame>) -> Vec<SimGame>) -> usize {
+        use crate::strategy::recorder::lockable;
+        let sims = (0..400)
+            .map(|seed| SimGame {
+                states: vec![lockable(), lockable()],
+                active: 0,
+                rngs: (0..2).map(|p| SmallRng::seed_from_u64(seed * 2 + p)).collect(),
+                over: false,
+            })
+            .collect();
+        run(sims).iter().filter(|s| s.states[0].locked()[0]).count()
+    }
+
+    #[test]
+    fn sims_follow_the_bots_lock_rule() {
+        use crate::strategy::recorder::ShunsPoints;
+        use crate::strategy::NoLock;
+        for fidelity in [Fidelity::Lite, Fidelity::Full] {
+            let one = |bot: &dyn Fn(&mut SimGame)| {
+                red_locks(|mut sims| {
+                    sims.iter_mut().for_each(|s| bot(s));
+                    sims
+                })
+            };
+            assert!(one(&|s| play_sim_turn(&ShunsPoints, s, fidelity)) > 5);
+            assert_eq!(one(&|s| play_sim_turn(&NoLock(ShunsPoints), s, fidelity)), 0);
+        }
+        let batched = |sims: Vec<SimGame>, free: bool| {
+            if free {
+                let mut d = BatchedRollouts::new(&NoLock(ShunsPoints), sims);
+                d.step_turn();
+                d.sims
+            } else {
+                let mut d = BatchedRollouts::new(&ShunsPoints, sims);
+                d.step_turn();
+                d.sims
+            }
+        };
+        assert!(red_locks(|s| batched(s, false)) > 5);
+        assert_eq!(red_locks(|s| batched(s, true)), 0);
     }
 }

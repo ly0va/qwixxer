@@ -69,31 +69,52 @@ pub trait Bot: std::fmt::Debug {
 }
 
 /// `B` without the safe-lock rule: a lock is an ordinary candidate, valued
-/// like any other. Its prediction of the opponent's passive reply keeps the
-/// rule, which the opponent plays by.
+/// like any other, wherever `B` decides (play, the opponent model, rollouts,
+/// turn completions, search).
 #[derive(Debug, Clone)]
 pub struct NoLock<B>(pub B);
 
-impl<B: Bot> Bot for NoLock<B> {
-    fn evaluate(&self, our_state: &State, opp_states: &[State]) -> f32 {
-        self.0.evaluate(our_state, opp_states)
-    }
-    fn evaluate_batch(&self, candidates: &[State], opp_states: &[State]) -> Vec<f32> {
-        self.0.evaluate_batch(candidates, opp_states)
-    }
-    fn evaluate_batch_multi(&self, groups: &[(&[State], &[State])]) -> Vec<Vec<f32>> {
-        self.0.evaluate_batch_multi(groups)
-    }
-    fn evaluate_batch_next(&self, candidates: &[State], opp_states: &[State], next: Next) -> Vec<f32> {
-        self.0.evaluate_batch_next(candidates, opp_states, next)
-    }
-    fn evaluate_batch_multi_next(&self, groups: &[(&[State], &[State], Next)]) -> Vec<Vec<f32>> {
-        self.0.evaluate_batch_multi_next(groups)
-    }
-    fn force_lock(&self) -> bool {
-        false
-    }
+/// `B` with the safe-lock rule: every safe lock is played without asking
+/// the net (the default of every bot but the win net).
+#[derive(Debug, Clone)]
+pub struct ForceLock<B>(pub B);
+
+macro_rules! lock_rule_wrapper {
+    ($w:ident, $force:expr) => {
+        impl<B: Bot> Bot for $w<B> {
+            fn evaluate(&self, our_state: &State, opp_states: &[State]) -> f32 {
+                self.0.evaluate(our_state, opp_states)
+            }
+            fn evaluate_batch(&self, candidates: &[State], opp_states: &[State]) -> Vec<f32> {
+                self.0.evaluate_batch(candidates, opp_states)
+            }
+            fn evaluate_batch_multi(&self, groups: &[(&[State], &[State])]) -> Vec<Vec<f32>> {
+                self.0.evaluate_batch_multi(groups)
+            }
+            fn evaluate_batch_next(&self, candidates: &[State], opp_states: &[State], next: Next) -> Vec<f32> {
+                self.0.evaluate_batch_next(candidates, opp_states, next)
+            }
+            fn evaluate_batch_multi_next(&self, groups: &[(&[State], &[State], Next)]) -> Vec<Vec<f32>> {
+                self.0.evaluate_batch_multi_next(groups)
+            }
+            fn force_lock(&self) -> bool {
+                $force
+            }
+        }
+
+        impl<B: search::WinProb> search::WinProb for $w<B> {
+            fn win_prob_multi(&self, groups: &[(&State, &[State])]) -> Vec<f32> {
+                self.0.win_prob_multi(groups)
+            }
+            fn win_prob_multi_next(&self, groups: &[(&State, &[State], Next)]) -> Vec<f32> {
+                self.0.win_prob_multi_next(groups)
+            }
+        }
+    };
 }
+
+lock_rule_wrapper!(NoLock, false);
+lock_rule_wrapper!(ForceLock, true);
 
 // ---- Interactive ----
 

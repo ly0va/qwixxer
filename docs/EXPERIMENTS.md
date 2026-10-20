@@ -2224,6 +2224,69 @@ Play (1M games): **T vs E2 50.13%, z 3.99**; T vs Master **51.82%**
 (E2: 51.7%). **T is the new champion**; the recipe gains `--tempo` and
 `--epochs 10` for data of r2's size.
 
+### The safe-lock rule, and a lock bug
+
+**Freed T loses a little** (`win-gate --a-no-lock`; the user saw it slightly
+behind T). A probe (branch `lock-probe`, ignored test
+`dqn::lock_probe::lock_probe`) plays T against itself with the rule on and,
+wherever the freed net would decline a safe lock, labels the lock and its
+pick with 512 CRN full-game rollouts. On 20k games: the rule fires 1.17
+times a game (both seats), T declines 7% of firings, and a decline is worth
+−0.0068 ± 0.0053 (−0.028pp a game for one freed seat): declines help when
+behind and hurt when ahead (Phase 16's pattern), passive declines worst
+(−0.028), and the net's own error at these decisions is 0.10–0.20 against
+0.01 on ordinary ones.
+
+**`win-data --locks`** labels every firing rebuilt without the rule (the
+lock first, then the best two other moves), ~1.2 decisions a game. Round 3
+(`arm_f2`, user) fitted on it changed nothing: own error at lock decisions
+0.129 against T's 0.124, 50.00% vs T both with and without the rule (4M).
+
+**The bug.** Every training board is lock-propagated (a row I lock is
+closed on the opponent's board too, which the thermometer input shows as
+fully passed). `WinStrategy` valued a candidate against the opponent's
+board as it was, so a locking candidate was seen with the opponent still
+able to score in the closed row: a position no training board has. The
+rule hid it (locks were never valued). Fixed (`cb18208`): every evaluation
+path propagates locks both ways first, a no-op unless the candidate makes
+a new lock. The pair net's features read each board's own lock flag too,
+so Master likely has the same bug (not checked; Phase 17's
+"representation-limited" verdict may be this).
+
+The probe on T after the fix, no retraining:
+
+| context | declines | decline − lock | own error at lock decisions | a game, one freed seat |
+|---|---:|---:|---:|---:|
+| passive p1 | 7.9% | +0.037 ± 0.010 | 0.200 | +0.038pp |
+| active p1 | 20.9% | +0.109 ± 0.006 | 0.014 | +0.280pp |
+| active p2 | 2.5% | +0.062 ± 0.004 | 0.022 | +0.051pp |
+| all | | +0.084 ± 0.004 | 0.098 | **+0.37pp** |
+
+Active p1 is mostly declining the white lock to lock the same row in the
+colour phase with a mark more. Passive error stays high: the passive value
+still ignores the active player's turn (option (a)).
+
+Gates (1M unless noted): freed T vs T **50.38%, z 26.9** (400k, local);
+freed arm_f2 vs T 50.41%; freed T vs Master **52.29%** (T with the rule:
+51.82%); freed T vs freed Master 52.15%; freed arm_f2 vs freed T 50.03%,
+z 0.99 (round 3 still flat).
+
+**Win nets now play without the rule** everywhere they are the policy:
+static play, the opponent model, rollouts (both fidelities), turn
+completions (`phase1_entry`, `passive_entry`), win-search (a lock is an
+ordinary candidate; lock adjudication only runs under the rule) and data
+capture (`--locks` skips a decision the ordinary capture already took).
+Every rule site asks `Bot::force_lock()`; `WinStrategy` says no.
+`ForceLock` / `NoLock` override it: `win-gate --a-lock / --a-no-lock /
+--b-lock / --b-no-lock`, and the bots `win-lock`, `win-search-lock`. The
+pair net, GA and the other bots keep the rule. Rule-on T vs default T:
+49.70%, z −15.2 (200k, local).
+
+Open: win-search freed vs `win-search-lock` (the adjudication may have
+been doing better on lock decisions than ordinary search); a round fitted
+on freed-policy labels; the passive lookahead (passive is now the
+weakest context); the pair net's lock bug.
+
 ### Benchmark
 
 `win-data --keep p --holdout 1` labels a hashed share of each game's

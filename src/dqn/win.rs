@@ -921,6 +921,12 @@ impl Bot for WinStrategy {
         self.evaluate_batch(&[*our_state], opp_states)[0]
     }
 
+    /// The win net judges safe locks itself (Phase 28: freed, it beats the
+    /// rule by 0.38pp); [`ForceLock`](crate::strategy::ForceLock) restores it.
+    fn force_lock(&self) -> bool {
+        false
+    }
+
     fn evaluate_batch(&self, candidates: &[State], opp_states: &[State]) -> Vec<f32> {
         self.evaluate_batch_multi(&[(candidates, opp_states)]).pop().unwrap()
     }
@@ -1831,5 +1837,27 @@ mod tests {
             net.win_prob_multi(&[(&plain, &[opp])])[0].to_bits(),
             sigmoid(net.net.logit_states(&plain, &opp)).to_bits()
         );
+    }
+
+    #[test]
+    fn a_win_net_plays_without_the_lock_rule_unless_wrapped() {
+        use crate::strategy::{ForceLock, Next};
+        let net = WinStrategy::load("win_model");
+        assert!(!net.force_lock());
+        let ruled = ForceLock(net.clone());
+        assert!(ruled.force_lock());
+        // The wrapper changes the rule, never a value.
+        let (a, b) = boards();
+        let bits = |v: Vec<f32>| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+        for next in [Next::Opp, Next::Me] {
+            assert_eq!(
+                bits(ruled.evaluate_batch_next(&[a, b], &[b], next)),
+                bits(net.evaluate_batch_next(&[a, b], &[b], next))
+            );
+            assert_eq!(
+                bits(ruled.win_prob_multi_next(&[(&a, &[b], next)])),
+                bits(net.win_prob_multi_next(&[(&a, &[b], next)]))
+            );
+        }
     }
 }

@@ -517,12 +517,15 @@ pub(crate) struct TurnEnds<B: Bot> {
 }
 
 impl<B: Bot> TurnEnds<B> {
-    fn keep(&self, capture: impl FnOnce(&B, f32) -> Option<CandDecision>) {
+    /// Keeps the decision `capture` returns; whether it returned one.
+    fn keep(&self, capture: impl FnOnce(&B, f32) -> Option<CandDecision>) -> bool {
         if let Some((margin, buf)) = &self.capture {
             if let Some(d) = capture(&self.bot, *margin) {
                 buf.borrow_mut().push(d);
+                return true;
             }
         }
+        false
     }
 }
 
@@ -534,16 +537,15 @@ impl<B: Bot> std::fmt::Debug for TurnEnds<B> {
 
 impl<B: Bot> Strategy for TurnEnds<B> {
     fn active_phase1(&mut self, state: &State, opp_states: &[State], dice: [u8; 6]) -> Option<Mark> {
-        self.keep(|b, m| capture_active1(b, state, opp_states, dice, m));
-        if self.locks {
+        // A freed bot's ordinary capture may already hold the lock decision.
+        if !self.keep(|b, m| capture_active1(b, state, opp_states, dice, m)) && self.locks {
             self.keep(|b, _| capture_lock_active1(b, state, opp_states, dice));
         }
         active_phase1_impl(&self.bot, state, opp_states, dice)
     }
 
     fn active_phase2(&mut self, state: &State, opp_states: &[State], dice: [u8; 6], has_marked: bool) -> Option<Mark> {
-        self.keep(|b, m| capture_active2(b, state, opp_states, dice, has_marked, m));
-        if self.locks {
+        if !self.keep(|b, m| capture_active2(b, state, opp_states, dice, has_marked, m)) && self.locks {
             self.keep(|b, _| capture_lock_active2(b, state, opp_states, dice, has_marked));
         }
         let mark = active_phase2_impl(&self.bot, state, opp_states, dice, has_marked);
@@ -558,8 +560,7 @@ impl<B: Bot> Strategy for TurnEnds<B> {
     }
 
     fn passive_phase1(&mut self, state: &State, opp_states: &[State], dice: [u8; 6], active: usize) -> Option<Mark> {
-        self.keep(|b, m| capture_passive(b, state, opp_states, dice, active, m));
-        if self.locks {
+        if !self.keep(|b, m| capture_passive(b, state, opp_states, dice, active, m)) && self.locks {
             self.keep(|b, _| capture_lock_passive(b, state, opp_states, dice, active));
         }
         passive_phase1_impl(&self.bot, state, opp_states, dice)
@@ -1559,5 +1560,40 @@ mod tests {
         let mut cfg = smoke_cfg(&format!("{base}/run"));
         cfg.init = Some(init);
         self_play_train(&cfg);
+    }
+
+    #[test]
+    fn a_lock_decision_is_captured_once() {
+        use crate::dqn::pair::PairStrategy;
+        use crate::strategy::recorder::lockable;
+        use crate::strategy::NoLock;
+        let (me, opps) = (lockable(), [State::default()]);
+        let colour = [6, 1, 6, 1, 1, 1];
+        let captured = |free: bool| {
+            let buf: Rc<RefCell<Vec<CandDecision>>> = Default::default();
+            let pair = PairStrategy::load("pair_model");
+            let mut rec: Box<dyn Strategy> = if free {
+                Box::new(TurnEnds {
+                    bot: NoLock(pair),
+                    recorded: Default::default(),
+                    capture: Some((f32::INFINITY, buf.clone())),
+                    locks: true,
+                })
+            } else {
+                Box::new(TurnEnds {
+                    bot: pair,
+                    recorded: Default::default(),
+                    capture: Some((f32::INFINITY, buf.clone())),
+                    locks: true,
+                })
+            };
+            rec.active_phase2(&me, &opps, colour, true);
+            let n = buf.borrow().len();
+            n
+        };
+        // Under the rule only the lock capture sees it; freed, the ordinary
+        // capture takes it and the lock capture does not repeat it.
+        assert_eq!(captured(false), 1);
+        assert_eq!(captured(true), 1);
     }
 }

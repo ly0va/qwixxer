@@ -115,7 +115,7 @@ pub fn capture_active2(
     if opps.is_empty() {
         return None;
     }
-    let Decision::Choices(choices) = active_phase2_choices(state, opps, dice, has_marked) else {
+    let Decision::Choices(choices) = active_phase2_choices_with(state, opps, dice, has_marked, bot.force_lock()) else {
         return None;
     };
     let kept = gated(valued(bot, &choices, opps, Next::Opp), state, opps, margin)?;
@@ -140,7 +140,7 @@ pub fn capture_passive(
     if opps.is_empty() {
         return None;
     }
-    let Decision::Choices(choices) = passive_phase1_choices(state, opps, dice) else {
+    let Decision::Choices(choices) = passive_phase1_choices_with(state, opps, dice, bot.force_lock()) else {
         return None;
     };
     let kept = gated(valued(bot, &choices, opps, Next::Me), state, opps, margin)?;
@@ -538,6 +538,23 @@ mod tests {
         for e in &d.entries[1..] {
             assert_ne!(board(e), board(&d.entries[0]));
         }
+    }
+
+    #[test]
+    fn ordinary_captures_follow_the_bots_lock_rule() {
+        use crate::strategy::NoLock;
+        // Under the rule the lock is forced, so there is nothing to capture;
+        // freed, it is a choice like any other.
+        let (me, opps) = (lockable(), [State::default()]);
+        let (white, colour) = ([6, 6, 1, 1, 1, 1], [6, 1, 6, 1, 1, 1]);
+        let free = NoLock(pair());
+        let inf = f32::INFINITY;
+        assert!(capture_passive(&pair(), &me, &opps, white, 0, inf).is_none());
+        assert!(capture_passive(&free, &me, &opps, white, 0, inf).is_some());
+        assert!(capture_active2(&pair(), &me, &opps, colour, true, inf).is_none());
+        assert!(capture_active2(&free, &me, &opps, colour, true, inf).is_some());
+        assert!(capture_active1(&pair(), &me, &opps, white, inf).is_none());
+        assert!(capture_active1(&free, &me, &opps, white, inf).is_some());
     }
 
     #[test]

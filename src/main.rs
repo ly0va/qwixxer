@@ -33,6 +33,10 @@ enum BotType {
     Win,
     /// Production pair-search driven by the win net (2-player only).
     WinSearch,
+    /// The static win net with the safe-lock rule (win nets play without it).
+    WinLock,
+    /// Win-search with the safe-lock rule and its lock adjudication.
+    WinSearchLock,
     Mcts,
     Opportunist,
     Conservative,
@@ -52,6 +56,8 @@ impl std::fmt::Display for BotType {
             BotType::PairSearchAlt => write!(f, "PAIR-SEARCH({})", alt_model_dir()),
             BotType::Win => write!(f, "WIN({})", win_model_dir()),
             BotType::WinSearch => write!(f, "WIN-SEARCH({})", win_model_dir()),
+            BotType::WinLock => write!(f, "WIN-LOCK({})", win_model_dir()),
+            BotType::WinSearchLock => write!(f, "WIN-SEARCH-LOCK({})", win_model_dir()),
             BotType::Mcts => write!(f, "MCTS"),
             BotType::Opportunist => write!(f, "Opportunist"),
             BotType::Conservative => write!(f, "Conservative"),
@@ -84,6 +90,10 @@ fn make_strategy(bot: &BotType) -> Box<dyn strategy::Strategy> {
         BotType::Win => Box::new(dqn::win::WinStrategy::load(&win_model_dir())),
         BotType::WinSearch => Box::new(strategy::search::SearchBot::new(dqn::win::WinStrategy::load(
             &win_model_dir(),
+        ))),
+        BotType::WinLock => Box::new(strategy::ForceLock(dqn::win::WinStrategy::load(&win_model_dir()))),
+        BotType::WinSearchLock => Box::new(strategy::search::SearchBot::new(strategy::ForceLock(
+            dqn::win::WinStrategy::load(&win_model_dir()),
         ))),
         BotType::Mcts => {
             let champion =
@@ -142,7 +152,12 @@ impl StrategyTemplates {
         let needs_pair_alt = bots
             .iter()
             .any(|b| matches!(b, BotType::PairAlt | BotType::PairSearchAlt));
-        let needs_win = bots.iter().any(|b| matches!(b, BotType::Win | BotType::WinSearch));
+        let needs_win = bots.iter().any(|b| {
+            matches!(
+                b,
+                BotType::Win | BotType::WinSearch | BotType::WinLock | BotType::WinSearchLock
+            )
+        });
         let needs_champion = bots.iter().any(|b| matches!(b, BotType::Ga | BotType::Mcts));
         let genes = Arc::new(bot::default_genes());
         StrategyTemplates {
@@ -212,6 +227,10 @@ impl StrategyTemplates {
             }
             BotType::Win => Box::new(self.win.as_ref().unwrap().clone()),
             BotType::WinSearch => Box::new(strategy::search::SearchBot::new(self.win.as_ref().unwrap().clone())),
+            BotType::WinLock => Box::new(strategy::ForceLock(self.win.as_ref().unwrap().clone())),
+            BotType::WinSearchLock => Box::new(strategy::search::SearchBot::new(strategy::ForceLock(
+                self.win.as_ref().unwrap().clone(),
+            ))),
             BotType::Mcts => Box::new(mcts::MonteCarlo::with_ga(200, self.champion.as_ref().unwrap().clone())),
             BotType::Opportunist => Box::<strategy::Opportunist>::default(),
             BotType::Conservative => Box::<strategy::Conservative>::default(),
@@ -561,9 +580,15 @@ enum Commands {
         games: usize,
         #[arg(long, default_value = "42")]
         seed: u64,
-        /// Play `a` without the safe-lock rule (locks valued like any move)
+        /// Play `a` with the safe-lock rule (win nets play without it by default)
+        #[arg(long, conflicts_with = "a_no_lock")]
+        a_lock: bool,
+        /// Play `a` without the safe-lock rule (the win net's default)
         #[arg(long)]
         a_no_lock: bool,
+        /// Play `b` with the safe-lock rule (Master's default)
+        #[arg(long, conflicts_with = "b_no_lock")]
+        b_lock: bool,
         /// Play `b` without the safe-lock rule
         #[arg(long)]
         b_no_lock: bool,
@@ -1319,9 +1344,20 @@ fn main() {
             b,
             games,
             seed,
+            a_lock,
             a_no_lock,
+            b_lock,
             b_no_lock,
         }) => {
+            let rule = |on: bool, off: bool| {
+                if on {
+                    Some(true)
+                } else if off {
+                    Some(false)
+                } else {
+                    None
+                }
+            };
             if games < 2 || games % 2 != 0 {
                 eprintln!("win-gate: --games must be even and at least 2");
                 std::process::exit(2);
@@ -1333,7 +1369,15 @@ fn main() {
                 }
             }
             let start = std::time::Instant::now();
-            let (n, share, z) = dqn::win_pi::win_gate(&a, &b, games, seed, "pair_model", !a_no_lock, !b_no_lock);
+            let (n, share, z) = dqn::win_pi::win_gate(
+                &a,
+                &b,
+                games,
+                seed,
+                "pair_model",
+                rule(a_lock, a_no_lock),
+                rule(b_lock, b_no_lock),
+            );
             println!(
                 "win-gate: {n} games, {a} vs {b}: {:.2}% for {a}, z {z:.2}, {}s",
                 share * 100.0,

@@ -1,4 +1,5 @@
-//! Test helper: a bot that logs the frame (`Next`) of every evaluation.
+//! Test helpers: a bot that logs the frame (`Next`) of every evaluation,
+//! and one that never wants a lock.
 
 use super::search::WinProb;
 use super::{Bot, Next};
@@ -85,4 +86,33 @@ impl WinProb for Recorder {
             })
             .collect()
     }
+}
+
+/// Values a board by minus its points, so it never takes a lock unless the
+/// rule forces it (and strikes rather than mark).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ShunsPoints;
+
+impl Bot for ShunsPoints {
+    fn evaluate(&self, s: &State, _: &[State]) -> f32 {
+        -(s.count_points() as f32)
+    }
+}
+
+impl WinProb for ShunsPoints {
+    fn win_prob_multi(&self, groups: &[(&State, &[State])]) -> Vec<f32> {
+        groups
+            .iter()
+            .map(|(s, _)| 1.0 / (1.0 + (s.count_points() as f32 / 10.0).exp()))
+            .collect()
+    }
+}
+
+/// Red 2..6 marked: a white or red 12 is a safe lock.
+pub fn lockable() -> State {
+    let mut s = State::default();
+    for n in 2..=6 {
+        s.apply_mark(crate::state::Mark { row: 0, number: n });
+    }
+    s
 }

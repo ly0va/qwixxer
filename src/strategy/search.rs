@@ -4,8 +4,9 @@
 //! Design: docs/superpowers/specs/2026-06-10-pair-search-design.md
 
 use super::bot_impl::{
-    active_phase1_choices, active_phase2_choices, eval_decision, eval_decision_next, is_safe_lock, mark_choices_with,
-    opp_best_phase1_score, passive_phase1_choices, passive_phase1_impl, phase1_plan_choices_with, Decision,
+    active_phase1_choices, active_phase2_choices_with, eval_decision, eval_decision_next, is_safe_lock,
+    mark_choices_with, opp_best_phase1_score, passive_phase1_choices_with, passive_phase1_impl,
+    phase1_plan_choices_with, Decision,
 };
 use super::sim::{BatchedRollouts, SimGame};
 use super::Strategy;
@@ -427,7 +428,7 @@ pub fn phase1_entry(
         return (all, true);
     }
     let view = SimGame::opp_view(&all, 0);
-    let d = active_phase2_choices(&all[0], &view, dice, mark.is_some());
+    let d = active_phase2_choices_with(&all[0], &view, dice, mark.is_some(), bot.force_lock());
     match eval_decision(bot, d, &view) {
         Some(m) => all[0].apply_mark(m),
         None if mark.is_none() => all[0].apply_strike(),
@@ -515,7 +516,7 @@ pub fn passive_entry(
 
     // Active player's phase 2.
     let view = SimGame::opp_view(&all, active_idx);
-    let d = active_phase2_choices(&all[active_idx], &view, dice, p1.is_some());
+    let d = active_phase2_choices_with(&all[active_idx], &view, dice, p1.is_some(), bot.force_lock());
     match eval_decision(bot, d, &view) {
         Some(m) => all[active_idx].apply_mark(m),
         None if p1.is_none() => all[active_idx].apply_strike(),
@@ -991,7 +992,7 @@ impl<B: WinProb> SearchBot<B> {
         if let Some(stats) = &self.stats {
             stats.borrow_mut().active_decisions += 1;
         }
-        let choices = match active_phase2_choices(state, opp_states, dice, has_marked) {
+        let choices = match active_phase2_choices_with(state, opp_states, dice, has_marked, self.bot.force_lock()) {
             Decision::Forced(Some(lock)) if self.cfg.lock_k.is_some() && is_safe_lock(state, Some(lock)) => {
                 let mut baseline = *state;
                 if !has_marked {
@@ -1084,7 +1085,7 @@ impl<B: WinProb> SearchBot<B> {
         if !self.cfg.search_passive && self.cfg.lock_k.is_none() {
             return Explanation::unsearched(passive_phase1_impl(&self.bot, state, opp_states, dice));
         }
-        let choices = match passive_phase1_choices(state, opp_states, dice) {
+        let choices = match passive_phase1_choices_with(state, opp_states, dice, self.bot.force_lock()) {
             Decision::Forced(Some(lock)) if self.cfg.lock_k.is_some() && is_safe_lock(state, Some(lock)) => {
                 let white_sum = dice[0] + dice[1];
                 let marks = state.generate_white_moves(white_sum);
@@ -1868,5 +1869,59 @@ mod tests {
         // White sum 12 locks red (2..6 marked).
         bot.explain_passive_phase1(&lockable_state(), &[State::default()], [6, 6, 2, 3, 5, 1], 0);
         assert_eq!(bot.bot.take()[0].next, Next::Me);
+    }
+
+    #[test]
+    fn turn_completions_follow_the_bots_lock_rule() {
+        use crate::strategy::recorder::{lockable, ShunsPoints};
+        use crate::strategy::NoLock;
+        // My colour phase can lock red (white 6 + red 6), nothing else marked.
+        let colour = [6, 1, 6, 1, 1, 1];
+        let opps = [State::default()];
+        let red = |e: (Vec<State>, bool), seat: usize| e.0[seat].locked()[0];
+        assert!(red(phase1_entry(&ShunsPoints, &lockable(), &opps, colour, None), 0));
+        assert!(!red(
+            phase1_entry(&NoLock(ShunsPoints), &lockable(), &opps, colour, None),
+            0
+        ));
+        // The active opponent can lock red with the white 12.
+        let white = [6, 6, 1, 1, 1, 1];
+        let active = [lockable()];
+        let me = State::default();
+        assert!(red(passive_entry(&ShunsPoints, &me, &active, white, 0, None), 1));
+        assert!(!red(
+            passive_entry(&NoLock(ShunsPoints), &me, &active, white, 0, None),
+            1
+        ));
+    }
+
+    #[test]
+    fn search_adjudicates_locks_only_under_the_rule() {
+        use crate::strategy::recorder::{lockable, ShunsPoints};
+        use crate::strategy::NoLock;
+        let colour = [6, 1, 6, 1, 1, 1];
+        let (me, opps) = (lockable(), [State::default()]);
+        let cfg = SearchConfig {
+            lock_k: Some(4),
+            ..SearchConfig::default()
+        };
+        let adjudications = |pick: &dyn Fn(&std::rc::Rc<std::cell::RefCell<SearchStats>>) -> Option<Mark>| {
+            let stats = std::rc::Rc::new(std::cell::RefCell::new(SearchStats::default()));
+            let m = pick(&stats);
+            let n = stats.borrow().lock_adjudications;
+            (m, n)
+        };
+        let (_, n) = adjudications(&|st| {
+            let mut bot = SearchBot::with_config(ShunsPoints, cfg.clone());
+            bot.stats = Some(st.clone());
+            bot.explain_active_phase2(&me, &opps, colour, true).pick
+        });
+        assert_eq!(n, 1);
+        let (m, n) = adjudications(&|st| {
+            let mut bot = SearchBot::with_config(NoLock(ShunsPoints), cfg.clone());
+            bot.stats = Some(st.clone());
+            bot.explain_active_phase2(&me, &opps, colour, true).pick
+        });
+        assert_eq!((m, n), (None, 0), "freed: the lock is just a candidate");
     }
 }
