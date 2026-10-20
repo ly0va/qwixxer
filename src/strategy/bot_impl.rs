@@ -204,7 +204,12 @@ pub fn passive_phase1_choices(state: &State, opp_states: &[State], dice: [u8; 6]
     passive_phase1_choices_with(state, opp_states, dice, true)
 }
 
-fn passive_phase1_choices_with(state: &State, opp_states: &[State], dice: [u8; 6], force_lock: bool) -> Decision {
+pub(crate) fn passive_phase1_choices_with(
+    state: &State,
+    opp_states: &[State],
+    dice: [u8; 6],
+    force_lock: bool,
+) -> Decision {
     let white_sum = dice[0] + dice[1];
     let marks = state.generate_white_moves(white_sum);
     let opp_best = opp_best_phase1_score(opp_states, white_sum);
@@ -235,7 +240,7 @@ pub fn active_phase2_choices(state: &State, opp_states: &[State], dice: [u8; 6],
     active_phase2_choices_with(state, opp_states, dice, has_marked, true)
 }
 
-fn active_phase2_choices_with(
+pub(crate) fn active_phase2_choices_with(
     state: &State,
     opp_states: &[State],
     dice: [u8; 6],

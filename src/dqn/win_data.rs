@@ -204,6 +204,9 @@ pub struct DataMeta {
     /// Share of turn ends and decisions kept (and labelled). `None` in
     /// datasets written before it existed, which kept everything.
     pub keep: Option<f64>,
+    /// Whether safe-lock firings are labelled too. `None` in datasets
+    /// written before it existed, which did not.
+    pub locks: Option<bool>,
     pub train_turns: usize,
     pub train_decisions: usize,
     pub heldout_turns: usize,
@@ -238,6 +241,9 @@ pub struct DataCfg {
     /// Share of each game's turn ends and decisions kept, drawn per item
     /// before labelling.
     pub keep: f64,
+    /// Also label every safe-lock firing, rebuilt without the rule (the lock
+    /// and the best other moves).
+    pub locks: bool,
     pub seed: u64,
     /// Continue the dataset already in `out`.
     pub resume: bool,
@@ -278,6 +284,7 @@ impl DataCfg {
             differs("--cand-rollouts", &self.cand_rollouts, &m.cand_rollouts)?;
             differs("--holdout", &self.holdout, &m.holdout)?;
             differs("--keep", &self.keep, &m.keep.unwrap_or(1.0))?;
+            differs("--locks", &self.locks, &m.locks.unwrap_or(false))?;
             differs("--seed", &self.seed, &m.seed)?;
         } else if Path::new(&self.out).exists() {
             return Err(format!(
@@ -324,6 +331,7 @@ pub fn resume_cfg(
         cand_rollouts: take("--cand-rollouts", cand_rollouts, m.cand_rollouts)?,
         holdout: take("--holdout", holdout, m.holdout)?,
         keep: take("--keep", keep, m.keep.unwrap_or(1.0))?,
+        locks: m.locks.unwrap_or(false),
         seed: take("--seed", seed, m.seed)?,
         resume: true,
     })
@@ -371,6 +379,7 @@ fn game_samples<P: Bot + Clone + 'static>(player: &P, cfg: &DataCfg, g: u64) -> 
                 bot: player.clone(),
                 recorded: bufs[i].clone(),
                 capture: Some((GATE_MARGIN, caps[i].clone())),
+                locks: cfg.locks,
             };
             Player::new(
                 Box::new(rec),
@@ -463,6 +472,7 @@ impl DataMeta {
             cand_rollouts: cfg.cand_rollouts,
             holdout: cfg.holdout,
             keep: Some(cfg.keep),
+            locks: Some(cfg.locks),
             train_turns: 0,
             train_decisions: 0,
             heldout_turns: 0,
@@ -853,6 +863,7 @@ mod tests {
             cand_rollouts: 4,
             holdout,
             keep: 1.0,
+            locks: false,
             seed,
             resume: false,
         }
@@ -899,6 +910,52 @@ mod tests {
     }
 
     #[test]
+    fn with_locks_a_game_also_labels_its_lock_firings() {
+        let bot = PairStrategy::load("pair_model");
+        let locks = DataCfg {
+            locks: true,
+            ..cfg(1, 0.0, 3)
+        };
+        let (mut plain, mut more) = (0, 0);
+        for g in 0..6u64 {
+            let (t, d) = game_samples(&bot, &cfg(1, 0.0, 3), g);
+            let (lt, ld) = game_samples(&bot, &locks, g);
+            assert_eq!(t, lt, "the turn ends do not change");
+            // Every ordinary decision is still there, in order.
+            let mut it = ld.iter();
+            assert!(d.iter().all(|x| it.any(|y| y == x)));
+            plain += d.len();
+            more += ld.len();
+        }
+        // About one firing per game.
+        assert!(more >= plain + 3, "{plain} {more}");
+    }
+
+    #[test]
+    fn locks_come_from_the_dataset_on_resume() {
+        let base = tmp("locks");
+        let player = format!("{base}/player");
+        let mcfg = crate::dqn::win::WinModelConfig::new().with_width(4);
+        crate::dqn::win_pi::save_win(&player, &mcfg, &mcfg.init::<crate::dqn::MyBackend>(&Default::default()));
+        let dir = format!("{base}/data");
+        let c = DataCfg {
+            out: dir.clone(),
+            player: player.clone(),
+            locks: true,
+            ..cfg(20, 0.5, 5)
+        };
+        assert_eq!(
+            write_dataset(&c, &|| PairStrategy::load("pair_model")).unwrap().locks,
+            Some(true)
+        );
+        let r = resume_cfg(&dir, 40, None, None, None, None, None, None).unwrap();
+        assert!(r.locks && r.validate().is_ok());
+        let off = DataCfg { locks: false, ..r };
+        assert!(off.validate().unwrap_err().contains("--locks"));
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
     fn holdout_one_holds_out_every_game() {
         let ds = generate(&cfg(40, 1.0, 5), &|| PairStrategy::load("pair_model"));
         assert!(ds.train.turns.is_empty() && ds.train.decisions.is_empty());
@@ -917,6 +974,7 @@ mod tests {
         .unwrap();
         let r = resume_cfg(&dir, 10, None, None, None, None, None, None).unwrap();
         assert_eq!(r.keep, 1.0);
+        assert!(!r.locks);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

@@ -247,6 +247,7 @@ mod tests {
             cand_rollouts: 2,
             holdout: 1.0,
             keep: 1.0,
+            locks: false,
             seed: 3,
             resume: false,
         };
