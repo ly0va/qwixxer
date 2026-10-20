@@ -155,23 +155,47 @@ pub fn run_gate<A: Bot + Clone + 'static, B: Bot + Clone + 'static>(
 
 /// `win-gate`: `games` paired games (both seats per dice set) of the win
 /// net in dir `a` against the win net in dir `b`, or Master from
-/// `pair_dir` when `b` is "master". `a_lock = false` plays `a` without the
-/// safe-lock rule ([`NoLock`]). Returns (games played, a's share, z).
-pub fn win_gate(a: &str, b: &str, games: usize, seed: u64, pair_dir: &str, a_lock: bool) -> (usize, f64, f64) {
-    fn against<A: Bot + Clone + Sync + 'static>(a: A, b: &str, pairs: u64, seed: u64, pair_dir: &str) -> Vec<f32> {
-        if b == "master" {
-            head_to_head(&|| a.clone(), &|| PairStrategy::load(pair_dir), 0..pairs, seed)
-        } else {
-            let b = WinStrategy::load(b);
-            head_to_head(&|| a.clone(), &|| b.clone(), 0..pairs, seed)
+/// `pair_dir` when `b` is "master". `a_lock` / `b_lock` = false plays that
+/// side without the safe-lock rule ([`NoLock`]). Returns (games played, a's
+/// share, z).
+pub fn win_gate(
+    a: &str,
+    b: &str,
+    games: usize,
+    seed: u64,
+    pair_dir: &str,
+    a_lock: bool,
+    b_lock: bool,
+) -> (usize, f64, f64) {
+    fn against<A: Bot + Clone + Sync + 'static>(
+        a: A,
+        b: &str,
+        b_lock: bool,
+        pairs: u64,
+        seed: u64,
+        pair_dir: &str,
+    ) -> Vec<f32> {
+        let a = || a.clone();
+        match (b == "master", b_lock) {
+            // The pair bot is built per worker thread.
+            (true, true) => head_to_head(&a, &|| PairStrategy::load(pair_dir), 0..pairs, seed),
+            (true, false) => head_to_head(&a, &|| NoLock(PairStrategy::load(pair_dir)), 0..pairs, seed),
+            (false, true) => {
+                let b = WinStrategy::load(b);
+                head_to_head(&a, &|| b.clone(), 0..pairs, seed)
+            }
+            (false, false) => {
+                let b = NoLock(WinStrategy::load(b));
+                head_to_head(&a, &|| b.clone(), 0..pairs, seed)
+            }
         }
     }
     let pairs = (games / 2) as u64;
     let a = WinStrategy::load(a);
     let scores = if a_lock {
-        against(a, b, pairs, seed, pair_dir)
+        against(a, b, b_lock, pairs, seed, pair_dir)
     } else {
-        against(NoLock(a), b, pairs, seed, pair_dir)
+        against(NoLock(a), b, b_lock, pairs, seed, pair_dir)
     };
     let (_, share, z) = gate_decision(&scores, f64::INFINITY, true);
     (scores.len() * 2, share, z)
@@ -840,11 +864,15 @@ mod tests {
         let device = Default::default();
         let mcfg = WinModelConfig::new().with_width(4).with_thermo(Some(true));
         save_win(&dir, &mcfg, &mcfg.init::<MyBackend>(&device));
-        assert_eq!(win_gate(&dir, &dir, 8, 7, "pair_model", true), (8, 0.5, 0.0));
-        let (games, share, _) = win_gate(&dir, "master", 4, 7, "pair_model", true);
+        assert_eq!(win_gate(&dir, &dir, 8, 7, "pair_model", true, true), (8, 0.5, 0.0));
+        let (games, share, _) = win_gate(&dir, "master", 4, 7, "pair_model", true, true);
         assert!(games == 4 && (0.0..=1.0).contains(&share));
-        let (games, share, _) = win_gate(&dir, &dir, 8, 7, "pair_model", false);
+        let (games, share, _) = win_gate(&dir, &dir, 8, 7, "pair_model", false, true);
         assert!(games == 8 && (0.0..=1.0).contains(&share));
+        // Both freed: the same bot in both seats again.
+        assert_eq!(win_gate(&dir, &dir, 8, 7, "pair_model", false, false), (8, 0.5, 0.0));
+        let (games, _, _) = win_gate(&dir, "master", 4, 7, "pair_model", true, false);
+        assert_eq!(games, 4);
         std::fs::remove_dir_all(&base).unwrap();
     }
 

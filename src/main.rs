@@ -564,6 +564,9 @@ enum Commands {
         /// Play `a` without the safe-lock rule (locks valued like any move)
         #[arg(long)]
         a_no_lock: bool,
+        /// Play `b` without the safe-lock rule
+        #[arg(long)]
+        b_no_lock: bool,
     },
     /// A win model measured on a win-data dataset's held-out games: own error on candidate differences, picks, bias
     #[cfg(feature = "dqn")]
@@ -1317,6 +1320,7 @@ fn main() {
             games,
             seed,
             a_no_lock,
+            b_no_lock,
         }) => {
             if games < 2 || games % 2 != 0 {
                 eprintln!("win-gate: --games must be even and at least 2");
@@ -1329,7 +1333,7 @@ fn main() {
                 }
             }
             let start = std::time::Instant::now();
-            let (n, share, z) = dqn::win_pi::win_gate(&a, &b, games, seed, "pair_model", !a_no_lock);
+            let (n, share, z) = dqn::win_pi::win_gate(&a, &b, games, seed, "pair_model", !a_no_lock, !b_no_lock);
             println!(
                 "win-gate: {n} games, {a} vs {b}: {:.2}% for {a}, z {z:.2}, {}s",
                 share * 100.0,
