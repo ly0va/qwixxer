@@ -2349,9 +2349,11 @@ bot's own predicted completion and the rollouts follow it, so this error
 excludes opponent-model error; it measures the leaf. All contexts freed
 with the lookahead: +0.73pp a game for one freed seat (+0.35pp plain).
 
-Open: bench `win` / `win-plain` and `win-search` / `win-search-plain` vs
-GA (the most different opponent, so the hardest test of the prediction);
-speed (batch the per-candidate colour-phase evaluations); whether Master
+Bench vs GA (1M, local): `win` **63.3%** (99% CI 63.22–63.43, ties 1.8%),
+against 62.1% plain: +1.2pp, as against Master, and level with win-search
+before the lookahead (63.3%).
+
+Open: `win-search` vs GA with the lookahead; speed (batch the per-candidate colour-phase evaluations); whether Master
 gains from the lookahead too (`--b-lookahead`); a round fitted on
 freed-policy labels; the pair net's lock bug.
 
