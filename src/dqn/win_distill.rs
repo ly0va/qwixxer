@@ -7,12 +7,11 @@
 use crate::dqn::win::{swap_input, win_input, WIN_INPUTS};
 use crate::state::{Mark, State};
 use crate::strategy::bot_impl::{
-    active_phase1_choices, active_phase2_choices, active_phase2_choices_with, is_safe_lock, passive_phase1_choices,
-    passive_phase1_choices_with, phase1_plan_choices_with, Decision,
+    active_phase1_choices, active_phase2_choices, active_phase2_choices_with, is_safe_lock, passive_lookahead_values,
+    passive_phase1_choices, passive_phase1_choices_with, passive_turn_ends, phase1_plan_choices_with, Decision,
 };
 use crate::strategy::search::{
-    context_seed, gates_with, passive_entry, passive_first_active, phase1_entry, phase2_entry, rollout_final_states,
-    SEARCH_CANDS,
+    context_seed, gates_with, passive_first_active, phase1_entry, phase2_entry, rollout_final_states, SEARCH_CANDS,
 };
 use crate::strategy::sim::SimGame;
 use crate::strategy::{Bot, Next};
@@ -56,6 +55,25 @@ fn valued(
 ) -> Vec<(Option<Mark>, State, f32)> {
     let posts: Vec<State> = choices.iter().map(|c| c.1).collect();
     let values = bot.evaluate_batch_next(&posts, eval_opps, next);
+    choices.iter().zip(values).map(|(&(m, s), v)| (m, s, v)).collect()
+}
+
+/// Passive choices with their static values as search ranks them: at the
+/// end of the active player's turn when the bot looks ahead, otherwise
+/// against the boards before it.
+fn passive_valued(
+    bot: &impl Bot,
+    choices: &[(Option<Mark>, State)],
+    state: &State,
+    opps: &[State],
+    dice: [u8; 6],
+    active_player: usize,
+) -> Vec<(Option<Mark>, State, f32)> {
+    if !bot.passive_lookahead() {
+        return valued(bot, choices, opps, Next::Me);
+    }
+    let marks: Vec<Option<Mark>> = choices.iter().map(|c| c.0).collect();
+    let values = passive_lookahead_values(bot, state, opps, dice, active_player, &marks);
     choices.iter().zip(values).map(|(&(m, s), v)| (m, s, v)).collect()
 }
 
@@ -143,12 +161,11 @@ pub fn capture_passive(
     let Decision::Choices(choices) = passive_phase1_choices_with(state, opps, dice, bot.force_lock()) else {
         return None;
     };
-    let kept = gated(valued(bot, &choices, opps, Next::Me), state, opps, margin)?;
+    let valued = passive_valued(bot, &choices, state, opps, dice, active_player);
+    let kept = gated(valued, state, opps, margin)?;
+    let marks: Vec<Option<Mark>> = kept.iter().map(|c| c.0).collect();
     Some(CandDecision {
-        entries: kept
-            .iter()
-            .map(|&(m, _)| passive_entry(bot, state, opps, dice, active_player, m))
-            .collect(),
+        entries: passive_turn_ends(bot, state, opps, dice, active_player, &marks),
         first_active: passive_first_active(active_player, opps.len() + 1),
         seed: context_seed(state, opps, dice),
     })
@@ -238,7 +255,7 @@ pub fn capture_lock_active2(
 
 /// Passive phase 1 where the rule forces a safe lock, as
 /// [`capture_lock_active1`]; each entry completes the turn as
-/// [`passive_entry`] does.
+/// [`passive_turn_ends`] does.
 pub fn capture_lock_passive(
     bot: &impl Bot,
     state: &State,
@@ -253,12 +270,9 @@ pub fn capture_lock_passive(
     let Decision::Choices(choices) = passive_phase1_choices_with(state, opps, dice, false) else {
         return None;
     };
-    let marks = lock_shortlist(lock, valued(bot, &choices, opps, Next::Me))?;
+    let marks = lock_shortlist(lock, passive_valued(bot, &choices, state, opps, dice, active_player))?;
     Some(CandDecision {
-        entries: marks
-            .iter()
-            .map(|&m| passive_entry(bot, state, opps, dice, active_player, m))
-            .collect(),
+        entries: passive_turn_ends(bot, state, opps, dice, active_player, &marks),
         first_active: passive_first_active(active_player, opps.len() + 1),
         seed: context_seed(state, opps, dice),
     })
@@ -698,5 +712,25 @@ mod tests {
         assert_eq!(bot.take()[0].next, Next::Me);
         assert!(capture_active2(&bot, &me, &opps, dice, false, f32::INFINITY).is_some());
         assert_eq!(bot.take()[0].next, Next::Opp);
+    }
+
+    #[test]
+    fn a_passive_capture_ranks_its_candidates_as_search_does() {
+        use crate::strategy::recorder::{lockable, lockable_row, Points};
+        use crate::strategy::{Lookahead, NoLock};
+        // My red lock and the opponent's simultaneous yellow lock end the
+        // game, and I lose: only the lookahead ranks the lock last.
+        let mut active = lockable_row(1);
+        for row in [2, 3] {
+            for n in (8..=12).rev() {
+                active.apply_mark(Mark { row, number: n });
+            }
+        }
+        let (me, opps, dice) = (lockable(), [active], [6, 6, 1, 1, 1, 1]);
+        let first_locks_red = |d: CandDecision| d.entries[0].0[0].locked()[0];
+        let plain = capture_passive(&NoLock(Points), &me, &opps, dice, 0, f32::INFINITY).unwrap();
+        assert!(first_locks_red(plain));
+        let looking = capture_passive(&NoLock(Lookahead(Points)), &me, &opps, dice, 0, f32::INFINITY).unwrap();
+        assert!(!first_locks_red(looking));
     }
 }

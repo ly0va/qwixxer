@@ -927,6 +927,22 @@ impl Bot for WinStrategy {
         false
     }
 
+    /// Passive candidates are valued at the end of the active player's turn
+    /// (Phase 28); [`PlainPassive`](crate::strategy::PlainPassive) turns it off.
+    fn passive_lookahead(&self) -> bool {
+        true
+    }
+
+    /// The probit of a certain result: beyond any net value for a win or a
+    /// loss (finite, so value gaps stay defined), 0 for a tie.
+    fn terminal_value(&self, states: &[State]) -> f32 {
+        match crate::strategy::sim::SimGame::outcome(states) {
+            o if o > 0.5 => probit_of_logit(f32::INFINITY),
+            o if o < 0.5 => probit_of_logit(f32::NEG_INFINITY),
+            _ => 0.0,
+        }
+    }
+
     fn evaluate_batch(&self, candidates: &[State], opp_states: &[State]) -> Vec<f32> {
         self.evaluate_batch_multi(&[(candidates, opp_states)]).pop().unwrap()
     }
@@ -1859,5 +1875,36 @@ mod tests {
                 bits(net.win_prob_multi_next(&[(&a, &[b], next)]))
             );
         }
+    }
+
+    #[test]
+    fn a_win_net_looks_ahead_when_passive_unless_wrapped() {
+        use crate::strategy::{ForceLock, NoLock, PlainPassive, Rules};
+        let net = WinStrategy::from_model(&random_model(12, 32));
+        assert!(net.passive_lookahead());
+        assert!(!PlainPassive(net.clone()).passive_lookahead());
+        assert!(!PlainPassive(net.clone()).force_lock(), "the other rule is kept");
+        assert!(NoLock(net.clone()).passive_lookahead());
+        assert!(ForceLock(net.clone()).passive_lookahead());
+        assert!(!Rules(net.clone(), None, Some(false)).passive_lookahead());
+        assert!(Rules(net.clone(), Some(true), None).force_lock());
+        assert!(Rules(net.clone(), Some(true), None).passive_lookahead());
+    }
+
+    #[test]
+    fn a_finished_game_is_valued_beyond_any_net_value() {
+        let net = WinStrategy::from_model(&random_model(12, 32));
+        let (a, b) = boards();
+        let (lo, hi) = if a.count_points() < b.count_points() {
+            (a, b)
+        } else {
+            (b, a)
+        };
+        assert!(lo.count_points() < hi.count_points());
+        let win = net.terminal_value(&[hi, lo]);
+        assert!(win > probit_of_logit(80.0), "{win}");
+        assert_eq!(net.terminal_value(&[lo, hi]), -win);
+        assert_eq!(net.terminal_value(&[lo, lo]), 0.0);
+        assert!(win.is_finite());
     }
 }

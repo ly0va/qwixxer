@@ -37,6 +37,10 @@ enum BotType {
     WinLock,
     /// Win-search with the safe-lock rule and its lock adjudication.
     WinSearchLock,
+    /// The static win net valuing passive candidates without the lookahead.
+    WinPlain,
+    /// Win-search valuing passive candidates without the lookahead.
+    WinSearchPlain,
     Mcts,
     Opportunist,
     Conservative,
@@ -58,6 +62,8 @@ impl std::fmt::Display for BotType {
             BotType::WinSearch => write!(f, "WIN-SEARCH({})", win_model_dir()),
             BotType::WinLock => write!(f, "WIN-LOCK({})", win_model_dir()),
             BotType::WinSearchLock => write!(f, "WIN-SEARCH-LOCK({})", win_model_dir()),
+            BotType::WinPlain => write!(f, "WIN-PLAIN({})", win_model_dir()),
+            BotType::WinSearchPlain => write!(f, "WIN-SEARCH-PLAIN({})", win_model_dir()),
             BotType::Mcts => write!(f, "MCTS"),
             BotType::Opportunist => write!(f, "Opportunist"),
             BotType::Conservative => write!(f, "Conservative"),
@@ -93,6 +99,10 @@ fn make_strategy(bot: &BotType) -> Box<dyn strategy::Strategy> {
         ))),
         BotType::WinLock => Box::new(strategy::ForceLock(dqn::win::WinStrategy::load(&win_model_dir()))),
         BotType::WinSearchLock => Box::new(strategy::search::SearchBot::new(strategy::ForceLock(
+            dqn::win::WinStrategy::load(&win_model_dir()),
+        ))),
+        BotType::WinPlain => Box::new(strategy::PlainPassive(dqn::win::WinStrategy::load(&win_model_dir()))),
+        BotType::WinSearchPlain => Box::new(strategy::search::SearchBot::new(strategy::PlainPassive(
             dqn::win::WinStrategy::load(&win_model_dir()),
         ))),
         BotType::Mcts => {
@@ -155,7 +165,12 @@ impl StrategyTemplates {
         let needs_win = bots.iter().any(|b| {
             matches!(
                 b,
-                BotType::Win | BotType::WinSearch | BotType::WinLock | BotType::WinSearchLock
+                BotType::Win
+                    | BotType::WinSearch
+                    | BotType::WinLock
+                    | BotType::WinSearchLock
+                    | BotType::WinPlain
+                    | BotType::WinSearchPlain
             )
         });
         let needs_champion = bots.iter().any(|b| matches!(b, BotType::Ga | BotType::Mcts));
@@ -229,6 +244,10 @@ impl StrategyTemplates {
             BotType::WinSearch => Box::new(strategy::search::SearchBot::new(self.win.as_ref().unwrap().clone())),
             BotType::WinLock => Box::new(strategy::ForceLock(self.win.as_ref().unwrap().clone())),
             BotType::WinSearchLock => Box::new(strategy::search::SearchBot::new(strategy::ForceLock(
+                self.win.as_ref().unwrap().clone(),
+            ))),
+            BotType::WinPlain => Box::new(strategy::PlainPassive(self.win.as_ref().unwrap().clone())),
+            BotType::WinSearchPlain => Box::new(strategy::search::SearchBot::new(strategy::PlainPassive(
                 self.win.as_ref().unwrap().clone(),
             ))),
             BotType::Mcts => Box::new(mcts::MonteCarlo::with_ga(200, self.champion.as_ref().unwrap().clone())),
@@ -592,6 +611,18 @@ enum Commands {
         /// Play `b` without the safe-lock rule
         #[arg(long)]
         b_no_lock: bool,
+        /// Value `a`'s passive candidates at the end of the active player's turn (the win net's default)
+        #[arg(long, conflicts_with = "a_plain_passive")]
+        a_lookahead: bool,
+        /// Value `a`'s passive candidates against the board before the active player's turn
+        #[arg(long)]
+        a_plain_passive: bool,
+        /// Value `b`'s passive candidates at the end of the active player's turn
+        #[arg(long, conflicts_with = "b_plain_passive")]
+        b_lookahead: bool,
+        /// Value `b`'s passive candidates against the board before the active player's turn (Master's default)
+        #[arg(long)]
+        b_plain_passive: bool,
     },
     /// A win model measured on a win-data dataset's held-out games: own error on candidate differences, picks, bias
     #[cfg(feature = "dqn")]
@@ -1348,6 +1379,10 @@ fn main() {
             a_no_lock,
             b_lock,
             b_no_lock,
+            a_lookahead,
+            a_plain_passive,
+            b_lookahead,
+            b_plain_passive,
         }) => {
             let rule = |on: bool, off: bool| {
                 if on {
@@ -1375,8 +1410,14 @@ fn main() {
                 games,
                 seed,
                 "pair_model",
-                rule(a_lock, a_no_lock),
-                rule(b_lock, b_no_lock),
+                dqn::win_pi::Overrides {
+                    lock: rule(a_lock, a_no_lock),
+                    lookahead: rule(a_lookahead, a_plain_passive),
+                },
+                dqn::win_pi::Overrides {
+                    lock: rule(b_lock, b_no_lock),
+                    lookahead: rule(b_lookahead, b_plain_passive),
+                },
             );
             println!(
                 "win-gate: {n} games, {a} vs {b}: {:.2}% for {a}, z {z:.2}, {}s",

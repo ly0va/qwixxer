@@ -116,3 +116,65 @@ pub fn lockable() -> State {
     }
     s
 }
+
+/// Values a board by its lead in points (tenths), and a finished game by
+/// its result: ±50 for a win or a loss, 0 for a tie.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Points;
+
+impl Bot for Points {
+    fn evaluate(&self, s: &State, opps: &[State]) -> f32 {
+        let best = opps.iter().map(|o| o.count_points()).max().unwrap_or(0);
+        (s.count_points() - best) as f32 / 10.0
+    }
+
+    fn terminal_value(&self, states: &[State]) -> f32 {
+        (super::sim::SimGame::outcome(states) - 0.5) * 100.0
+    }
+}
+
+impl WinProb for Points {
+    fn win_prob_multi(&self, groups: &[(&State, &[State])]) -> Vec<f32> {
+        groups
+            .iter()
+            .map(|(s, o)| 1.0 / (1.0 + (-self.evaluate(s, o)).exp()))
+            .collect()
+    }
+}
+
+/// Values every board by the frame alone: 1 when I move next, −1 when an
+/// opponent does.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Framed;
+
+impl Bot for Framed {
+    fn evaluate(&self, _: &State, _: &[State]) -> f32 {
+        -1.0
+    }
+
+    fn evaluate_batch_next(&self, candidates: &[State], _: &[State], next: Next) -> Vec<f32> {
+        vec![if next == Next::Me { 1.0 } else { -1.0 }; candidates.len()]
+    }
+
+    fn evaluate_batch_multi_next(&self, groups: &[(&[State], &[State], Next)]) -> Vec<Vec<f32>> {
+        groups
+            .iter()
+            .map(|(c, o, n)| self.evaluate_batch_next(c, o, *n))
+            .collect()
+    }
+}
+
+/// Row `row` with its five lowest numbers marked: a white or colour 12 (an
+/// ascending row) is a lock.
+pub fn lockable_row(row: usize) -> State {
+    let mut s = State::default();
+    let numbers: Vec<u8> = if row < 2 {
+        (2..=6).collect()
+    } else {
+        (8..=12).rev().collect()
+    };
+    for n in numbers {
+        s.apply_mark(crate::state::Mark { row, number: n });
+    }
+    s
+}

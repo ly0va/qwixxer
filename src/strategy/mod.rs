@@ -3,7 +3,7 @@ pub mod bot_impl;
 pub(crate) mod recorder;
 pub mod search;
 pub mod sim;
-pub(crate) use bot_impl::{active_phase1_impl, active_phase2_impl, passive_phase1_impl};
+pub(crate) use bot_impl::{active_phase1_impl, active_phase2_impl, passive_decide, passive_phase1_impl};
 
 use crate::state::{format_dice, Mark, State};
 use rand::Rng;
@@ -66,6 +66,16 @@ pub trait Bot: std::fmt::Debug {
     fn force_lock(&self) -> bool {
         true
     }
+    /// Whether a passive decision plays out the rest of the turn (the dice
+    /// are known) before valuing each candidate; only the deciding bot's own
+    /// top-level decision does, never a predicted opponent's.
+    fn passive_lookahead(&self) -> bool {
+        false
+    }
+    /// A finished game `states` (seat 0's view) in [`Bot::evaluate`]'s unit.
+    fn terminal_value(&self, states: &[State]) -> f32 {
+        self.evaluate(&states[0], &states[1..])
+    }
 }
 
 /// `B` without the safe-lock rule: a lock is an ordinary candidate, valued
@@ -79,8 +89,24 @@ pub struct NoLock<B>(pub B);
 #[derive(Debug, Clone)]
 pub struct ForceLock<B>(pub B);
 
-macro_rules! lock_rule_wrapper {
-    ($w:ident, $force:expr) => {
+/// `B` valuing passive candidates against the opponent's board before its
+/// turn (the default of every bot but the win net).
+#[derive(Debug, Clone)]
+pub struct PlainPassive<B>(pub B);
+
+/// `B` playing out the active player's turn before valuing a passive
+/// candidate (see [`Bot::passive_lookahead`]).
+#[derive(Debug, Clone)]
+pub struct Lookahead<B>(pub B);
+
+/// `B` with either rule overridden at run time (`None` keeps `B`'s own):
+/// `.1` the safe-lock rule, `.2` the passive lookahead.
+#[derive(Debug, Clone)]
+pub struct Rules<B>(pub B, pub Option<bool>, pub Option<bool>);
+
+/// A wrapper that delegates everything to `.0` but the two rules.
+macro_rules! rule_wrapper {
+    ($w:ident, |$s:ident| $force:expr, $look:expr) => {
         impl<B: Bot> Bot for $w<B> {
             fn evaluate(&self, our_state: &State, opp_states: &[State]) -> f32 {
                 self.0.evaluate(our_state, opp_states)
@@ -98,7 +124,17 @@ macro_rules! lock_rule_wrapper {
                 self.0.evaluate_batch_multi_next(groups)
             }
             fn force_lock(&self) -> bool {
+                #[allow(unused_variables)]
+                let $s = self;
                 $force
+            }
+            fn passive_lookahead(&self) -> bool {
+                #[allow(unused_variables)]
+                let $s = self;
+                $look
+            }
+            fn terminal_value(&self, states: &[State]) -> f32 {
+                self.0.terminal_value(states)
             }
         }
 
@@ -113,8 +149,15 @@ macro_rules! lock_rule_wrapper {
     };
 }
 
-lock_rule_wrapper!(NoLock, false);
-lock_rule_wrapper!(ForceLock, true);
+rule_wrapper!(NoLock, |s| false, s.0.passive_lookahead());
+rule_wrapper!(ForceLock, |s| true, s.0.passive_lookahead());
+rule_wrapper!(PlainPassive, |s| s.0.force_lock(), false);
+rule_wrapper!(Lookahead, |s| s.0.force_lock(), true);
+rule_wrapper!(
+    Rules,
+    |s| s.1.unwrap_or_else(|| s.0.force_lock()),
+    s.2.unwrap_or_else(|| s.0.passive_lookahead())
+);
 
 // ---- Interactive ----
 

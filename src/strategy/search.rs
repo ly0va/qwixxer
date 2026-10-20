@@ -4,8 +4,8 @@
 //! Design: docs/superpowers/specs/2026-06-10-pair-search-design.md
 
 use super::bot_impl::{
-    active_phase1_choices, active_phase2_choices_with, eval_decision, eval_decision_next, is_safe_lock,
-    mark_choices_with, opp_best_phase1_score, passive_phase1_choices_with, passive_phase1_impl,
+    active_phase1_choices, active_phase2_choices_with, argmax, eval_decision, is_safe_lock, mark_choices_with,
+    opp_best_phase1_score, passive_decide, passive_lookahead_values, passive_phase1_choices_with, passive_turn_ends,
     phase1_plan_choices_with, Decision,
 };
 use super::sim::{BatchedRollouts, SimGame};
@@ -449,7 +449,8 @@ pub fn phase2_entry(post: State, opps: &[State]) -> (Vec<State>, bool) {
 }
 
 /// Complete the WHOLE current turn deterministically for a passive-phase-1
-/// candidate, in the entry's `[us, opps...]` frame.
+/// candidate, in the entry's `[us, opps...]` frame, in the engine's order
+/// (see [`passive_turn_ends`]).
 ///
 /// Frame mapping (verified against `Game::play`): the game passes player i's
 /// opponents as `opp_states = [pre_phase1[(i+1)%n], ..]` (turn-ordered from i)
@@ -459,11 +460,6 @@ pub fn phase2_entry(post: State, opps: &[State]) -> (Vec<State>, bool) {
 /// player sits at entry index `active_player + 1`, and the player who acts
 /// first in the rollout (the seat after the active one) is at entry index
 /// `(active_player + 2) % n` in our-relative frame.
-///
-/// Approximation (identical across candidates, which is all that matters for
-/// the contrast): the real phase-1 was simultaneous; here our candidate mark
-/// is applied first, then every OTHER passive player's phase 1, then the
-/// active player's phase 1 + phase 2, with lock propagation between steps.
 pub fn passive_entry(
     bot: &impl Bot,
     state: &State,
@@ -472,59 +468,9 @@ pub fn passive_entry(
     active_player: usize,
     mark: Option<Mark>,
 ) -> (Vec<State>, bool) {
-    let n = opps.len() + 1;
-    // entry index of the active player (us = 0, opps start at 1).
-    let active_idx = active_player + 1;
-
-    let mut all: Vec<State> = std::iter::once(*state).chain(opps.iter().copied()).collect();
-    if let Some(m) = mark {
-        all[0].apply_mark(m);
-    }
-    SimGame::propagate_locks(&mut all);
-    if SimGame::game_over(&all) {
-        return (all, true);
-    }
-
-    // Other passive players' (simultaneous) phase 1 — every entry seat that is
-    // neither us (0) nor the active player. We apply sequentially with lock
-    // propagation; this is the same approximation search makes for sim_opp.
-    for j in 1..n {
-        if j == active_idx {
-            continue;
-        }
-        let view = SimGame::opp_view(&all, j);
-        if let Some(m) = passive_phase1_impl(bot, &all[j], &view, dice) {
-            all[j].apply_mark(m);
-        }
-    }
-    SimGame::propagate_locks(&mut all);
-    if SimGame::game_over(&all) {
-        return (all, true);
-    }
-
-    // Active player's phase 1.
-    let view = SimGame::opp_view(&all, active_idx);
-    let (d, _) = active_phase1_choices(bot, &all[active_idx], &view, dice);
-    let p1 = eval_decision(bot, d, &view);
-    if let Some(m) = p1 {
-        all[active_idx].apply_mark(m);
-    }
-    SimGame::propagate_locks(&mut all);
-    if SimGame::game_over(&all) {
-        return (all, true);
-    }
-
-    // Active player's phase 2.
-    let view = SimGame::opp_view(&all, active_idx);
-    let d = active_phase2_choices_with(&all[active_idx], &view, dice, p1.is_some(), bot.force_lock());
-    match eval_decision(bot, d, &view) {
-        Some(m) => all[active_idx].apply_mark(m),
-        None if p1.is_none() => all[active_idx].apply_strike(),
-        None => {}
-    }
-    SimGame::propagate_locks(&mut all);
-    let ended = SimGame::game_over(&all);
-    (all, ended)
+    passive_turn_ends(bot, state, opps, dice, active_player, &[mark])
+        .pop()
+        .unwrap()
 }
 
 /// Phase 16 comparison set at a forced safe lock, as indices into
@@ -1083,7 +1029,7 @@ impl<B: WinProb> SearchBot<B> {
         active_player: usize,
     ) -> Explanation {
         if !self.cfg.search_passive && self.cfg.lock_k.is_none() {
-            return Explanation::unsearched(passive_phase1_impl(&self.bot, state, opp_states, dice));
+            return Explanation::unsearched(passive_decide(&self.bot, state, opp_states, dice, active_player));
         }
         let choices = match passive_phase1_choices_with(state, opp_states, dice, self.bot.force_lock()) {
             Decision::Forced(Some(lock)) if self.cfg.lock_k.is_some() && is_safe_lock(state, Some(lock)) => {
@@ -1107,16 +1053,18 @@ impl<B: WinProb> SearchBot<B> {
             Decision::Forced(m) => return Explanation::forced(m),
             Decision::Choices(c) => c,
         };
+        // Static values: with the lookahead, each candidate at the end of the
+        // active player's turn; otherwise against the board before it.
+        let values = if self.bot.passive_lookahead() {
+            let marks: Vec<Option<Mark>> = choices.iter().map(|(m, _)| *m).collect();
+            passive_lookahead_values(&self.bot, state, opp_states, dice, active_player, &marks)
+        } else {
+            let states: Vec<State> = choices.iter().map(|(_, s)| *s).collect();
+            self.bot.evaluate_batch_next(&states, opp_states, Next::Me)
+        };
         if !self.cfg.search_passive {
-            return Explanation::unsearched(eval_decision_next(
-                &self.bot,
-                Decision::Choices(choices),
-                opp_states,
-                Next::Me,
-            ));
+            return Explanation::unsearched(choices[argmax(&values)].0);
         }
-        let states: Vec<State> = choices.iter().map(|(_, s)| *s).collect();
-        let values = self.bot.evaluate_batch_next(&states, opp_states, Next::Me);
         let mut cands: Vec<Candidate> = choices
             .iter()
             .zip(&values)
@@ -1140,10 +1088,8 @@ impl<B: WinProb> SearchBot<B> {
         // passive players, the active player's phase 1 + 2) completed by the
         // bot; the rollout starts at the seat after the active player.
         let shortlist = &cands[..cands.len().min(self.cfg.cands)];
-        let entries: Vec<(Vec<State>, bool)> = shortlist
-            .iter()
-            .map(|c| passive_entry(&self.bot, state, opp_states, dice, active_player, c.mark))
-            .collect();
+        let marks: Vec<Option<Mark>> = shortlist.iter().map(|c| c.mark).collect();
+        let entries = passive_turn_ends(&self.bot, state, opp_states, dice, active_player, &marks);
 
         let seed = context_seed(state, opp_states, dice);
         let first_active = passive_first_active(active_player, opp_states.len() + 1);
@@ -1354,6 +1300,88 @@ mod tests {
     }
 
     #[test]
+    fn passive_entry_decides_the_active_white_mark_before_seeing_mine() {
+        use crate::strategy::recorder::{lockable, ShunsPoints};
+        // Both of us can lock red with the white 12, and the rule makes both
+        // do it: phase 1 is simultaneous, so my lock cannot close red first.
+        let (all, ended) = passive_entry(
+            &ShunsPoints,
+            &lockable(),
+            &[lockable()],
+            [6, 6, 1, 1, 1, 1],
+            0,
+            Some(Mark { row: 0, number: 12 }),
+        );
+        assert!(!ended, "one row locked twice is one lock");
+        assert_eq!(all[1].row_totals()[0], lockable().row_totals()[0] + 2, "{all:?}");
+    }
+
+    #[test]
+    fn passive_entry_stops_when_phase_1_ends_the_game() {
+        use crate::strategy::recorder::{lockable, lockable_row, ShunsPoints};
+        let (all, ended) = passive_entry(
+            &ShunsPoints,
+            &lockable(),
+            &[lockable_row(1)],
+            [6, 6, 1, 1, 1, 1],
+            0,
+            Some(Mark { row: 0, number: 12 }),
+        );
+        assert!(ended);
+        assert_eq!(all[1].strikes, 0, "no colour phase: {all:?}");
+        assert_eq!(all[1].row_totals(), [0, lockable().row_totals()[0] + 2, 0, 0]);
+    }
+
+    #[test]
+    fn my_lock_closes_the_row_before_the_active_colour_phase() {
+        use crate::strategy::recorder::{lockable, Points};
+        // The active player has red 2..4 and takes the red 7 in its colour
+        // phase unless my white 12 has locked red.
+        let mut active = State::default();
+        for n in 2..=4 {
+            active.apply_mark(Mark { row: 0, number: n });
+        }
+        let dice = [6, 6, 1, 1, 1, 1];
+        let red = |m| passive_entry(&Points, &lockable(), &[active], dice, 0, m).0[1].row_totals()[0];
+        assert_eq!(red(None), 4);
+        assert_eq!(red(Some(Mark { row: 0, number: 12 })), 3);
+    }
+
+    #[test]
+    fn search_values_passive_candidates_by_the_lookahead() {
+        use crate::strategy::recorder::{lockable, lockable_row, Points};
+        use crate::strategy::{Lookahead, NoLock};
+        // My red lock ties the opponent's simultaneous yellow lock into a
+        // game end I lose (it leads on green and blue).
+        let mut active = lockable_row(1);
+        for row in [2, 3] {
+            for n in (8..=12).rev() {
+                active.apply_mark(Mark { row, number: n });
+            }
+        }
+        let (me, opps, dice) = (lockable(), [active], [6, 6, 1, 1, 1, 1]);
+        let red12 = Some(Mark { row: 0, number: 12 });
+        for search_passive in [false, true] {
+            let cfg = SearchConfig {
+                search_passive,
+                ..Default::default()
+            };
+            let mut plain = SearchBot::with_config(NoLock(Points), cfg.clone());
+            plain.force = true;
+            let mut looking = SearchBot::with_config(NoLock(Lookahead(Points)), cfg);
+            looking.force = true;
+            if !search_passive {
+                assert_eq!(plain.passive_phase1(&me, &opps, dice, 0), red12);
+            }
+            assert_ne!(
+                looking.passive_phase1(&me, &opps, dice, 0),
+                red12,
+                "search {search_passive}"
+            );
+        }
+    }
+
+    #[test]
     fn passive_search_off_matches_static_pipeline() {
         let mut bot = SearchBot::with_config(test_bot(), SearchConfig::legacy());
         bot.force = true;
@@ -1363,7 +1391,7 @@ mod tests {
         for state in [State::default(), mid] {
             for dice in [[3, 4, 2, 3, 5, 1], [1, 1, 6, 6, 6, 6], [6, 5, 1, 2, 3, 4]] {
                 let opps = [mid];
-                let expected = passive_phase1_impl(&bot.bot, &state, &opps, dice);
+                let expected = crate::strategy::passive_phase1_impl(&bot.bot, &state, &opps, dice);
                 assert_eq!(bot.passive_phase1(&state, &opps, dice, 0), expected);
             }
         }

@@ -15,7 +15,7 @@ use crate::game::{Game, Player};
 use crate::state::{Mark, State};
 use crate::strategy::search::{phase2_entry, rollout_final_states, WinProb};
 use crate::strategy::sim::SimGame;
-use crate::strategy::{active_phase1_impl, active_phase2_impl, passive_phase1_impl, Bot, Strategy};
+use crate::strategy::{active_phase1_impl, active_phase2_impl, passive_decide, Bot, Strategy};
 use burn::{
     backend::Autodiff,
     module::AutodiffModule,
@@ -210,11 +210,11 @@ impl<B: Bot> Strategy for Recorder<B> {
         mark
     }
 
-    fn passive_phase1(&mut self, state: &State, opp_states: &[State], dice: [u8; 6], _active: usize) -> Option<Mark> {
+    fn passive_phase1(&mut self, state: &State, opp_states: &[State], dice: [u8; 6], active: usize) -> Option<Mark> {
         if state.generate_white_moves(dice[0] + dice[1]).is_empty() {
             return None;
         }
-        let mark = passive_phase1_impl(&self.bot, state, opp_states, dice);
+        let mark = passive_decide(&self.bot, state, opp_states, dice, active);
         self.record(after(state, mark, *state), opp_states);
         mark
     }
@@ -563,7 +563,7 @@ impl<B: Bot> Strategy for TurnEnds<B> {
         if !self.keep(|b, m| capture_passive(b, state, opp_states, dice, active, m)) && self.locks {
             self.keep(|b, _| capture_lock_passive(b, state, opp_states, dice, active));
         }
-        passive_phase1_impl(&self.bot, state, opp_states, dice)
+        passive_decide(&self.bot, state, opp_states, dice, active)
     }
 }
 
@@ -1595,5 +1595,36 @@ mod tests {
         // capture takes it and the lock capture does not repeat it.
         assert_eq!(captured(false), 1);
         assert_eq!(captured(true), 1);
+    }
+
+    #[test]
+    fn data_games_play_the_bots_own_passive_decision() {
+        use crate::strategy::recorder::{lockable, lockable_row, Points};
+        use crate::strategy::{Lookahead, NoLock};
+        // My red lock and the opponent's simultaneous yellow lock end the
+        // game, and I lose: only the lookahead sees it.
+        let mut active = lockable_row(1);
+        for row in [2, 3] {
+            for n in (8..=12).rev() {
+                active.apply_mark(Mark { row, number: n });
+            }
+        }
+        let (me, opps, dice) = (lockable(), [active], [6, 6, 1, 1, 1, 1]);
+        let red12 = Some(Mark { row: 0, number: 12 });
+        let bot = NoLock(Lookahead(Points));
+        let mut turn_ends = TurnEnds {
+            bot: bot.clone(),
+            recorded: Default::default(),
+            capture: None,
+            locks: false,
+        };
+        assert_ne!(turn_ends.passive_phase1(&me, &opps, dice, 0), red12);
+        let mut recorder = Recorder {
+            bot: bot.clone(),
+            epsilon: 0.0,
+            rng: SmallRng::seed_from_u64(0),
+            recorded: Default::default(),
+        };
+        assert_ne!(recorder.passive_phase1(&me, &opps, dice, 0), red12);
     }
 }

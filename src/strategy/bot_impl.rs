@@ -200,6 +200,123 @@ pub(crate) fn mark_choices_with(
 
 // ---------------------------------------------------------------------------
 
+/// The deciding bot's own passive decision: with
+/// [`Bot::passive_lookahead`], each candidate is valued at the end of the
+/// active player's turn ([`passive_lookahead_values`]); otherwise the plain
+/// [`passive_phase1_impl`]. Predicted opponents never look ahead: they go
+/// through the plain pipeline.
+pub(crate) fn passive_decide(
+    bot: &impl Bot,
+    state: &State,
+    opp_states: &[State],
+    dice: [u8; 6],
+    active_player: usize,
+) -> Option<Mark> {
+    match passive_phase1_choices_with(state, opp_states, dice, bot.force_lock()) {
+        Decision::Choices(cands) if bot.passive_lookahead() => {
+            let marks: Vec<Option<Mark>> = cands.iter().map(|(m, _)| *m).collect();
+            let values = passive_lookahead_values(bot, state, opp_states, dice, active_player, &marks);
+            marks[argmax(&values)]
+        }
+        d => eval_decision_next(bot, d, opp_states, Next::Me),
+    }
+}
+
+/// Each passive candidate `marks[i]` valued at the end of the active
+/// player's turn, completed by [`passive_turn_ends`]: a finished game by its
+/// result ([`Bot::terminal_value`]), otherwise by the net in the frame of
+/// whoever moves next.
+pub(crate) fn passive_lookahead_values(
+    bot: &impl Bot,
+    state: &State,
+    opp_states: &[State],
+    dice: [u8; 6],
+    active_player: usize,
+    marks: &[Option<Mark>],
+) -> Vec<f32> {
+    let ends = passive_turn_ends(bot, state, opp_states, dice, active_player, marks);
+    let n = opp_states.len() + 1;
+    let next = if (active_player + 2) % n == 0 {
+        Next::Me
+    } else {
+        Next::Opp
+    };
+    let groups: Vec<(&[State], &[State], Next)> = ends
+        .iter()
+        .filter(|(_, ended)| !ended)
+        .map(|(all, _)| (&all[..1], &all[1..], next))
+        .collect();
+    let mut leaves = bot.evaluate_batch_multi_next(&groups).into_iter().map(|v| v[0]);
+    ends.iter()
+        .map(|(all, ended)| {
+            if *ended {
+                bot.terminal_value(all)
+            } else {
+                leaves.next().unwrap()
+            }
+        })
+        .collect()
+}
+
+/// The rest of the turn after each passive candidate `marks[i]`, in the
+/// engine's order (`Game::play`). Every other player's phase-1 mark is
+/// decided once, from the boards before phase 1, since phase 1 is
+/// simultaneous and none of them sees ours. It is applied with ours and
+/// locks propagate. Then, unless the game is over, the active player's
+/// phase 2 is decided against the boards it now sees, and locks propagate
+/// again. Returns (`[us, opps...]`, game ended) per candidate.
+/// `active_player` indexes `opp_states`, as in `Strategy::passive_phase1`.
+/// Every prediction is the bot's plain decision (no lookahead).
+pub(crate) fn passive_turn_ends(
+    bot: &impl Bot,
+    state: &State,
+    opp_states: &[State],
+    dice: [u8; 6],
+    active_player: usize,
+    marks: &[Option<Mark>],
+) -> Vec<(Vec<State>, bool)> {
+    use super::sim::SimGame;
+    let n = opp_states.len() + 1;
+    let active = active_player + 1;
+    let pre: Vec<State> = std::iter::once(*state).chain(opp_states.iter().copied()).collect();
+    let phase1: Vec<Option<Mark>> = (1..n)
+        .map(|j| {
+            let view = SimGame::opp_view(&pre, j);
+            if j == active {
+                active_phase1_impl(bot, &pre[j], &view, dice)
+            } else {
+                passive_phase1_impl(bot, &pre[j], &view, dice)
+            }
+        })
+        .collect();
+    let active_marked = phase1[active - 1].is_some();
+    marks
+        .iter()
+        .map(|&mark| {
+            let mut all = pre.clone();
+            for (j, m) in std::iter::once(mark).chain(phase1.iter().copied()).enumerate() {
+                if let Some(m) = m {
+                    all[j].apply_mark(m);
+                }
+            }
+            SimGame::propagate_locks(&mut all);
+            if SimGame::game_over(&all) {
+                return (all, true);
+            }
+            let view = SimGame::opp_view(&all, active);
+            let d = active_phase2_choices_with(&all[active], &view, dice, active_marked, bot.force_lock());
+            match eval_decision(bot, d, &view) {
+                Some(m) => all[active].apply_mark(m),
+                None if !active_marked => all[active].apply_strike(),
+                None => {}
+            }
+            SimGame::propagate_locks(&mut all);
+            let ended = SimGame::game_over(&all);
+            (all, ended)
+        })
+        .collect()
+}
+
 pub fn passive_phase1_choices(state: &State, opp_states: &[State], dice: [u8; 6]) -> Decision {
     passive_phase1_choices_with(state, opp_states, dice, true)
 }
@@ -420,9 +537,9 @@ impl<T: Bot + std::fmt::Debug> super::Strategy for T {
         state: &State,
         opp_states: &[State],
         dice: [u8; 6],
-        _active_player: usize,
+        active_player: usize,
     ) -> Option<Mark> {
-        passive_phase1_impl(self, state, opp_states, dice)
+        passive_decide(self, state, opp_states, dice, active_player)
     }
 }
 
@@ -530,5 +647,93 @@ mod tests {
         assert_eq!(nexts(&bot), [Next::Me, Next::Opp]);
         assert!(eval_decision(&bot, passive_phase1_choices(&state, &opps, dice), &opps).is_some());
         assert_eq!(nexts(&bot), [Next::Opp], "eval_decision is the opponent-next case");
+    }
+
+    /// Me: red can lock with a white 12. The active opponent: yellow can lock
+    /// with it too, and green and blue have five marks each, so it leads.
+    fn race() -> (State, [State; 1], [u8; 6]) {
+        use crate::strategy::recorder::{lockable, lockable_row};
+        let mut active = lockable_row(1);
+        for row in [2, 3] {
+            for n in (8..=12).rev() {
+                active.apply_mark(Mark { row, number: n });
+            }
+        }
+        (lockable(), [active], [6, 6, 1, 1, 1, 1])
+    }
+
+    #[test]
+    fn lookahead_declines_a_lock_that_ends_the_game_in_a_loss() {
+        use crate::strategy::recorder::Points;
+        use crate::strategy::{Lookahead, NoLock};
+        let (me, opps, dice) = race();
+        let red12 = Some(Mark { row: 0, number: 12 });
+        // Against the board before its turn, my lock is the most points...
+        assert_eq!(passive_decide(&NoLock(Points), &me, &opps, dice, 0), red12);
+        // ...but the opponent locks yellow with the same white 12: two locks
+        // end the game before its colour phase, and I am behind.
+        let pick = passive_decide(&NoLock(Lookahead(Points)), &me, &opps, dice, 0);
+        assert_ne!(pick, red12);
+        assert!(pick.is_some(), "a mark still beats skipping");
+    }
+
+    #[test]
+    fn a_turn_that_ends_the_game_is_valued_by_its_result() {
+        use crate::strategy::recorder::Points;
+        use crate::strategy::{Lookahead, NoLock};
+        let (me, opps, dice) = race();
+        let bot = NoLock(Lookahead(Points));
+        let red12 = Some(Mark { row: 0, number: 12 });
+        let green12 = Some(Mark { row: 2, number: 12 });
+        let values = passive_lookahead_values(&bot, &me, &opps, dice, 0, &[red12, green12]);
+        assert_eq!(values[0], -50.0, "a loss");
+        assert!(values[1] > -50.0 && values[1] < 0.0, "{values:?}");
+    }
+
+    #[test]
+    fn a_turn_that_goes_on_is_valued_in_the_next_movers_frame() {
+        use crate::strategy::recorder::Framed;
+        use crate::strategy::Lookahead;
+        let dice = [3, 4, 2, 5, 6, 2];
+        let me = State::default();
+        let skip = [None];
+        // Two players: I move after the active player.
+        let two = passive_lookahead_values(&Lookahead(Framed), &me, &[State::default()], dice, 0, &skip);
+        assert_eq!(two, [1.0]);
+        // Three players, the first opponent active: the second one is next.
+        let three = [State::default(); 2];
+        assert_eq!(
+            passive_lookahead_values(&Lookahead(Framed), &me, &three, dice, 0, &skip),
+            [-1.0]
+        );
+        // The second opponent active: I am next.
+        assert_eq!(
+            passive_lookahead_values(&Lookahead(Framed), &me, &three, dice, 1, &skip),
+            [1.0]
+        );
+    }
+
+    #[test]
+    fn a_predicted_opponent_reply_never_looks_ahead() {
+        use crate::strategy::Lookahead;
+        let (state, opps) = (State::default(), [State::default()]);
+        let dice = [3, 4, 2, 5, 6, 2];
+        let plain = Recorder::default();
+        active_phase1_impl(&plain, &state, &opps, dice);
+        let looking = Lookahead(Recorder::default());
+        active_phase1_impl(&looking, &state, &opps, dice);
+        assert_eq!(looking.0.take(), plain.take());
+    }
+
+    #[test]
+    fn without_lookahead_a_passive_decision_is_the_plain_one() {
+        let bot = Recorder::default();
+        let (state, opps) = (State::default(), [State::default()]);
+        let dice = [3, 4, 2, 5, 6, 2];
+        assert_eq!(
+            passive_decide(&bot, &state, &opps, dice, 0),
+            passive_phase1_impl(&bot, &state, &opps, dice)
+        );
+        assert_eq!(nexts(&bot), [Next::Me, Next::Me]);
     }
 }

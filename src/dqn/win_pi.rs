@@ -12,7 +12,7 @@ use crate::dqn::win_train::{bench_vs_pair, outcome, rollout_round_by, train_epoc
 use crate::dqn::MyBackend;
 use crate::game::{Game, Player};
 use crate::strategy::search::GATE_MARGIN;
-use crate::strategy::{Bot, ForceLock, NoLock, Strategy};
+use crate::strategy::{Bot, Rules, Strategy};
 use burn::{module::AutodiffModule, prelude::*, record::CompactRecorder};
 use rand::{rngs::SmallRng, SeedableRng};
 use rayon::prelude::*;
@@ -155,23 +155,23 @@ pub fn run_gate<A: Bot + Clone + 'static, B: Bot + Clone + 'static>(
 
 /// `win-gate`: `games` paired games (both seats per dice set) of the win
 /// net in dir `a` against the win net in dir `b`, or Master from
-/// `pair_dir` when `b` is "master". `a_rule` / `b_rule` override that
-/// side's safe-lock rule: `None` plays its default (off for a win net, on
-/// for Master), `Some(true)` forces it ([`ForceLock`]), `Some(false)`
-/// drops it ([`NoLock`]). Returns (games played, a's share, z).
+/// `pair_dir` when `b` is "master". `a_rules` / `b_rules` override that
+/// side's safe-lock rule (off for a win net, on for Master) and passive
+/// lookahead (on for a win net, off for Master); `None` keeps the default.
+/// Returns (games played, a's share, z).
 pub fn win_gate(
     a: &str,
     b: &str,
     games: usize,
     seed: u64,
     pair_dir: &str,
-    a_rule: Option<bool>,
-    b_rule: Option<bool>,
+    a_rules: Overrides,
+    b_rules: Overrides,
 ) -> (usize, f64, f64) {
     fn against<A: Bot + Clone + Sync + 'static>(
         a: A,
         b: &str,
-        b_rule: Option<bool>,
+        b_rules: Overrides,
         pairs: u64,
         seed: u64,
         pair_dir: &str,
@@ -179,29 +179,32 @@ pub fn win_gate(
         let a = || a.clone();
         if b == "master" {
             // The pair bot is built per worker thread.
-            let pair = || PairStrategy::load(pair_dir);
-            return match b_rule {
-                None => head_to_head(&a, &pair, 0..pairs, seed),
-                Some(true) => head_to_head(&a, &|| ForceLock(pair()), 0..pairs, seed),
-                Some(false) => head_to_head(&a, &|| NoLock(pair()), 0..pairs, seed),
-            };
+            return head_to_head(&a, &|| b_rules.on(PairStrategy::load(pair_dir)), 0..pairs, seed);
         }
         let b = WinStrategy::load(b);
-        match b_rule {
-            None => head_to_head(&a, &|| b.clone(), 0..pairs, seed),
-            Some(true) => head_to_head(&a, &|| ForceLock(b.clone()), 0..pairs, seed),
-            Some(false) => head_to_head(&a, &|| NoLock(b.clone()), 0..pairs, seed),
-        }
+        head_to_head(&a, &|| b_rules.on(b.clone()), 0..pairs, seed)
     }
     let pairs = (games / 2) as u64;
-    let a = WinStrategy::load(a);
-    let scores = match a_rule {
-        None => against(a, b, b_rule, pairs, seed, pair_dir),
-        Some(true) => against(ForceLock(a), b, b_rule, pairs, seed, pair_dir),
-        Some(false) => against(NoLock(a), b, b_rule, pairs, seed, pair_dir),
-    };
+    let a = a_rules.on(WinStrategy::load(a));
+    let scores = against(a, b, b_rules, pairs, seed, pair_dir);
     let (_, share, z) = gate_decision(&scores, f64::INFINITY, true);
     (scores.len() * 2, share, z)
+}
+
+/// A gate side's rules: `None` keeps the bot's own (see [`Rules`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Overrides {
+    /// The safe-lock rule.
+    pub lock: Option<bool>,
+    /// The passive lookahead.
+    pub lookahead: Option<bool>,
+}
+
+impl Overrides {
+    /// `bot` under these rules.
+    pub fn on<B>(self, bot: B) -> Rules<B> {
+        Rules(bot, self.lock, self.lookahead)
+    }
 }
 
 /// Learning rate of a from-scratch round 1 (no `--init`), as `win-fit`.
@@ -868,15 +871,28 @@ mod tests {
         let mcfg = WinModelConfig::new().with_width(4).with_thermo(Some(true));
         save_win(&dir, &mcfg, &mcfg.init::<MyBackend>(&device));
         let gate = |a: &str, b: &str, n, ar, br| win_gate(a, b, n, 7, "pair_model", ar, br);
-        assert_eq!(gate(&dir, &dir, 8, None, None), (8, 0.5, 0.0));
-        // A win net plays without the rule by default: dropping it again
-        // changes nothing.
-        assert_eq!(gate(&dir, &dir, 8, Some(false), None), (8, 0.5, 0.0));
-        assert_eq!(gate(&dir, &dir, 8, Some(true), Some(true)), (8, 0.5, 0.0));
-        let (games, share, _) = gate(&dir, &dir, 8, Some(true), None);
-        assert!(games == 8 && (0.0..=1.0).contains(&share));
-        for rule in [None, Some(true), Some(false)] {
-            let (games, share, _) = gate(&dir, "master", 4, None, rule);
+        let lock = |on| Overrides {
+            lock: on,
+            lookahead: None,
+        };
+        let look = |on| Overrides {
+            lock: None,
+            lookahead: on,
+        };
+        let none = Overrides::default();
+        assert_eq!(gate(&dir, &dir, 8, none, none), (8, 0.5, 0.0));
+        // A win net plays without the rule and looks ahead by default:
+        // asking for either again changes nothing.
+        assert_eq!(gate(&dir, &dir, 8, lock(Some(false)), none), (8, 0.5, 0.0));
+        assert_eq!(gate(&dir, &dir, 8, lock(Some(true)), lock(Some(true))), (8, 0.5, 0.0));
+        assert_eq!(gate(&dir, &dir, 8, look(Some(true)), none), (8, 0.5, 0.0));
+        assert_eq!(gate(&dir, &dir, 8, look(Some(false)), look(Some(false))), (8, 0.5, 0.0));
+        for a in [lock(Some(true)), look(Some(false))] {
+            let (games, share, _) = gate(&dir, &dir, 8, a, none);
+            assert!(games == 8 && (0.0..=1.0).contains(&share));
+        }
+        for b in [none, lock(Some(true)), lock(Some(false)), look(Some(true))] {
+            let (games, share, _) = gate(&dir, "master", 4, none, b);
             assert!(games == 4 && (0.0..=1.0).contains(&share));
         }
         std::fs::remove_dir_all(&base).unwrap();
