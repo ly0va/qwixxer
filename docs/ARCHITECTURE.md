@@ -454,13 +454,13 @@ times every call into the bot (all three decision phases, including trivial
 ones). Besides the web bots it takes `win` and `win_search`, the win net and
 its search, which the UI does not offer yet.
 
-2026-10-21, `opt-level = 3`, `-C target-feature=+simd128`, `wasm-opt -O3`
+2026-10-22 (win-search; the other rows 2026-10-21), `opt-level = 3`, `-C target-feature=+simd128`, `wasm-opt -O3`
 (`.wasm` 2.1 MB):
 
 | Bot | Decisions | mean ms | p50 ms | p95 ms | max ms |
 |---|---|---|---|---|---|
 | Master+ (pair-search, `MASTER_PLUS_SPEC = ""`) | 291 | 7.11 | 0.07 | 38.48 | 109.76 |
-| win-search (`SearchConfig::win()`, gate 0.05) | 290 | 15.13 | 0.16 | 91.94 | 328.81 |
+| win-search (`SearchConfig::win()`: gate 0.05, `noendgame`, `gapcands`) | 290 | 12.93 | 0.09 | 82.83 | 345.65 |
 | Master (pair net) | 297 | 0.03 | 0.02 | 0.10 | 1.22 |
 | win | 294 | 0.15 | 0.09 | 0.42 | 1.76 |
 | Student (GA champion) | 297 | 0.01 | 0.00 | 0.03 | 1.02 |
@@ -478,7 +478,10 @@ build, Master+ / win-search: `z` + simd 21.5 / 106, `s` + simd 20.3 / 92,
 `2` + simd 9.3 / 65, `3` + simd 7.1 / 22. Later exact changes took
 win-search to 19.45 / 92.21 / 328.50 (ReLU as a comparison, globals-only
 inputs), then the win-search gate of 0.05 (same moves; see EXPERIMENTS,
-"Win-search gate") to the row above. The bar is p95 ≤ 400 ms and max
+"Win-search gate") to 15.13 / 91.94 / 328.81, then dropping its endgame
+gate and shortlisting by the gate (EXPERIMENTS, "Endgame gate: dropped",
+"Shortlist by the gate") to the row above; the slowest decisions are
+close ones, which both still search. The bar is p95 ≤ 400 ms and max
 ≤ 2500 ms.
 
 ### Frontend (`web/src/`)

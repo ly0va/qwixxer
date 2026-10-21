@@ -2510,3 +2510,133 @@ Pair-search and training-data capture keep 0.15. `bench win-search ga -n
 120`: 77/40/3 as before, 6 → 8 games/s; wasm mean 19.2 → 15.1 ms, p50
 7.0 → 0.16 ms, p95 and max unchanged (the slow decisions are the close
 ones, still searched).
+
+### Where search overrules the net
+
+`examples/search_disagreements.rs` (`2ae6940`) plays win-search self-play
+games with the search log on (`SearchStats::search_log`: every searched
+decision with its shortlist, static values, blended scores and pick) and
+breaks the overrules down. 2000 games under the then production config
+(gate 0.05, endgame gate on): 48,816 searches, 3,553 overrules (7.3%),
+0.89 per seat-game.
+
+- **Near-ties.** Static gap between the net's pick and search's: median
+  0.006 probit (all searches 0.047); search's own margin: median 0.002
+  P(win), p90 0.015. Summed, about 0.55pp of win rate per seat-game by
+  search's own estimate.
+- **Open, even positions.** Overrule rate 12% under 20 marks on the two
+  boards, 3% from 40; about 10% at scores within ±7, 3% beyond ±20; 11%
+  with no row locked, 3% with one. Even across contexts (active white
+  6.8%, active colour 7.4%, passive 7.6%).
+- **No direction.** The commonest overrule is the same kind of move in
+  another row. Taking a white mark or not flips both ways in similar
+  numbers (passive skip-1 → pass 264, the reverse 197). The overrule rate
+  rises with cells skipped by the net's pick (5.7% at none, 13.5% at three
+  or more), but search moves towards such moves as often as away. Locks
+  are almost never overruled (7 of 1,802).
+- **The endgame gate earns little.** By which gate fired:
+
+| gate | searches | overrules | search's estimated gain |
+|---|---:|---:|---:|
+| close only | 21,466 | 2,769 | 13.2 |
+| close and endgame | 4,006 | 645 | 7.9 |
+| endgame only | 23,344 | 139 | 1.5 |
+
+So the net's remaining error is uncertainty between moves it already
+rates nearly equal, not a bias new labels could correct. Mining these
+positions for training would not help either: at 64 rollouts the label
+noise on a candidate difference (0.051) is about 25× the median margin,
+and at 512 samples search's own SE on the gap (0.0026) exceeds it, so
+many overrules are search noise.
+
+### Endgame gate: dropped for win-search
+
+Search also ran, whatever the static gap, once a row was locked, a board
+had 3 strikes, or a shortlisted candidate locked. For win-search that was
+48% of all searches for 0.6% overrules and about 7% of search's
+estimated gain (≈ 0.04pp per seat-game). By the static top-two gap of
+those endgame-only searches (`67586e7`):
+
+| gap (probit) | searches | overrules | gain |
+|---|---:|---:|---:|
+| 0.05–0.10 | 2,453 | 64 | 0.50 |
+| 0.10–0.20 | 5,058 | 39 | 0.46 |
+| 0.20–0.30 | 4,287 | 17 | 0.24 |
+| 0.30–0.50 | 5,126 | 11 | 0.16 |
+| 0.50–1.00 | 4,950 | 6 | 0.10 |
+| over 1.00 | 1,470 | 2 | 0.06 |
+
+`SearchConfig::win()` now gates on the probit gap alone (`noendgame`;
+`d31e7eb`); pair-search keeps the endgame gate. Rerun of the probe: 25,447
+searches (−48%), 3,407 overrules (−146, matching the 139 endgame-only
+ones). Local `bench win-search-exp ga -n 120`: same games, 10 → 17
+games/s.
+
+Why probits and not P(win) for the gap: the gate asks whether the net's
+ranking is in doubt, and the net is trained and errs on the probit
+scale. A fixed P(win) gap would search nearly every decision in a decided
+position (0.02 P(win) at |z| = 2.5 is ≈ 1.1 probit), where the stake is
+smallest.
+
+### Shortlist by the gate
+
+Phase 27 searched the top 3 candidates, the third whatever its gap.
+Rerun of the probe with the endgame gate off (`5632172`; the log now
+keeps every candidate's static value and the samples each searched one
+got):
+
+Candidates within a gap of the best, all candidates counted:
+
+| within | 2 | 3 | 4 | 5+ |
+|---|---:|---:|---:|---:|
+| 0.05 | 87.4% | 12.0% | 0.5% | 5 searches |
+| 0.1 | 76.0% | 21.9% | 2.0% | 0.1% |
+| 0.2 | 54.1% | 38.1% | 7.1% | 0.7% |
+
+The third shortlisted candidate (21,456 searches) by its gap; gain is
+search's estimate over the better of the top two, samples are the
+third's against each of the top two's:
+
+| third's gap | searches | third picked | gain | samples |
+|---|---:|---:|---:|---|
+| < 0.05 | 3,196 | 94 | 0.179 | 129 / 265 |
+| 0.05–0.10 | 2,908 | 5 | 0.029 | 47 / 225 |
+| 0.10–0.20 | 5,585 | 1 | 0.002 | 33 / 234 |
+| 0.20–0.50 | 8,246 | 0 | 0 | 32 / 238 |
+| ≥ 0.50 | 1,521 | 0 | 0 | 32 / 199 |
+
+Phase 27's gain from a third candidate is almost all inside the gate.
+Win-search now shortlists the candidates within the gate, at least 2 and
+at most 4 (`gapcands`, `cands=4`; `912512f`); pair-search keeps the top
+3. Local `bench win-search-exp ga -n 240`: same games, 24s → 20s.
+
+Neither change has a large bench yet. By search's own estimate together
+they cost under 0.05pp per seat-game; to check,
+`QWIXXER_SEARCH_B=endgame,nogapcands,cands=3` is the previous win-search.
+
+### Blend: 0.7 stays
+
+λ = 0.5, 0.85 and 1 (user, big machine, 20k games each): all within
+noise, shares 48.7–49.1% with about 2.2% ties (exact bench lines not
+recorded). Overrules are near-ties, so the weighting barely changes
+picks. Production keeps `BLEND` = 0.7.
+
+### Round 4: no gain; the net is at its fixed point
+
+`win-data` from the current champion (`win_data_r4`), then a from-scratch
+fit (`arm_t2`, recipe above). `win-eval` on r4 (127,550 decisions):
+
+| | own error | picks best-labelled | mean regret | win excess (floor 0.00733) |
+|---|---|---:|---:|---:|
+| `arm_t2` | 0.0111 ± 0.0005 | 73.9% | 0.0100 | 0.00781 |
+| `win_model` | 0.0115 ± 0.0005 | 74.3% | 0.0100 | 0.00782 |
+
+Level. Capacity is not the limit either: W48 played level with W64
+(above), and the champion's train and held-out excess end together
+(0.00779 / 0.00784 in `win_model/fit.csv`), 0.0005 above the noise
+floor. The labels are the net's own rollouts, so each round teaches it to
+predict its own play; once it does, a new round has nothing to add.
+Going further needs labels that see further than the net (e.g. rollouts
+played by win-search), at far higher cost per label and still against
+near-tie margins. **`win_model` stays the champion**; remaining work on
+win-search is speed.
