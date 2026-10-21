@@ -58,8 +58,8 @@ impl std::fmt::Display for BotType {
             BotType::Dqn => write!(f, "DQN"),
             BotType::Pair => write!(f, "PAIR"),
             BotType::PairSearch => write!(f, "PAIR-SEARCH"),
-            BotType::PairSearchExp => write!(f, "PAIR-SEARCH[{}]", exp_search_config("QWIXXER_SEARCH")),
-            BotType::PairSearchExpB => write!(f, "PAIR-SEARCH-B[{}]", exp_search_config("QWIXXER_SEARCH_B")),
+            BotType::PairSearchExp => write!(f, "PAIR-SEARCH[{}]", exp_search_config(self)),
+            BotType::PairSearchExpB => write!(f, "PAIR-SEARCH-B[{}]", exp_search_config(self)),
             BotType::PairAlt => write!(f, "PAIR({})", alt_model_dir()),
             BotType::PairSearchAlt => write!(f, "PAIR-SEARCH({})", alt_model_dir()),
             BotType::Win => write!(f, "WIN({})", win_model_dir()),
@@ -68,8 +68,8 @@ impl std::fmt::Display for BotType {
             BotType::WinSearchLock => write!(f, "WIN-SEARCH-LOCK({})", win_model_dir()),
             BotType::WinPlain => write!(f, "WIN-PLAIN({})", win_model_dir()),
             BotType::WinSearchPlain => write!(f, "WIN-SEARCH-PLAIN({})", win_model_dir()),
-            BotType::WinSearchExp => write!(f, "WIN-SEARCH[{}]", exp_search_config("QWIXXER_SEARCH")),
-            BotType::WinSearchExpB => write!(f, "WIN-SEARCH-B[{}]", exp_search_config("QWIXXER_SEARCH_B")),
+            BotType::WinSearchExp => write!(f, "WIN-SEARCH[{}]", exp_search_config(self)),
+            BotType::WinSearchExpB => write!(f, "WIN-SEARCH-B[{}]", exp_search_config(self)),
             BotType::Mcts => write!(f, "MCTS"),
             BotType::Opportunist => write!(f, "Opportunist"),
             BotType::Conservative => write!(f, "Conservative"),
@@ -97,23 +97,21 @@ fn make_strategy(bot: &BotType) -> Box<dyn strategy::Strategy> {
         ))),
         BotType::PairSearchExp | BotType::PairSearchExpB => Box::new(strategy::search::SearchBot::with_config(
             dqn::pair::PairStrategy::load("pair_model"),
-            exp_search_config(exp_env(bot)),
+            exp_search_config(bot),
         )),
         BotType::Win => Box::new(dqn::win::WinStrategy::load(&win_model_dir())),
-        BotType::WinSearch => Box::new(strategy::search::SearchBot::new(dqn::win::WinStrategy::load(
-            &win_model_dir(),
-        ))),
+        BotType::WinSearch => Box::new(win_search(dqn::win::WinStrategy::load(&win_model_dir()))),
         BotType::WinLock => Box::new(strategy::ForceLock(dqn::win::WinStrategy::load(&win_model_dir()))),
-        BotType::WinSearchLock => Box::new(strategy::search::SearchBot::new(strategy::ForceLock(
-            dqn::win::WinStrategy::load(&win_model_dir()),
-        ))),
+        BotType::WinSearchLock => Box::new(win_search(strategy::ForceLock(dqn::win::WinStrategy::load(
+            &win_model_dir(),
+        )))),
         BotType::WinPlain => Box::new(strategy::PlainPassive(dqn::win::WinStrategy::load(&win_model_dir()))),
-        BotType::WinSearchPlain => Box::new(strategy::search::SearchBot::new(strategy::PlainPassive(
-            dqn::win::WinStrategy::load(&win_model_dir()),
-        ))),
+        BotType::WinSearchPlain => Box::new(win_search(strategy::PlainPassive(dqn::win::WinStrategy::load(
+            &win_model_dir(),
+        )))),
         BotType::WinSearchExp | BotType::WinSearchExpB => Box::new(strategy::search::SearchBot::with_config(
             dqn::win::WinStrategy::load(&win_model_dir()),
-            exp_search_config(exp_env(bot)),
+            exp_search_config(bot),
         )),
         BotType::Mcts => {
             let champion =
@@ -145,11 +143,23 @@ fn exp_env(bot: &BotType) -> &'static str {
     }
 }
 
-/// `SearchConfig` for `pair-search-exp[-b]` / `win-search-exp[-b]`, from env var `var`.
-fn exp_search_config(var: &str) -> strategy::search::SearchConfig {
+/// `SearchConfig` for `pair-search-exp[-b]` / `win-search-exp[-b]`, from
+/// its env var ([`exp_env`]), on top of that net's production search.
+fn exp_search_config(bot: &BotType) -> strategy::search::SearchConfig {
+    use strategy::search::SearchConfig;
+    let var = exp_env(bot);
     let spec =
         std::env::var(var).unwrap_or_else(|_| panic!("{var} must be set, e.g. {var}=passive,lock=256,strat,k=144"));
-    strategy::search::SearchConfig::parse(&spec).unwrap_or_else(|e| panic!("{var}: {e}"))
+    let base = match bot {
+        BotType::WinSearchExp | BotType::WinSearchExpB => SearchConfig::win(),
+        _ => SearchConfig::default(),
+    };
+    SearchConfig::parse_on(base, &spec).unwrap_or_else(|e| panic!("{var}: {e}"))
+}
+
+/// Production win-search ([`SearchConfig::win`]) on `bot`.
+fn win_search<B: strategy::search::WinProb>(bot: B) -> strategy::search::SearchBot<B> {
+    strategy::search::SearchBot::with_config(bot, strategy::search::SearchConfig::win())
 }
 
 struct StrategyTemplates {
@@ -295,7 +305,7 @@ impl StrategyTemplates {
                 let t = self.pair.as_ref().unwrap();
                 Box::new(strategy::search::SearchBot::with_config(
                     dqn::pair::PairStrategy::from_shared(t.model.clone(), t.device.clone()),
-                    exp_search_config(exp_env(bot)),
+                    exp_search_config(bot),
                 ))
             }
             BotType::PairAlt => {
@@ -310,18 +320,14 @@ impl StrategyTemplates {
                 )))
             }
             BotType::Win => Box::new(self.win.as_ref().unwrap().clone()),
-            BotType::WinSearch => Box::new(strategy::search::SearchBot::new(self.win.as_ref().unwrap().clone())),
+            BotType::WinSearch => Box::new(win_search(self.win.as_ref().unwrap().clone())),
             BotType::WinLock => Box::new(strategy::ForceLock(self.win.as_ref().unwrap().clone())),
-            BotType::WinSearchLock => Box::new(strategy::search::SearchBot::new(strategy::ForceLock(
-                self.win.as_ref().unwrap().clone(),
-            ))),
+            BotType::WinSearchLock => Box::new(win_search(strategy::ForceLock(self.win.as_ref().unwrap().clone()))),
             BotType::WinPlain => Box::new(strategy::PlainPassive(self.win.as_ref().unwrap().clone())),
-            BotType::WinSearchPlain => Box::new(strategy::search::SearchBot::new(strategy::PlainPassive(
-                self.win.as_ref().unwrap().clone(),
-            ))),
+            BotType::WinSearchPlain => Box::new(win_search(strategy::PlainPassive(self.win.as_ref().unwrap().clone()))),
             BotType::WinSearchExp | BotType::WinSearchExpB => Box::new(strategy::search::SearchBot::with_config(
                 self.win.as_ref().unwrap().clone(),
-                exp_search_config(exp_env(bot)),
+                exp_search_config(bot),
             )),
             BotType::Mcts => Box::new(mcts::MonteCarlo::with_ga(200, self.champion.as_ref().unwrap().clone())),
             BotType::Opportunist => Box::<strategy::Opportunist>::default(),

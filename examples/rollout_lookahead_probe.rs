@@ -10,7 +10,7 @@
 
 use qwixxer::dqn::win::WinStrategy;
 use qwixxer::game::{Game, Player};
-use qwixxer::strategy::search::{phi, LookaheadProbe, SearchBot, SearchStats, BLEND};
+use qwixxer::strategy::search::{phi, LookaheadProbe, SearchBot, SearchConfig, SearchStats, BLEND};
 use rand::rngs::SmallRng;
 use rand::SeedableRng;
 use rayon::prelude::*;
@@ -34,7 +34,7 @@ fn main() {
                 .collect();
             let players = (0..2)
                 .map(|p| {
-                    let mut bot = SearchBot::new(net.clone());
+                    let mut bot = SearchBot::with_config(net.clone(), SearchConfig::win());
                     bot.stats = Some(stats[p].clone());
                     Player::new(
                         Box::new(bot),

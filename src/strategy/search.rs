@@ -33,6 +33,11 @@ pub const K_SAMPLES_SEQ: usize = 512;
 pub const SEQ_START: usize = 32;
 /// Top-2 static value gap (bot's evaluate units) below which search triggers.
 pub const GATE_MARGIN: f32 = 0.15;
+/// Win-search's close-gate margin. Searches with a wider gap never overturned
+/// the win net's static pick (96 self-play games: the same 168 overturns at
+/// 0.05 as at 0.15 or when searching everything), so 0.05 plays the same
+/// moves for ~15% less work. Training-data capture keeps [`GATE_MARGIN`].
+pub const WIN_GATE_MARGIN: f32 = 0.05;
 /// Full turns simulated after completing the current turn, as a multiple of
 /// the player count (1 = one full round).
 pub const HORIZON_ROUNDS: usize = 1;
@@ -266,7 +271,20 @@ impl SearchConfig {
     /// `inf`), `gate=G` (close-gate margin ≥ 0), `rlook` (the passive
     /// lookahead inside rollouts). Empty = production.
     pub fn parse(spec: &str) -> Result<Self, String> {
-        let mut cfg = Self::default();
+        Self::parse_on(Self::default(), spec)
+    }
+
+    /// Production win-search: the default with [`WIN_GATE_MARGIN`].
+    pub fn win() -> Self {
+        Self {
+            gate: WIN_GATE_MARGIN,
+            ..Self::default()
+        }
+    }
+
+    /// [`SearchConfig::parse`] on top of `base` instead of the default.
+    pub fn parse_on(base: Self, spec: &str) -> Result<Self, String> {
+        let mut cfg = base;
         let num = |key: &str, v: &str| v.parse::<usize>().map_err(|e| format!("{key}={v}: {e}"));
         let real = |key: &str, v: &str, max: f32| match v.parse::<f32>() {
             Ok(x) if (0.0..=max).contains(&x) => Ok(x),
@@ -1621,6 +1639,22 @@ mod tests {
             ..Default::default()
         };
         SearchBot::with_config(test_bot(), cfg);
+    }
+
+    #[test]
+    fn the_win_search_config_is_production_with_a_narrower_gate() {
+        let win = SearchConfig::win();
+        assert_eq!(win.gate, WIN_GATE_MARGIN);
+        assert_eq!(
+            SearchConfig {
+                gate: GATE_MARGIN,
+                ..win
+            },
+            SearchConfig::default()
+        );
+        assert_eq!(SearchConfig::parse_on(win, ""), Ok(win));
+        assert_eq!(SearchConfig::parse_on(win, "blend=0.85").unwrap().gate, WIN_GATE_MARGIN);
+        assert_eq!(SearchConfig::parse_on(win, &win.to_string()), Ok(win));
     }
 
     #[test]

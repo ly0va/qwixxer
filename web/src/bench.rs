@@ -4,7 +4,7 @@
 use crate::bots::{make_bot, win, BotKind};
 use crate::session::{Phase, Session};
 use qwixxer::state::{Mark, State};
-use qwixxer::strategy::search::SearchBot;
+use qwixxer::strategy::search::{SearchBot, SearchConfig};
 use qwixxer::strategy::Strategy;
 use rand::rngs::SmallRng;
 use rand::seq::SliceRandom;
@@ -51,7 +51,7 @@ impl Strategy for Timed {
 fn bench_bot(bot: &str) -> Result<fn() -> Box<dyn Strategy>, String> {
     Ok(match bot {
         "win" => || Box::new(win()),
-        "win_search" => || Box::new(SearchBot::new(win())),
+        "win_search" => || Box::new(SearchBot::with_config(win(), SearchConfig::win())),
         _ => match BotKind::parse(bot)? {
             BotKind::MasterPlus => || make_bot(BotKind::MasterPlus),
             BotKind::Master => || make_bot(BotKind::Master),

@@ -2484,3 +2484,29 @@ latency).
 
 **Verdict:** not adopted; `rlook` stays off. Worth re-probing only with a
 net whose plain and lookahead passive decisions differ more.
+
+### Win-search gate: 0.05
+
+Search with the win net only ever overturns the static pick when the top
+two candidates are within about 0.03–0.05 (probit). 96 win-search
+self-play games, both seats, eligible decisions 5,561 (gaps: p25 0.062,
+p50 0.160, p75 0.270):
+
+| gate | searched | overturned | CPU |
+|---:|---:|---:|---:|
+| 1.0 (all) | 5,561 | 168 | |
+| 0.15 (`GATE_MARGIN`) | 3,582 | 168 | 319s |
+| 0.10 | 3,012 | 168 | |
+| 0.05 | 2,343 | 168 | 272s |
+| 0.03 | 2,044 | 165 | 245s |
+| 0 (endgame gate only) | 1,368 | 50 | |
+
+Every gate from 0.05 to 1.0 played the same games (`bench win-search-exp
+win-search` at `gate=0.10`: 0 sweeps either way). Rollouts last one
+round and end on the same net, so with blend 0.7 they cannot move a gap
+of 0.05 or more. Win-search now plays `SearchConfig::win()` (gate
+`WIN_GATE_MARGIN` = 0.05); `win-search-exp[-b]` specs start from it.
+Pair-search and training-data capture keep 0.15. `bench win-search ga -n
+120`: 77/40/3 as before, 6 → 8 games/s; wasm mean 19.2 → 15.1 ms, p50
+7.0 → 0.16 ms, p95 and max unchanged (the slow decisions are the close
+ones, still searched).
