@@ -248,6 +248,9 @@ pub struct SearchConfig {
     /// Rollout passive decisions valued at the end of the active player's
     /// turn when the bot looks ahead ([`Fidelity::LiteLookahead`](super::sim::Fidelity::LiteLookahead)).
     pub rollout_lookahead: bool,
+    /// Also search when the static gap is wide but the game nears its end
+    /// (a locked row, 3 strikes, or a candidate that locks).
+    pub endgame_gate: bool,
 }
 
 /// Production rollout/static blend weight (Phase 25).
@@ -271,6 +274,7 @@ impl Default for SearchConfig {
             gate: GATE_MARGIN,
             cands: SEARCH_CANDS,
             rollout_lookahead: false,
+            endgame_gate: true,
         }
     }
 }
@@ -298,15 +302,20 @@ impl SearchConfig {
     /// (sequential sampling from N up to k; `noseq` = fixed k), `cands=N`
     /// (candidates searched, ≥ 2), `stop=C` (sequential threshold, may be
     /// `inf`), `gate=G` (close-gate margin ≥ 0), `rlook` (the passive
-    /// lookahead inside rollouts). Empty = production.
+    /// lookahead inside rollouts), `endgame` / `noendgame` (the endgame
+    /// gate). Empty = production.
     pub fn parse(spec: &str) -> Result<Self, String> {
         Self::parse_on(Self::default(), spec)
     }
 
-    /// Production win-search: the default with [`WIN_GATE_MARGIN`].
+    /// Production win-search: the default with [`WIN_GATE_MARGIN`] and no
+    /// endgame gate. Endgame-only searches were 48% of all searches but
+    /// overturned 0.6% of picks, worth ~0.04pp per game by search's own
+    /// estimate (2000 self-play games, `examples/search_disagreements`).
     pub fn win() -> Self {
         Self {
             gate: WIN_GATE_MARGIN,
+            endgame_gate: false,
             ..Self::default()
         }
     }
@@ -329,6 +338,8 @@ impl SearchConfig {
                 None if tok == "noblend" => cfg.blend = None,
                 None if tok == "noseq" => cfg.seq = None,
                 None if tok == "rlook" => cfg.rollout_lookahead = true,
+                None if tok == "endgame" => cfg.endgame_gate = true,
+                None if tok == "noendgame" => cfg.endgame_gate = false,
                 Some(("k", v)) => cfg.k_samples = num("k", v)?,
                 Some(("lock", v)) => cfg.lock_k = Some(num("lock", v)?),
                 Some(("blend", v)) => cfg.blend = Some(real("blend", v, 1.0)?),
@@ -339,7 +350,7 @@ impl SearchConfig {
                 _ => {
                     return Err(format!(
                         "unknown search option {tok:?} (passive, nopassive, lock=N, nolock, strat, k=N, \
-                     blend=λ, noblend, seq=N, noseq, stop=C, gate=G, cands=N, rlook)"
+                     blend=λ, noblend, seq=N, noseq, stop=C, gate=G, cands=N, rlook, endgame, noendgame)"
                     ))
                 }
             }
@@ -385,6 +396,7 @@ impl std::fmt::Display for SearchConfig {
         if self.rollout_lookahead {
             write!(f, ",rlook")?;
         }
+        write!(f, "{}", if self.endgame_gate { "" } else { ",noendgame" })?;
         Ok(())
     }
 }
@@ -949,7 +961,7 @@ impl<B: WinProb> SearchBot<B> {
                 s.gate_endgame += 1;
             }
         }
-        if self.force || close || endgame {
+        if self.force || close || (endgame && self.cfg.endgame_gate) {
             Some((close, endgame))
         } else {
             None
@@ -966,7 +978,7 @@ impl<B: WinProb> SearchBot<B> {
         pick: usize,
         (close, endgame): (bool, bool),
     ) {
-        let (gated, disagreed) = (close || endgame, pick != 0);
+        let (gated, disagreed) = (close || (endgame && self.cfg.endgame_gate), pick != 0);
         if let Some(stats) = &self.stats {
             let mut s = stats.borrow_mut();
             if let Some(log) = s.search_log.as_mut() {
@@ -1717,18 +1729,50 @@ mod tests {
     }
 
     #[test]
-    fn the_win_search_config_is_production_with_a_narrower_gate() {
+    fn the_win_search_config_is_production_with_a_narrower_gate_and_no_endgame_gate() {
         let win = SearchConfig::win();
         assert_eq!(win.gate, WIN_GATE_MARGIN);
         assert_eq!(
             SearchConfig {
                 gate: GATE_MARGIN,
+                endgame_gate: true,
                 ..win
             },
             SearchConfig::default()
         );
         assert_eq!(SearchConfig::parse_on(win, ""), Ok(win));
         assert_eq!(SearchConfig::parse_on(win, "blend=0.85").unwrap().gate, WIN_GATE_MARGIN);
+        assert_eq!(SearchConfig::parse_on(win, &win.to_string()), Ok(win));
+    }
+
+    #[test]
+    fn win_search_gates_on_the_static_gap_alone() {
+        let mut locked_one = State::default();
+        for n in 2..=6 {
+            locked_one.apply_mark(Mark { row: 0, number: n });
+        }
+        locked_one.apply_mark(Mark { row: 0, number: 12 }); // locks red
+        let fresh = State::default();
+        let cand = |value: f32| Candidate {
+            mark: None,
+            value,
+            post: fresh,
+        };
+        let (wide, close) = ([cand(1.0), cand(0.5)], [cand(1.0), cand(0.98)]);
+        let pair = SearchBot::new(test_bot());
+        let win = SearchBot::with_config(test_bot(), SearchConfig::win());
+        assert!(pair.gate_and_record(&wide, &fresh, &[locked_one]).is_some());
+        assert!(win.gate_and_record(&wide, &fresh, &[locked_one]).is_none());
+        assert!(win.gate_and_record(&close, &fresh, &[locked_one]).is_some());
+    }
+
+    #[test]
+    fn search_config_parses_the_endgame_gate() {
+        let cfg = SearchConfig::parse("noendgame").unwrap();
+        assert!(!cfg.endgame_gate && SearchConfig::default().endgame_gate);
+        assert_eq!(SearchConfig::parse(&cfg.to_string()), Ok(cfg));
+        let win = SearchConfig::win();
+        assert!(SearchConfig::parse_on(win, "endgame").unwrap().endgame_gate);
         assert_eq!(SearchConfig::parse_on(win, &win.to_string()), Ok(win));
     }
 
@@ -1972,6 +2016,7 @@ mod tests {
                 gate: GATE_MARGIN,
                 cands: SEARCH_CANDS,
                 rollout_lookahead: false,
+                endgame_gate: true,
             }
         );
         assert_eq!(SearchConfig::parse(&cfg.to_string()), Ok(cfg));
