@@ -150,6 +150,60 @@ struct StrategyTemplates {
     champion: Option<bot::DNA>,
 }
 
+/// [`StrategyTemplates`] loaded once for a whole parallel bench. Rayon runs
+/// `map_init`'s init once per job split, not per thread, so loading there
+/// rebuilt the nets many times over. A burn model is `Send` but not `Sync`
+/// (its lazy parameters), so the burn models wait behind a mutex, bare, for
+/// each job to clone; the win net and the genome are `Sync` and shared.
+struct SharedTemplates {
+    burn: std::sync::Mutex<BurnModels>,
+    win: Option<dqn::win::WinStrategy>,
+    champion: Option<bot::DNA>,
+}
+
+struct BurnModels {
+    dqn: Option<dqn::QwixxModel<dqn::MyBackend>>,
+    pair: Option<dqn::pair::PairModel<dqn::MyBackend>>,
+    pair_alt: Option<dqn::pair::PairModel<dqn::MyBackend>>,
+}
+
+impl SharedTemplates {
+    fn new(bots: &[BotType]) -> Self {
+        fn bare<M>(model: Arc<M>) -> M {
+            Arc::try_unwrap(model).unwrap_or_else(|_| unreachable!("a freshly loaded model has one owner"))
+        }
+        let t = StrategyTemplates::new(bots);
+        SharedTemplates {
+            burn: std::sync::Mutex::new(BurnModels {
+                dqn: t.dqn.map(|d| bare(d.model)),
+                pair: t.pair.map(|p| bare(p.model)),
+                pair_alt: t.pair_alt.map(|p| bare(p.model)),
+            }),
+            win: t.win,
+            champion: t.champion,
+        }
+    }
+
+    /// One job's templates: its own copies of the burn models.
+    fn templates(&self) -> StrategyTemplates {
+        let burn = self.burn.lock().unwrap();
+        let device = burn::backend::ndarray::NdArrayDevice::Cpu;
+        StrategyTemplates {
+            dqn: burn.dqn.clone().map(|m| dqn::DqnStrategy::from_model(m, device)),
+            pair: burn
+                .pair
+                .clone()
+                .map(|m| dqn::pair::PairStrategy::from_model(m, device)),
+            pair_alt: burn
+                .pair_alt
+                .clone()
+                .map(|m| dqn::pair::PairStrategy::from_model(m, device)),
+            win: self.win.clone(),
+            champion: self.champion.clone(),
+        }
+    }
+}
+
 impl StrategyTemplates {
     fn new(bots: &[BotType]) -> Self {
         let needs_dqn = bots.iter().any(|b| matches!(b, BotType::Dqn));
@@ -722,10 +776,13 @@ fn run_bench(bots: Vec<BotType>, num_games: usize, seed: u64) {
     };
 
     #[cfg(feature = "parallel")]
-    let results: Vec<(Vec<(usize, isize)>, bool)> = (0..num_games)
-        .into_par_iter()
-        .map_init(|| StrategyTemplates::new(&bots), |t, i| bench_game(t, i))
-        .collect();
+    let results: Vec<(Vec<(usize, isize)>, bool)> = {
+        let shared = SharedTemplates::new(&bots);
+        (0..num_games)
+            .into_par_iter()
+            .map_init(|| shared.templates(), |t, i| bench_game(t, i))
+            .collect()
+    };
 
     #[cfg(not(feature = "parallel"))]
     let results: Vec<(Vec<(usize, isize)>, bool)> = {
