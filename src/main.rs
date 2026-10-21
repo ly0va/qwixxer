@@ -41,6 +41,10 @@ enum BotType {
     WinPlain,
     /// Win-search valuing passive candidates without the lookahead.
     WinSearchPlain,
+    /// Win-search with an experimental `SearchConfig` from `QWIXXER_SEARCH`.
+    WinSearchExp,
+    /// Second experimental win-search, configured by `QWIXXER_SEARCH_B`.
+    WinSearchExpB,
     Mcts,
     Opportunist,
     Conservative,
@@ -64,6 +68,8 @@ impl std::fmt::Display for BotType {
             BotType::WinSearchLock => write!(f, "WIN-SEARCH-LOCK({})", win_model_dir()),
             BotType::WinPlain => write!(f, "WIN-PLAIN({})", win_model_dir()),
             BotType::WinSearchPlain => write!(f, "WIN-SEARCH-PLAIN({})", win_model_dir()),
+            BotType::WinSearchExp => write!(f, "WIN-SEARCH[{}]", exp_search_config("QWIXXER_SEARCH")),
+            BotType::WinSearchExpB => write!(f, "WIN-SEARCH-B[{}]", exp_search_config("QWIXXER_SEARCH_B")),
             BotType::Mcts => write!(f, "MCTS"),
             BotType::Opportunist => write!(f, "Opportunist"),
             BotType::Conservative => write!(f, "Conservative"),
@@ -105,6 +111,10 @@ fn make_strategy(bot: &BotType) -> Box<dyn strategy::Strategy> {
         BotType::WinSearchPlain => Box::new(strategy::search::SearchBot::new(strategy::PlainPassive(
             dqn::win::WinStrategy::load(&win_model_dir()),
         ))),
+        BotType::WinSearchExp | BotType::WinSearchExpB => Box::new(strategy::search::SearchBot::with_config(
+            dqn::win::WinStrategy::load(&win_model_dir()),
+            exp_search_config(exp_env(bot)),
+        )),
         BotType::Mcts => {
             let champion =
                 bot::DNA::load_weights("champion.txt", genes).expect("No champion.txt found. Run `train ga` first.");
@@ -130,12 +140,12 @@ fn win_model_dir() -> String {
 /// Env var holding the `SearchConfig` spec of an experimental pair-search.
 fn exp_env(bot: &BotType) -> &'static str {
     match bot {
-        BotType::PairSearchExpB => "QWIXXER_SEARCH_B",
+        BotType::PairSearchExpB | BotType::WinSearchExpB => "QWIXXER_SEARCH_B",
         _ => "QWIXXER_SEARCH",
     }
 }
 
-/// `SearchConfig` for `pair-search-exp[-b]`, from env var `var`.
+/// `SearchConfig` for `pair-search-exp[-b]` / `win-search-exp[-b]`, from env var `var`.
 fn exp_search_config(var: &str) -> strategy::search::SearchConfig {
     let spec =
         std::env::var(var).unwrap_or_else(|_| panic!("{var} must be set, e.g. {var}=passive,lock=256,strat,k=144"));
@@ -228,6 +238,8 @@ impl StrategyTemplates {
                     | BotType::WinSearchLock
                     | BotType::WinPlain
                     | BotType::WinSearchPlain
+                    | BotType::WinSearchExp
+                    | BotType::WinSearchExpB
             )
         });
         let needs_champion = bots.iter().any(|b| matches!(b, BotType::Ga | BotType::Mcts));
@@ -307,6 +319,10 @@ impl StrategyTemplates {
             BotType::WinSearchPlain => Box::new(strategy::search::SearchBot::new(strategy::PlainPassive(
                 self.win.as_ref().unwrap().clone(),
             ))),
+            BotType::WinSearchExp | BotType::WinSearchExpB => Box::new(strategy::search::SearchBot::with_config(
+                self.win.as_ref().unwrap().clone(),
+                exp_search_config(exp_env(bot)),
+            )),
             BotType::Mcts => Box::new(mcts::MonteCarlo::with_ga(200, self.champion.as_ref().unwrap().clone())),
             BotType::Opportunist => Box::<strategy::Opportunist>::default(),
             BotType::Conservative => Box::<strategy::Conservative>::default(),
