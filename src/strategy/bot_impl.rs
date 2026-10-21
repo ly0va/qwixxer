@@ -226,7 +226,7 @@ pub(crate) fn passive_decide(
 /// player's turn, completed by [`passive_turn_ends`]: a finished game by its
 /// result ([`Bot::terminal_value`]), otherwise by the net in the frame of
 /// whoever moves next.
-pub(crate) fn passive_lookahead_values(
+pub fn passive_lookahead_values(
     bot: &impl Bot,
     state: &State,
     opp_states: &[State],
@@ -267,7 +267,7 @@ pub(crate) fn passive_lookahead_values(
 /// again. Returns (`[us, opps...]`, game ended) per candidate.
 /// `active_player` indexes `opp_states`, as in `Strategy::passive_phase1`.
 /// Every prediction is the bot's plain decision (no lookahead).
-pub(crate) fn passive_turn_ends(
+pub fn passive_turn_ends(
     bot: &impl Bot,
     state: &State,
     opp_states: &[State],
@@ -275,6 +275,32 @@ pub(crate) fn passive_turn_ends(
     active_player: usize,
     marks: &[Option<Mark>],
 ) -> Vec<(Vec<State>, bool)> {
+    passive_turn_predictions(bot, state, opp_states, dice, active_player, marks)
+        .into_iter()
+        .map(|(all, ended, _)| (all, ended))
+        .collect()
+}
+
+/// The active player's turn as [`passive_turn_ends`] predicts it: its
+/// white-sum mark, then its colour mark or a strike (neither when the game
+/// ended after phase 1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PredictedTurn {
+    pub white: Option<Mark>,
+    pub colour: Option<Mark>,
+    pub strike: bool,
+}
+
+/// [`passive_turn_ends`] with the active player's predicted turn per
+/// candidate.
+pub fn passive_turn_predictions(
+    bot: &impl Bot,
+    state: &State,
+    opp_states: &[State],
+    dice: [u8; 6],
+    active_player: usize,
+    marks: &[Option<Mark>],
+) -> Vec<(Vec<State>, bool, PredictedTurn)> {
     use super::sim::SimGame;
     let n = opp_states.len() + 1;
     let active = active_player + 1;
@@ -300,19 +326,28 @@ pub(crate) fn passive_turn_ends(
                 }
             }
             SimGame::propagate_locks(&mut all);
+            let mut turn = PredictedTurn {
+                white: phase1[active - 1],
+                colour: None,
+                strike: false,
+            };
             if SimGame::game_over(&all) {
-                return (all, true);
+                return (all, true, turn);
             }
             let view = SimGame::opp_view(&all, active);
             let d = active_phase2_choices_with(&all[active], &view, dice, active_marked, bot.force_lock());
-            match eval_decision(bot, d, &view) {
+            turn.colour = eval_decision(bot, d, &view);
+            match turn.colour {
                 Some(m) => all[active].apply_mark(m),
-                None if !active_marked => all[active].apply_strike(),
+                None if !active_marked => {
+                    all[active].apply_strike();
+                    turn.strike = true;
+                }
                 None => {}
             }
             SimGame::propagate_locks(&mut all);
             let ended = SimGame::game_over(&all);
-            (all, ended)
+            (all, ended, turn)
         })
         .collect()
 }
@@ -321,12 +356,7 @@ pub fn passive_phase1_choices(state: &State, opp_states: &[State], dice: [u8; 6]
     passive_phase1_choices_with(state, opp_states, dice, true)
 }
 
-pub(crate) fn passive_phase1_choices_with(
-    state: &State,
-    opp_states: &[State],
-    dice: [u8; 6],
-    force_lock: bool,
-) -> Decision {
+pub fn passive_phase1_choices_with(state: &State, opp_states: &[State], dice: [u8; 6], force_lock: bool) -> Decision {
     let white_sum = dice[0] + dice[1];
     let marks = state.generate_white_moves(white_sum);
     let opp_best = opp_best_phase1_score(opp_states, white_sum);
@@ -334,7 +364,7 @@ pub(crate) fn passive_phase1_choices_with(
 }
 
 /// The passive decision; in 2-player the passive player moves next.
-pub(crate) fn passive_phase1_impl(bot: &impl Bot, state: &State, opp_states: &[State], dice: [u8; 6]) -> Option<Mark> {
+pub fn passive_phase1_impl(bot: &impl Bot, state: &State, opp_states: &[State], dice: [u8; 6]) -> Option<Mark> {
     eval_decision_next(
         bot,
         passive_phase1_choices_with(state, opp_states, dice, bot.force_lock()),
@@ -347,7 +377,7 @@ pub fn active_phase2_choices(state: &State, opp_states: &[State], dice: [u8; 6],
     active_phase2_choices_with(state, opp_states, dice, has_marked, true)
 }
 
-pub(crate) fn active_phase2_choices_with(
+pub fn active_phase2_choices_with(
     state: &State,
     opp_states: &[State],
     dice: [u8; 6],
@@ -723,6 +753,44 @@ mod tests {
         let looking = Lookahead(Recorder::default());
         active_phase1_impl(&looking, &state, &opps, dice);
         assert_eq!(looking.0.take(), plain.take());
+    }
+
+    #[test]
+    fn the_predicted_turn_rebuilds_the_active_board() {
+        use crate::strategy::recorder::Points;
+        use crate::strategy::NoLock;
+        let bot = NoLock(Points);
+        let (me, opps, dice) = race();
+        let red12 = Some(Mark { row: 0, number: 12 });
+        let green12 = Some(Mark { row: 2, number: 12 });
+        let marks = [None, red12, green12];
+        let turns = passive_turn_predictions(&bot, &me, &opps, dice, 0, &marks);
+        let ends = passive_turn_ends(&bot, &me, &opps, dice, 0, &marks);
+        for ((all, ended, turn), end) in turns.iter().zip(&ends) {
+            assert_eq!((all, ended), (&end.0, &end.1));
+            let mut active = opps[0];
+            for m in [turn.white, turn.colour].into_iter().flatten() {
+                active.apply_mark(m);
+            }
+            if turn.strike {
+                active.apply_strike();
+            }
+            active.lock(all[1].locked());
+            assert_eq!(active, all[1], "{turn:?}");
+        }
+        // The opponent's white 12 locks yellow; with my red lock the game
+        // ends before its colour phase.
+        let yellow12 = Some(Mark { row: 1, number: 12 });
+        assert_eq!(
+            turns[1].2,
+            PredictedTurn {
+                white: yellow12,
+                colour: None,
+                strike: false
+            }
+        );
+        assert!(turns[1].1);
+        assert!(turns.iter().all(|t| t.2.white == yellow12), "phase 1 ignores my mark");
     }
 
     #[test]
