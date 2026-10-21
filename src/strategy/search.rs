@@ -255,6 +255,9 @@ pub struct SearchConfig {
     /// Also search when the static gap is wide but the game nears its end
     /// (a locked row, 3 strikes, or a candidate that locks).
     pub endgame_gate: bool,
+    /// Shortlist the candidates within `gate` of the best (at least 2, at
+    /// most `cands`) instead of the top `cands`.
+    pub gap_shortlist: bool,
 }
 
 /// Production rollout/static blend weight (Phase 25).
@@ -279,6 +282,7 @@ impl Default for SearchConfig {
             cands: SEARCH_CANDS,
             rollout_lookahead: false,
             endgame_gate: true,
+            gap_shortlist: false,
         }
     }
 }
@@ -307,7 +311,8 @@ impl SearchConfig {
     /// (candidates searched, ≥ 2), `stop=C` (sequential threshold, may be
     /// `inf`), `gate=G` (close-gate margin ≥ 0), `rlook` (the passive
     /// lookahead inside rollouts), `endgame` / `noendgame` (the endgame
-    /// gate). Empty = production.
+    /// gate), `gapcands` / `nogapcands` (shortlist by the gate, `cands` as
+    /// the cap). Empty = production.
     pub fn parse(spec: &str) -> Result<Self, String> {
         Self::parse_on(Self::default(), spec)
     }
@@ -316,10 +321,15 @@ impl SearchConfig {
     /// endgame gate. Endgame-only searches were 48% of all searches but
     /// overturned 0.6% of picks, worth ~0.04pp per game by search's own
     /// estimate (2000 self-play games, `examples/search_disagreements`).
+    /// The shortlist is the candidates within the gate, up to 4: a third
+    /// outside it was picked 6 times in 18,260 searches, and more than 4
+    /// fell within it 5 times in 25,447.
     pub fn win() -> Self {
         Self {
             gate: WIN_GATE_MARGIN,
             endgame_gate: false,
+            gap_shortlist: true,
+            cands: 4,
             ..Self::default()
         }
     }
@@ -344,6 +354,8 @@ impl SearchConfig {
                 None if tok == "rlook" => cfg.rollout_lookahead = true,
                 None if tok == "endgame" => cfg.endgame_gate = true,
                 None if tok == "noendgame" => cfg.endgame_gate = false,
+                None if tok == "gapcands" => cfg.gap_shortlist = true,
+                None if tok == "nogapcands" => cfg.gap_shortlist = false,
                 Some(("k", v)) => cfg.k_samples = num("k", v)?,
                 Some(("lock", v)) => cfg.lock_k = Some(num("lock", v)?),
                 Some(("blend", v)) => cfg.blend = Some(real("blend", v, 1.0)?),
@@ -354,7 +366,7 @@ impl SearchConfig {
                 _ => {
                     return Err(format!(
                         "unknown search option {tok:?} (passive, nopassive, lock=N, nolock, strat, k=N, \
-                     blend=λ, noblend, seq=N, noseq, stop=C, gate=G, cands=N, rlook, endgame, noendgame)"
+                     blend=λ, noblend, seq=N, noseq, stop=C, gate=G, cands=N, rlook, endgame, noendgame, gapcands, nogapcands)"
                     ))
                 }
             }
@@ -401,6 +413,9 @@ impl std::fmt::Display for SearchConfig {
             write!(f, ",rlook")?;
         }
         write!(f, "{}", if self.endgame_gate { "" } else { ",noendgame" })?;
+        if self.gap_shortlist {
+            write!(f, ",gapcands")?;
+        }
         Ok(())
     }
 }
@@ -832,7 +847,7 @@ impl<B: WinProb> SearchBot<B> {
         seed: u64,
         first_active: usize,
     ) -> (usize, Vec<f32>, Vec<usize>) {
-        debug_assert_eq!(entries.len(), cands.len().min(self.cfg.cands));
+        debug_assert_eq!(entries.len(), cands.len());
         let k_max = self.cfg.k_samples;
         let mut k = self.cfg.seq.unwrap_or(k_max).min(k_max);
         let mut active = vec![true; entries.len()];
@@ -941,6 +956,21 @@ impl<B: WinProb> SearchBot<B> {
             }
         }
         compared[best].0
+    }
+
+    /// Candidates searched: the top `cands`, or with `gap_shortlist` those
+    /// within `gate` of the best (at least 2, at most `cands`).
+    fn shortlist_len(&self, cands: &[Candidate]) -> usize {
+        let n = if self.cfg.gap_shortlist {
+            let within = cands
+                .iter()
+                .filter(|c| cands[0].value - c.value < self.cfg.gate)
+                .count();
+            within.clamp(2, self.cfg.cands)
+        } else {
+            self.cfg.cands
+        };
+        n.min(cands.len())
     }
 
     /// Gate bookkeeping. Returns true if search should run. Never searches
@@ -1074,7 +1104,7 @@ impl<B: WinProb> SearchBot<B> {
 
         // Entry per shortlisted phase-1 mark: opponents' (shared, simultaneous)
         // phase-1 marks are sim_opp; complete OUR turn deterministically.
-        let shortlist = &cands[..cands.len().min(self.cfg.cands)];
+        let shortlist = &cands[..self.shortlist_len(&cands)];
         let entries: Vec<(Vec<State>, bool)> = shortlist
             .iter()
             .map(|c| phase1_entry(&self.bot, state, &sim_opp, dice, c.mark))
@@ -1157,7 +1187,7 @@ impl<B: WinProb> SearchBot<B> {
         };
 
         // Entry per candidate: post state + lock propagation; turn is then over.
-        let shortlist = &cands[..cands.len().min(self.cfg.cands)];
+        let shortlist = &cands[..self.shortlist_len(&cands)];
         let entries: Vec<(Vec<State>, bool)> = shortlist.iter().map(|c| phase2_entry(c.post, opp_states)).collect();
 
         let seed = context_seed(state, opp_states, dice);
@@ -1266,7 +1296,7 @@ impl<B: WinProb> SearchBot<B> {
         // Entry per candidate: our mark, then the rest of the turn (other
         // passive players, the active player's phase 1 + 2) completed by the
         // bot; the rollout starts at the seat after the active player.
-        let shortlist = &cands[..cands.len().min(self.cfg.cands)];
+        let shortlist = &cands[..self.shortlist_len(&cands)];
         let marks: Vec<Option<Mark>> = shortlist.iter().map(|c| c.mark).collect();
         let entries = passive_turn_ends(&self.bot, state, opp_states, dice, active_player, &marks);
 
@@ -1743,6 +1773,8 @@ mod tests {
             SearchConfig {
                 gate: GATE_MARGIN,
                 endgame_gate: true,
+                gap_shortlist: false,
+                cands: SEARCH_CANDS,
                 ..win
             },
             SearchConfig::default()
@@ -1771,6 +1803,39 @@ mod tests {
         assert!(pair.gate_and_record(&wide, &fresh, &[locked_one]).is_some());
         assert!(win.gate_and_record(&wide, &fresh, &[locked_one]).is_none());
         assert!(win.gate_and_record(&close, &fresh, &[locked_one]).is_some());
+    }
+
+    #[test]
+    fn win_search_shortlists_the_candidates_within_the_gate() {
+        let fresh = State::default();
+        let cand = |value: f32| Candidate {
+            mark: None,
+            value,
+            post: fresh,
+        };
+        let vals = |v: &[f32]| v.iter().map(|&x| cand(x)).collect::<Vec<_>>();
+        let win = SearchBot::with_config(test_bot(), SearchConfig::win());
+        let pair = SearchBot::new(test_bot());
+        let three_close = vals(&[1.0, 0.98, 0.96, 0.5]);
+        assert_eq!(win.shortlist_len(&three_close), 3);
+        assert_eq!(pair.shortlist_len(&three_close), 3);
+        // A far third is dropped; a forced search still compares two.
+        assert_eq!(win.shortlist_len(&vals(&[1.0, 0.97, 0.9])), 2);
+        assert_eq!(win.shortlist_len(&vals(&[1.0, 0.5, 0.4])), 2);
+        assert_eq!(pair.shortlist_len(&vals(&[1.0, 0.5, 0.4])), 3);
+        // Capped at `cands`.
+        let six = vals(&[1.0, 0.99, 0.99, 0.99, 0.99, 0.99]);
+        assert_eq!(win.shortlist_len(&six), SearchConfig::win().cands);
+        assert_eq!(win.shortlist_len(&vals(&[1.0])), 1);
+    }
+
+    #[test]
+    fn search_config_parses_the_gap_shortlist() {
+        let cfg = SearchConfig::parse("gapcands,cands=5").unwrap();
+        assert!(cfg.gap_shortlist && !SearchConfig::default().gap_shortlist);
+        assert_eq!(SearchConfig::parse(&cfg.to_string()), Ok(cfg));
+        let win = SearchConfig::win();
+        assert!(!SearchConfig::parse_on(win, "nogapcands").unwrap().gap_shortlist);
     }
 
     #[test]
@@ -2024,6 +2089,7 @@ mod tests {
                 cands: SEARCH_CANDS,
                 rollout_lookahead: false,
                 endgame_gate: true,
+                gap_shortlist: false,
             }
         );
         assert_eq!(SearchConfig::parse(&cfg.to_string()), Ok(cfg));
