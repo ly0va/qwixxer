@@ -389,6 +389,7 @@ impl Explanation {
 /// it). `pub(crate)` so training-time distillation can reuse the exact gate
 /// semantics; the (value, post) signature avoids exposing the private
 /// `Candidate` type.
+#[cfg(any(feature = "dqn", test))]
 pub(crate) fn gates(values: &[(f32, State)], our: &State, opps: &[State]) -> (bool, bool) {
     gates_with(values, our, opps, GATE_MARGIN)
 }

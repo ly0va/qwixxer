@@ -3,6 +3,8 @@ pub mod bot_impl;
 pub(crate) mod recorder;
 pub mod search;
 pub mod sim;
+// For the training code (behind `dqn`) and tests.
+#[cfg(any(feature = "dqn", test))]
 pub(crate) use bot_impl::{active_phase1_impl, active_phase2_impl, passive_decide, passive_phase1_impl};
 
 use crate::state::{format_dice, Mark, State};

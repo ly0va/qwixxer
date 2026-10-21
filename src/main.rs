@@ -155,18 +155,21 @@ struct StrategyTemplates {
 /// rebuilt the nets many times over. A burn model is `Send` but not `Sync`
 /// (its lazy parameters), so the burn models wait behind a mutex, bare, for
 /// each job to clone; the win net and the genome are `Sync` and shared.
+#[cfg(feature = "parallel")]
 struct SharedTemplates {
     burn: std::sync::Mutex<BurnModels>,
     win: Option<dqn::win::WinStrategy>,
     champion: Option<bot::DNA>,
 }
 
+#[cfg(feature = "parallel")]
 struct BurnModels {
     dqn: Option<dqn::QwixxModel<dqn::MyBackend>>,
     pair: Option<dqn::pair::PairModel<dqn::MyBackend>>,
     pair_alt: Option<dqn::pair::PairModel<dqn::MyBackend>>,
 }
 
+#[cfg(feature = "parallel")]
 impl SharedTemplates {
     fn new(bots: &[BotType]) -> Self {
         fn bare<M>(model: Arc<M>) -> M {
