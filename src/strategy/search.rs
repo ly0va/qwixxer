@@ -1534,9 +1534,11 @@ mod tests {
 
     #[test]
     fn passive_entry_stops_when_phase_1_ends_the_game() {
-        use crate::strategy::recorder::{lockable, lockable_row, ShunsPoints};
+        // The active player locks yellow for its points; with my red lock
+        // that is the second closed row.
+        use crate::strategy::recorder::{lockable, lockable_row, Points};
         let (all, ended) = passive_entry(
-            &ShunsPoints,
+            &Points,
             &lockable(),
             &[lockable_row(1)],
             [6, 6, 1, 1, 1, 1],
