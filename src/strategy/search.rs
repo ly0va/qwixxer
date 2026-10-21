@@ -166,6 +166,35 @@ pub struct SearchStats {
     /// `Some` turns on the rollout-lookahead probe: every searched decision
     /// also rolls its shortlist out both ways and records it here.
     pub lookahead_probe: Option<Vec<LookaheadProbe>>,
+    /// `Some` logs every search (see [`SearchRecord`]).
+    pub search_log: Option<Vec<SearchRecord>>,
+}
+
+/// Which decision a search was for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SearchContext {
+    ActiveP1,
+    ActiveP2,
+    Passive,
+}
+
+/// One search as played: the position, the shortlist (best static value
+/// first; for active phase 1 each phase-1 mark with its best plan's
+/// end state), the blended scores and the pick (0 = the static pick).
+#[derive(Debug, Clone)]
+pub struct SearchRecord {
+    pub context: SearchContext,
+    pub state: State,
+    pub opps: Vec<State>,
+    pub dice: [u8; 6],
+    pub marks: Vec<Option<Mark>>,
+    pub posts: Vec<State>,
+    pub statics: Vec<f32>,
+    pub scores: Vec<f32>,
+    pub pick: usize,
+    /// Which gates fired (search can run on both).
+    pub close: bool,
+    pub endgame: bool,
 }
 
 /// One searched decision's shortlist rolled out `k_samples` times each with
@@ -927,9 +956,34 @@ impl<B: WinProb> SearchBot<B> {
         }
     }
 
-    fn record_search_result(&self, gated: bool, disagreed: bool) {
+    #[allow(clippy::too_many_arguments)]
+    fn record_search_result(
+        &self,
+        context: SearchContext,
+        (state, opps, dice): (&State, &[State], [u8; 6]),
+        shortlist: &[Candidate],
+        scores: &[f32],
+        pick: usize,
+        (close, endgame): (bool, bool),
+    ) {
+        let (gated, disagreed) = (close || endgame, pick != 0);
         if let Some(stats) = &self.stats {
             let mut s = stats.borrow_mut();
+            if let Some(log) = s.search_log.as_mut() {
+                log.push(SearchRecord {
+                    context,
+                    state: *state,
+                    opps: opps.to_vec(),
+                    dice,
+                    marks: shortlist.iter().map(|c| c.mark).collect(),
+                    posts: shortlist.iter().map(|c| c.post).collect(),
+                    statics: shortlist.iter().map(|c| c.value).collect(),
+                    scores: scores.to_vec(),
+                    pick,
+                    close,
+                    endgame,
+                });
+            }
             s.searched += 1;
             if disagreed {
                 s.disagreements += 1;
@@ -1009,7 +1063,14 @@ impl<B: WinProb> SearchBot<B> {
 
         let seed = context_seed(state, opp_states, dice);
         let (pick, scores) = self.search_pick(shortlist, entries, seed, 1 % (opp_states.len() + 1));
-        self.record_search_result(close || endgame, pick != 0);
+        self.record_search_result(
+            SearchContext::ActiveP1,
+            (state, opp_states, dice),
+            shortlist,
+            &scores,
+            pick,
+            (close, endgame),
+        );
         Explanation {
             pick: shortlist[pick].mark,
             forced: false,
@@ -1082,7 +1143,14 @@ impl<B: WinProb> SearchBot<B> {
 
         let seed = context_seed(state, opp_states, dice);
         let (pick, scores) = self.search_pick(shortlist, entries, seed, 1 % (opp_states.len() + 1));
-        self.record_search_result(close || endgame, pick != 0);
+        self.record_search_result(
+            SearchContext::ActiveP2,
+            (state, opp_states, dice),
+            shortlist,
+            &scores,
+            pick,
+            (close, endgame),
+        );
         Explanation {
             pick: shortlist[pick].mark,
             forced: false,
@@ -1186,7 +1254,14 @@ impl<B: WinProb> SearchBot<B> {
         let seed = context_seed(state, opp_states, dice);
         let first_active = passive_first_active(active_player, opp_states.len() + 1);
         let (pick, scores) = self.search_pick(shortlist, entries, seed, first_active);
-        self.record_search_result(close || endgame, pick != 0);
+        self.record_search_result(
+            SearchContext::Passive,
+            (state, opp_states, dice),
+            shortlist,
+            &scores,
+            pick,
+            (close, endgame),
+        );
         if let Some(stats) = &self.stats {
             stats.borrow_mut().passive_searched += 1;
         }
@@ -1960,6 +2035,46 @@ mod tests {
         assert_eq!(s.active_decisions, 1);
         assert!(s.eligible <= 1);
         assert_eq!(s.gaps.len() as u32, s.eligible);
+    }
+
+    /// With the log on, every search is recorded in its context with the
+    /// shortlist, its static values and scores, and the pick it played.
+    #[test]
+    fn the_search_log_records_every_search_as_played() {
+        let stats = std::rc::Rc::new(std::cell::RefCell::new(SearchStats {
+            search_log: Some(Vec::new()),
+            ..Default::default()
+        }));
+        let mut bot = SearchBot::new(test_bot());
+        bot.force = true;
+        bot.stats = Some(stats.clone());
+        let (state, opps, dice) = (State::default(), [State::default()], [3, 4, 2, 3, 5, 1]);
+        let plays = [
+            (SearchContext::ActiveP1, bot.explain_active_phase1(&state, &opps, dice)),
+            (
+                SearchContext::ActiveP2,
+                bot.explain_active_phase2(&state, &opps, dice, true),
+            ),
+            (
+                SearchContext::Passive,
+                bot.explain_passive_phase1(&state, &opps, dice, 0),
+            ),
+        ];
+        let s = stats.borrow();
+        let log = s.search_log.as_ref().unwrap();
+        assert_eq!(log.len() as u32, s.searched);
+        assert_eq!(log.len(), 3);
+        for (r, (ctx, e)) in log.iter().zip(&plays) {
+            assert_eq!(r.context, *ctx);
+            assert_eq!((r.state, &r.opps[..], r.dice), (state, &opps[..], dice));
+            assert_eq!(r.marks[r.pick], e.pick);
+            let searched: Vec<(Option<Mark>, f32)> = r.marks.iter().copied().zip(r.scores.iter().copied()).collect();
+            assert_eq!(searched, e.searched);
+            assert_eq!((r.statics.len(), r.posts.len()), (r.marks.len(), r.marks.len()));
+            assert!(r.statics.windows(2).all(|w| w[0] >= w[1]), "best static first");
+        }
+        let disagreed = log.iter().filter(|r| r.pick != 0).count() as u32;
+        assert_eq!(disagreed, s.disagreements);
     }
 
     use crate::strategy::recorder::Recorder;
