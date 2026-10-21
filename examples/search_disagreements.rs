@@ -333,6 +333,69 @@ fn report(log: &[SearchRecord], games: u64) {
     );
     println!();
 
+    // How many candidates sit within a static gap of the best, over every
+    // candidate (the shortlist keeps the top `cands` of them).
+    let gate = SearchConfig::win().gate;
+    for margin in [gate, 0.1, 0.2] {
+        let mut hist = [0usize; 7]; // 1..=6, 7+
+        for r in log {
+            let n = r.all_statics.iter().filter(|&&v| r.all_statics[0] - v < margin).count();
+            hist[n.clamp(1, 7) - 1] += 1;
+        }
+        let row: Vec<String> = hist
+            .iter()
+            .enumerate()
+            .map(|(i, &c)| {
+                format!(
+                    "{}{}: {} ({:.1}%)",
+                    i + 1,
+                    if i == 6 { "+" } else { "" },
+                    c,
+                    100.0 * c as f64 / log.len() as f64
+                )
+            })
+            .collect();
+        println!("candidates within {margin} of the best: {}", row.join(", "));
+    }
+    println!();
+
+    // The third shortlisted candidate by its static gap to the best: how
+    // often search picks it, what that is worth against the pick among the
+    // top two alone, and the samples it costs.
+    let thirds: Vec<&SearchRecord> = log.iter().filter(|r| r.statics.len() >= 3).collect();
+    println!(
+        "third candidate ({} of {} searches): gap bucket, searches, picked, gain over top-two pick, mean samples (third / top two)",
+        thirds.len(),
+        log.len()
+    );
+    let edges = [0.0f32, 0.05, 0.1, 0.2, 0.5, f32::INFINITY];
+    for w in edges.windows(2) {
+        let b: Vec<_> = thirds
+            .iter()
+            .filter(|r| (w[0]..w[1]).contains(&(r.statics[0] - r.statics[2])))
+            .collect();
+        let picked: Vec<_> = b.iter().filter(|r| r.pick == 2).collect();
+        let gain: f64 = picked
+            .iter()
+            .map(|r| (r.scores[2] - r.scores[0].max(r.scores[1])) as f64)
+            .sum();
+        let n = b.len().max(1) as f64;
+        println!(
+            "  {:>4.2}..{:<5.2} {:>7} {:>6} {:>8.3} {:>7.1} / {:.1}",
+            w[0],
+            w[1],
+            b.len(),
+            picked.len(),
+            gain,
+            b.iter().map(|r| r.samples[2] as f64).sum::<f64>() / n,
+            b.iter()
+                .map(|r| (r.samples[0] + r.samples[1]) as f64 / 2.0)
+                .sum::<f64>()
+                / n
+        );
+    }
+    println!();
+
     // Endgame-only searches (not close) by the static top-two gap: what a
     // gap cap on the endgame gate would keep.
     let eg: Vec<&SearchRecord> = log.iter().filter(|r| r.endgame && !r.close).collect();

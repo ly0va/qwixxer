@@ -190,7 +190,11 @@ pub struct SearchRecord {
     pub marks: Vec<Option<Mark>>,
     pub posts: Vec<State>,
     pub statics: Vec<f32>,
+    /// Static value of every candidate, best first; the shortlist is its head.
+    pub all_statics: Vec<f32>,
     pub scores: Vec<f32>,
+    /// Rollout samples each shortlisted candidate got before the pick.
+    pub samples: Vec<usize>,
     pub pick: usize,
     /// Which gates fired (search can run on both).
     pub close: bool,
@@ -827,7 +831,7 @@ impl<B: WinProb> SearchBot<B> {
         entries: Vec<(Vec<State>, bool)>,
         seed: u64,
         first_active: usize,
-    ) -> (usize, Vec<f32>) {
+    ) -> (usize, Vec<f32>, Vec<usize>) {
         debug_assert_eq!(entries.len(), cands.len().min(self.cfg.cands));
         let k_max = self.cfg.k_samples;
         let mut k = self.cfg.seq.unwrap_or(k_max).min(k_max);
@@ -850,7 +854,7 @@ impl<B: WinProb> SearchBot<B> {
                     .zip(cands)
                     .map(|(v, c)| (1.0 - lambda) * phi(c.value) + lambda * v.iter().sum::<f32>() / v.len() as f32)
                     .collect();
-                return (best, scores);
+                return (best, scores, values.iter().map(Vec::len).collect());
             }
             let next = (2 * k).min(k_max);
             let more = self.rollout_values(&entries, &active, seed, first_active, k..next);
@@ -973,11 +977,12 @@ impl<B: WinProb> SearchBot<B> {
         &self,
         context: SearchContext,
         (state, opps, dice): (&State, &[State], [u8; 6]),
-        shortlist: &[Candidate],
-        scores: &[f32],
+        cands: &[Candidate],
+        (scores, samples): (&[f32], Vec<usize>),
         pick: usize,
         (close, endgame): (bool, bool),
     ) {
+        let shortlist = &cands[..scores.len()];
         let (gated, disagreed) = (close || (endgame && self.cfg.endgame_gate), pick != 0);
         if let Some(stats) = &self.stats {
             let mut s = stats.borrow_mut();
@@ -990,7 +995,9 @@ impl<B: WinProb> SearchBot<B> {
                     marks: shortlist.iter().map(|c| c.mark).collect(),
                     posts: shortlist.iter().map(|c| c.post).collect(),
                     statics: shortlist.iter().map(|c| c.value).collect(),
+                    all_statics: cands.iter().map(|c| c.value).collect(),
                     scores: scores.to_vec(),
+                    samples,
                     pick,
                     close,
                     endgame,
@@ -1074,12 +1081,12 @@ impl<B: WinProb> SearchBot<B> {
             .collect();
 
         let seed = context_seed(state, opp_states, dice);
-        let (pick, scores) = self.search_pick(shortlist, entries, seed, 1 % (opp_states.len() + 1));
+        let (pick, scores, samples) = self.search_pick(shortlist, entries, seed, 1 % (opp_states.len() + 1));
         self.record_search_result(
             SearchContext::ActiveP1,
             (state, opp_states, dice),
-            shortlist,
-            &scores,
+            &cands,
+            (&scores, samples),
             pick,
             (close, endgame),
         );
@@ -1154,12 +1161,12 @@ impl<B: WinProb> SearchBot<B> {
         let entries: Vec<(Vec<State>, bool)> = shortlist.iter().map(|c| phase2_entry(c.post, opp_states)).collect();
 
         let seed = context_seed(state, opp_states, dice);
-        let (pick, scores) = self.search_pick(shortlist, entries, seed, 1 % (opp_states.len() + 1));
+        let (pick, scores, samples) = self.search_pick(shortlist, entries, seed, 1 % (opp_states.len() + 1));
         self.record_search_result(
             SearchContext::ActiveP2,
             (state, opp_states, dice),
-            shortlist,
-            &scores,
+            &cands,
+            (&scores, samples),
             pick,
             (close, endgame),
         );
@@ -1265,12 +1272,12 @@ impl<B: WinProb> SearchBot<B> {
 
         let seed = context_seed(state, opp_states, dice);
         let first_active = passive_first_active(active_player, opp_states.len() + 1);
-        let (pick, scores) = self.search_pick(shortlist, entries, seed, first_active);
+        let (pick, scores, samples) = self.search_pick(shortlist, entries, seed, first_active);
         self.record_search_result(
             SearchContext::Passive,
             (state, opp_states, dice),
-            shortlist,
-            &scores,
+            &cands,
+            (&scores, samples),
             pick,
             (close, endgame),
         );
@@ -2117,6 +2124,17 @@ mod tests {
             assert_eq!(searched, e.searched);
             assert_eq!((r.statics.len(), r.posts.len()), (r.marks.len(), r.marks.len()));
             assert!(r.statics.windows(2).all(|w| w[0] >= w[1]), "best static first");
+            assert!(
+                r.all_statics.starts_with(&r.statics),
+                "the shortlist heads every candidate"
+            );
+            assert!(r.all_statics.windows(2).all(|w| w[0] >= w[1]));
+            assert_eq!(r.samples.len(), r.marks.len());
+            let cfg = SearchConfig::default();
+            assert!(r
+                .samples
+                .iter()
+                .all(|&n| (cfg.seq.unwrap()..=cfg.k_samples).contains(&n)));
         }
         let disagreed = log.iter().filter(|r| r.pick != 0).count() as u32;
         assert_eq!(disagreed, s.disagreements);
