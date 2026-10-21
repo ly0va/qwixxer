@@ -971,6 +971,37 @@ impl WinStrategy {
         (c, o)
     }
 
+    /// Each (candidate, opponent, frame), both boards propagated: `done` of
+    /// the result where the game is over, as the game would score it, else
+    /// `live` of the net's logit. Only the games that go on are batched.
+    fn values(&self, items: &[(State, State, Next)], done: impl Fn(f32) -> f32, live: impl Fn(f32) -> f32) -> Vec<f32> {
+        use crate::strategy::sim::SimGame;
+        let ended: Vec<Option<f32>> = items
+            .iter()
+            .map(|(c, o, _)| SimGame::game_over(&[*c, *o]).then(|| SimGame::outcome(&[*c, *o])))
+            .collect();
+        let open: Vec<(State, State, Next)> = items
+            .iter()
+            .zip(&ended)
+            .filter(|(_, e)| e.is_none())
+            .map(|(i, _)| *i)
+            .collect();
+        let mut z = if self.net.has_tempo() {
+            self.framed_logits(&open)
+        } else {
+            let pairs: Vec<(&State, &State)> = open.iter().map(|(c, o, _)| (c, o)).collect();
+            self.net.logit_batch(&pairs)
+        }
+        .into_iter();
+        ended
+            .iter()
+            .map(|e| match e {
+                Some(r) => done(*r),
+                None => live(z.next().unwrap()),
+            })
+            .collect()
+    }
+
     /// The logit of P(win) for each (candidate, opponent, frame): z(cand, opp)
     /// when the opponent moves next, −z(opp, cand) when I do. One batch.
     fn framed_logits(&self, items: &[(State, State, Next)]) -> Vec<f32> {
@@ -1007,14 +1038,8 @@ impl Bot for WinStrategy {
         true
     }
 
-    /// The probit of a certain result: beyond any net value for a win or a
-    /// loss (finite, so value gaps stay defined), 0 for a tie.
     fn terminal_value(&self, states: &[State]) -> f32 {
-        match crate::strategy::sim::SimGame::outcome(states) {
-            o if o > 0.5 => probit_of_logit(f32::INFINITY),
-            o if o < 0.5 => probit_of_logit(f32::NEG_INFINITY),
-            _ => 0.0,
-        }
+        probit_of_outcome(crate::strategy::sim::SimGame::outcome(states))
     }
 
     fn evaluate_batch(&self, candidates: &[State], opp_states: &[State]) -> Vec<f32> {
@@ -1024,16 +1049,8 @@ impl Bot for WinStrategy {
     /// Probit-unit values (see [`probit_of_logit`]); move order equals the
     /// order of P(win).
     fn evaluate_batch_multi(&self, groups: &[(&[State], &[State])]) -> Vec<Vec<f32>> {
-        let boards: Vec<(State, State)> = groups
-            .iter()
-            .flat_map(|(candidates, opps)| candidates.iter().map(move |c| Self::propagated(c, opps)))
-            .collect();
-        let pairs: Vec<(&State, &State)> = boards.iter().map(|(c, o)| (c, o)).collect();
-        let mut values = self.net.logit_batch(&pairs).into_iter().map(probit_of_logit);
-        groups
-            .iter()
-            .map(|(candidates, _)| values.by_ref().take(candidates.len()).collect())
-            .collect()
+        let framed: Vec<(&[State], &[State], Next)> = groups.iter().map(|g| (g.0, g.1, Next::Opp)).collect();
+        self.evaluate_batch_multi_next(&framed)
     }
 
     fn evaluate_batch_next(&self, candidates: &[State], opp_states: &[State], next: Next) -> Vec<f32> {
@@ -1044,10 +1061,6 @@ impl Bot for WinStrategy {
 
     /// Without a tempo head the frame cannot matter: today's values.
     fn evaluate_batch_multi_next(&self, groups: &[(&[State], &[State], Next)]) -> Vec<Vec<f32>> {
-        if !self.net.has_tempo() {
-            let plain: Vec<(&[State], &[State])> = groups.iter().map(|g| (g.0, g.1)).collect();
-            return self.evaluate_batch_multi(&plain);
-        }
         let items: Vec<(State, State, Next)> = groups
             .iter()
             .flat_map(|(cands, opps, n)| {
@@ -1057,7 +1070,7 @@ impl Bot for WinStrategy {
                 })
             })
             .collect();
-        let mut values = self.framed_logits(&items).into_iter().map(probit_of_logit);
+        let mut values = self.values(&items, probit_of_outcome, probit_of_logit).into_iter();
         groups
             .iter()
             .map(|(c, _, _)| values.by_ref().take(c.len()).collect())
@@ -1067,16 +1080,11 @@ impl Bot for WinStrategy {
 
 impl WinProb for WinStrategy {
     fn win_prob_multi(&self, groups: &[(&State, &[State])]) -> Vec<f32> {
-        let boards: Vec<(State, State)> = groups.iter().map(|(our, opps)| Self::propagated(our, opps)).collect();
-        let pairs: Vec<(&State, &State)> = boards.iter().map(|(c, o)| (c, o)).collect();
-        self.net.logit_batch(&pairs).into_iter().map(sigmoid).collect()
+        let framed: Vec<(&State, &[State], Next)> = groups.iter().map(|g| (g.0, g.1, Next::Opp)).collect();
+        self.win_prob_multi_next(&framed)
     }
 
     fn win_prob_multi_next(&self, groups: &[(&State, &[State], Next)]) -> Vec<f32> {
-        if !self.net.has_tempo() {
-            let plain: Vec<(&State, &[State])> = groups.iter().map(|g| (g.0, g.1)).collect();
-            return self.win_prob_multi(&plain);
-        }
         let items: Vec<(State, State, Next)> = groups
             .iter()
             .map(|(s, o, n)| {
@@ -1084,7 +1092,18 @@ impl WinProb for WinStrategy {
                 (c, o, *n)
             })
             .collect();
-        self.framed_logits(&items).into_iter().map(sigmoid).collect()
+        self.values(&items, |r| r, sigmoid)
+    }
+}
+
+/// The probit of a certain result (`SimGame::outcome`): beyond any net
+/// value for a win or a loss (finite, so value gaps stay defined), 0 for a
+/// tie.
+fn probit_of_outcome(outcome: f32) -> f32 {
+    match outcome {
+        o if o > 0.5 => probit_of_logit(f32::INFINITY),
+        o if o < 0.5 => probit_of_logit(f32::NEG_INFINITY),
+        _ => 0.0,
     }
 }
 
@@ -1855,6 +1874,9 @@ mod tests {
         for (a, b) in random_pairs(9, 11) {
             // The values are of the boards with each one's locks on the other.
             let (a, b) = WinStrategy::propagated(&a, std::slice::from_ref(&b));
+            if crate::strategy::sim::SimGame::game_over(&[a, b]) {
+                continue; // valued by its result, not the net
+            }
             let z_ab = bot.net.logit_states(&a, &b);
             let z_ba = bot.net.logit_states(&b, &a);
             assert_eq!(
@@ -2038,5 +2060,49 @@ mod tests {
         assert_eq!(net.terminal_value(&[lo, hi]), -win);
         assert_eq!(net.terminal_value(&[lo, lo]), 0.0);
         assert!(win.is_finite());
+    }
+
+    /// A candidate that ends the game, alone or with the opponent's locks,
+    /// is valued by its result in every frame, with or without a tempo
+    /// head; the net values only games that go on.
+    #[test]
+    fn a_candidate_that_ends_the_game_is_valued_by_its_result() {
+        let (a, b) = boards();
+        let (mut lo, hi) = if a.count_points() < b.count_points() {
+            (a, b)
+        } else {
+            (b, a)
+        };
+        lo.strikes = 4;
+        let tempo = WinStrategy {
+            net: Arc::new(ManualWinNet::from_model(&random_thermo(60, 16)).with_tempo(&random_tempo_head(61, 16))),
+        };
+        for net in [WinStrategy::from_model(&random_model(12, 32)), tempo] {
+            let win = net.terminal_value(&[hi, lo]);
+            for next in [Next::Opp, Next::Me] {
+                assert_eq!(net.evaluate_batch_next(&[hi, lo], &[lo], next), [win, 0.0], "{next:?}");
+                assert_eq!(net.evaluate_batch_next(&[lo], &[hi], next), [-win]);
+                assert!(
+                    net.evaluate_batch_next(&[a], &[b], next)[0].abs() < win,
+                    "a game that goes on"
+                );
+            }
+            assert_eq!(net.evaluate_batch(&[hi, lo], &[lo]), [win, 0.0]);
+            assert_eq!(net.win_prob_multi(&[(&hi, &[lo][..]), (&lo, &[lo][..])]), [1.0, 0.5]);
+            assert_eq!(net.win_prob_multi_next(&[(&lo, &[hi][..], Next::Me)]), [0.0]);
+            // Two rows locked between the two boards: over only once the
+            // locks propagate.
+            let (mut c, mut o) = (State::default(), State::default());
+            for n in [2, 3, 4, 5, 6] {
+                c.apply_mark(Mark { row: 0, number: n });
+                o.apply_mark(Mark { row: 1, number: n });
+            }
+            c.apply_mark(Mark { row: 0, number: 12 });
+            o.apply_mark(Mark { row: 1, number: 12 });
+            use crate::strategy::sim::SimGame;
+            assert!(!SimGame::game_over(&[c, State::default()]) && !SimGame::game_over(&[State::default(), o]));
+            let want = net.terminal_value(&[c, o]);
+            assert_eq!(net.evaluate_batch(&[c], &[o]), [want]);
+        }
     }
 }
