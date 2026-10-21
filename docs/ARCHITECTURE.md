@@ -54,7 +54,7 @@ qwixxer/
 | `dqn` | Full DQN training (burn with train support, serde, rayon) |
 | `parallel` | Rayon parallelism for benchmarks and GA training |
 
-Default features are `dqn` + `parallel` for the native binary. Burn (ndarray backend) is always available for inference. The web crate depends on the root crate with `default-features = false` (no rayon, no training code) to keep the WASM binary small (~1 MB with wasm-opt). `mimalloc`, the native binary's global allocator, is a target dependency for non-wasm32 only (its C build fails on wasm32).
+Default features are `dqn` + `parallel` for the native binary. Burn (ndarray backend) is always available for inference. The web crate depends on the root crate with `default-features = false` (no rayon, no training code) to keep the WASM binary small (~2 MB, built for speed with wasm-opt). `mimalloc`, the native binary's global allocator, is a target dependency for non-wasm32 only (its C build fails on wasm32).
 
 ---
 
@@ -447,21 +447,36 @@ embedded at compile time via `include_bytes!`, so rebuild after changing them.
 
 ### Web bot latency
 
-Measured 2026-10-14 with `./web/build.sh && node web/scripts/bench.mjs <bot> 10`
-(Node 22, single thread, `opt-level = 'z'` + `wasm-opt -Oz`, `.wasm` 1.0 MB).
-The bench (`web/src/bench.rs`, exported as `bench(bot, games, seed)`) plays
-games against random legal human choices and times every call into the bot
-(all three decision phases, including trivial ones), seed 1:
+Measured with `./web/build.sh && node web/scripts/bench.mjs <bot> 10` (Node
+22, single thread, seed 1). The bench (`web/src/bench.rs`, exported as
+`bench(bot, games, seed)`) plays games against random legal human choices and
+times every call into the bot (all three decision phases, including trivial
+ones). Besides the web bots it takes `win` and `win_search`, the win net and
+its search, which the UI does not offer yet.
 
-| Bot | Games | Decisions | mean ms | p50 ms | p95 ms | max ms |
-|---|---|---|---|---|---|---|
-| Master+ (pair-search, `MASTER_PLUS_SPEC = ""`) | 10 | 291 | 20.80 | 0.17 | 121.92 | 308.33 |
-| Master (pair net) | 10 | 297 | 0.06 | 0.03 | 0.15 | 1.61 |
-| Student (GA champion) | 10 | 297 | 0.01 | 0.00 | 0.03 | 0.77 |
+2026-10-21, `opt-level = 3`, `-C target-feature=+simd128`, `wasm-opt -O3`
+(`.wasm` 2.1 MB):
 
-Master+ passes the bar (p95 ≤ 400 ms, max ≤ 2500 ms) at the native production
-search config (`SearchConfig::default()`), so the web build keeps
-`MASTER_PLUS_SPEC = ""` and the size-optimised `opt-level = 'z'` / `-Oz`.
+| Bot | Decisions | mean ms | p50 ms | p95 ms | max ms |
+|---|---|---|---|---|---|
+| Master+ (pair-search, `MASTER_PLUS_SPEC = ""`) | 291 | 7.11 | 0.07 | 38.48 | 109.76 |
+| win-search | 290 | 21.70 | 7.88 | 105.24 | 366.00 |
+| Master (pair net) | 297 | 0.03 | 0.02 | 0.10 | 1.22 |
+| win | 294 | 0.15 | 0.09 | 0.42 | 1.76 |
+| Student (GA champion) | 297 | 0.01 | 0.00 | 0.03 | 1.02 |
+
+The earlier size-optimised build (`opt-level = 'z'`, `-Oz`, no SIMD, 1.0 MB)
+ran Master+ at mean 20.99 / p95 122.90 / max 316.39 ms; win-search, first
+measured at `opt-level = 3` without SIMD, at mean 60.50 / p95 286.20 / max
+1131.33 ms. The win
+net's dense tile is 8 outputs on wasm (two simd128 vectors; 16, two AVX2
+vectors, natively): its 4 × 16 accumulators fill all 16 wasm registers and
+spill, and the 8-wide tile is 2.4× faster for win-search (of 4/8/16 wide and
+2/4/8 inputs per pass, 8 × 4 is fastest). Any tile is bit-identical
+(`a_batched_layer_matches_the_plain_one_at_every_tile_width`). Mean ms by
+build, Master+ / win-search: `z` + simd 21.5 / 106, `s` + simd 20.3 / 92,
+`2` + simd 9.3 / 65, `3` + simd 7.1 / 22. The bar is p95 ≤ 400 ms and max
+≤ 2500 ms.
 
 ### Frontend (`web/src/`)
 
@@ -609,5 +624,5 @@ The `bench` subcommand runs N games between 2+ bot types with seat rotation to c
 The web app is installable as a Progressive Web App with offline caching:
 - `web/public/manifest.json` — app name, theme color, icons
 - `web/public/sw.js` — service worker with stale-while-revalidate caching
-- WASM binary optimized with `opt-level='z'`, `strip`, `panic='abort'`, and `wasm-opt -Oz` (~1 MB)
+- WASM binary built for speed: `opt-level=3`, `simd128`, `strip`, `panic='abort'`, and `wasm-opt -O3` (~2 MB)
 - Build script: `web/build.sh` runs wasm-pack + wasm-opt in one step

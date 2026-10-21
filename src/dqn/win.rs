@@ -411,14 +411,19 @@ impl Dense {
     /// Zero inputs are not skipped (a branch per input costs more than it
     /// saves here); adding 0·w leaves a sum unchanged.
     fn apply_batch(&self, x: &[f32], stride: usize, n: usize, out: &mut Vec<f32>, relu: bool) {
+        self.apply_batch_tiled::<TILE>(x, stride, n, out, relu)
+    }
+
+    /// [`Dense::apply_batch`] in output tiles of `T`.
+    fn apply_batch_tiled<const T: usize>(&self, x: &[f32], stride: usize, n: usize, out: &mut Vec<f32>, relu: bool) {
         debug_assert_eq!(n % LANES, 0);
         out.clear();
         out.resize(n * self.d_out, 0.0);
         for s0 in (0..n).step_by(LANES) {
             let mut t0 = 0;
-            while t0 + TILE <= self.d_out {
-                self.block::<TILE>(x, stride, s0, t0, out, relu);
-                t0 += TILE;
+            while t0 + T <= self.d_out {
+                self.block::<T>(x, stride, s0, t0, out, relu);
+                t0 += T;
             }
             for t in t0..self.d_out {
                 self.block::<1>(x, stride, s0, t, out, relu);
@@ -451,7 +456,11 @@ impl Dense {
 }
 
 /// Output-tile width of [`Dense::apply_batch`]: two AVX2 vectors.
+#[cfg(not(target_arch = "wasm32"))]
 const TILE: usize = 16;
+/// Output-tile width of [`Dense::apply_batch`] on wasm: two simd128 vectors.
+#[cfg(target_arch = "wasm32")]
+const TILE: usize = 8;
 /// Inputs per pass of [`Dense::apply_batch`]: each weight tile loaded is
 /// used this many times.
 const LANES: usize = 4;
@@ -874,6 +883,35 @@ impl WinStrategy {
         WinStrategy { net: Arc::new(net) }
     }
 
+    /// [`WinStrategy::load`] from the dir's files embedded as bytes (the
+    /// web build has no file system): `config.json`, `model.mpk`, and
+    /// `aux.mpk` and `tempo.mpk` when the config says the net has them.
+    pub fn load_from_bytes(config: &[u8], model: &[u8], aux: Option<&[u8]>, tempo: Option<&[u8]>) -> Self {
+        use burn::record::{HalfPrecisionSettings, NamedMpkBytesRecorder, Recorder};
+        fn record<R>(bytes: &[u8], what: &str) -> R
+        where
+            R: burn::record::Record<MyBackend>,
+        {
+            NamedMpkBytesRecorder::<HalfPrecisionSettings>::new()
+                .load(bytes.to_vec(), &Default::default())
+                .unwrap_or_else(|e| panic!("Failed to load the {what} from bytes: {e}"))
+        }
+        let device = Default::default();
+        let cfg = WinModelConfig::load_binary(config).expect("Failed to read the win model config");
+        let model = cfg.init::<MyBackend>(&device).load_record(record(model, "win model"));
+        let mut net = ManualWinNet::from_model(&model);
+        if cfg.has_aux() {
+            let bytes = aux.expect("the config says the net has auxiliary heads");
+            net = net.with_aux(&AuxHeads::<MyBackend>::new(cfg.width, &device).load_record(record(bytes, "aux heads")));
+        }
+        if cfg.is_tempo() {
+            let bytes = tempo.expect("the config says the net has a tempo head");
+            let head = LinearConfig::new(cfg.width, 1).with_bias(true).init(&device);
+            net = net.with_tempo(&head.load_record(record(bytes, "tempo head")));
+        }
+        WinStrategy { net: Arc::new(net) }
+    }
+
     /// The single opponent; an empty board when there is none (solo is
     /// unsupported, as for the pair bot).
     fn opponent(opps: &[State]) -> State {
@@ -1018,6 +1056,64 @@ impl WinProb for WinStrategy {
 mod tests {
     use super::*;
     use crate::state::Mark;
+
+    /// Every tile width sums each output in `apply`'s order: the batched
+    /// layer is bit-identical to it on native and wasm alike.
+    #[test]
+    fn a_batched_layer_matches_the_plain_one_at_every_tile_width() {
+        use rand::{rngs::SmallRng, Rng, SeedableRng};
+        let mut rng = SmallRng::seed_from_u64(7);
+        let (d_in, d_out, n) = (21, 2 * 16 + 3, 2 * LANES);
+        let dense = Dense {
+            w: (0..d_in * d_out).map(|_| rng.gen_range(-1.0..1.0)).collect(),
+            b: (0..d_out).map(|_| rng.gen_range(-1.0..1.0)).collect(),
+            d_out,
+        };
+        // A third of the inputs zero, as fresh rows give.
+        let x: Vec<f32> = (0..n * d_in)
+            .map(|_| {
+                if rng.gen_bool(0.33) {
+                    0.0
+                } else {
+                    rng.gen_range(-2.0..2.0)
+                }
+            })
+            .collect();
+        for relu in [false, true] {
+            let mut want = Vec::new();
+            let mut one = Vec::new();
+            for s in 0..n {
+                dense.apply(&x[s * d_in..][..d_in], &mut one, relu);
+                want.extend_from_slice(&one);
+            }
+            let bits = |v: &[f32]| v.iter().map(|f| f.to_bits()).collect::<Vec<_>>();
+            let (mut t8, mut t16) = (Vec::new(), Vec::new());
+            dense.apply_batch_tiled::<8>(&x, d_in, n, &mut t8, relu);
+            dense.apply_batch_tiled::<16>(&x, d_in, n, &mut t16, relu);
+            assert_eq!(bits(&t8), bits(&want), "tile 8, relu {relu}");
+            assert_eq!(bits(&t16), bits(&want), "tile 16, relu {relu}");
+        }
+    }
+
+    #[test]
+    fn a_net_loaded_from_bytes_plays_as_the_one_loaded_from_its_dir() {
+        let from_dir = WinStrategy::load("win_model");
+        let from_bytes = WinStrategy::load_from_bytes(
+            include_bytes!("../../win_model/config.json"),
+            include_bytes!("../../win_model/model.mpk"),
+            Some(include_bytes!("../../win_model/aux.mpk")),
+            Some(include_bytes!("../../win_model/tempo.mpk")),
+        );
+        let (a, b) = boards();
+        for (s, o) in [(a, b), (b, a)] {
+            for next in [Next::Me, Next::Opp] {
+                let x = from_dir.evaluate_batch_next(&[s], &[o], next)[0];
+                let y = from_bytes.evaluate_batch_next(&[s], &[o], next)[0];
+                assert_eq!(x.to_bits(), y.to_bits(), "{next:?}: {x} vs {y}");
+            }
+            assert_eq!(from_dir.net.aux_states(&s, &o), from_bytes.net.aux_states(&s, &o));
+        }
+    }
 
     /// Two different mid-game boards.
     pub(super) fn boards() -> (State, State) {

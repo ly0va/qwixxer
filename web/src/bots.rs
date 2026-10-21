@@ -3,6 +3,7 @@
 
 use qwixxer::bot::{self, DNA};
 use qwixxer::dqn::pair::PairStrategy;
+use qwixxer::dqn::win::WinStrategy;
 use qwixxer::strategy::search::{SearchBot, SearchConfig};
 use qwixxer::strategy::{Conservative, Strategy};
 use std::sync::Arc;
@@ -52,6 +53,17 @@ pub fn master_plus() -> SearchBot<PairStrategy> {
     SearchBot::with_config(
         PairStrategy::load_from_bytes(PAIR_MODEL),
         SearchConfig::parse(MASTER_PLUS_SPEC).expect("MASTER_PLUS_SPEC"),
+    )
+}
+
+/// The win net (not in the UI yet; the latency bench plays it as `win`,
+/// and as `win_search` under the production search).
+pub fn win() -> WinStrategy {
+    WinStrategy::load_from_bytes(
+        include_bytes!("../../win_model/config.json"),
+        include_bytes!("../../win_model/model.mpk"),
+        Some(include_bytes!("../../win_model/aux.mpk")),
+        Some(include_bytes!("../../win_model/tempo.mpk")),
     )
 }
 

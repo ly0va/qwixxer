@@ -1,9 +1,10 @@
 //! Browser/Node latency benchmark: plays games with random human choices and
 //! times every call into the bot.
 
-use crate::bots::{make_bot, BotKind};
+use crate::bots::{make_bot, win, BotKind};
 use crate::session::{Phase, Session};
 use qwixxer::state::{Mark, State};
+use qwixxer::strategy::search::SearchBot;
 use qwixxer::strategy::Strategy;
 use rand::rngs::SmallRng;
 use rand::seq::SliceRandom;
@@ -45,14 +46,29 @@ impl Strategy for Timed {
     }
 }
 
+/// A web bot by id, or the win net (`win`, `win_search`), which the UI
+/// does not offer yet.
+fn bench_bot(bot: &str) -> Result<fn() -> Box<dyn Strategy>, String> {
+    Ok(match bot {
+        "win" => || Box::new(win()),
+        "win_search" => || Box::new(SearchBot::new(win())),
+        _ => match BotKind::parse(bot)? {
+            BotKind::MasterPlus => || make_bot(BotKind::MasterPlus),
+            BotKind::Master => || make_bot(BotKind::Master),
+            BotKind::Student => || make_bot(BotKind::Student),
+            BotKind::Newbie => || make_bot(BotKind::Newbie),
+        },
+    })
+}
+
 #[wasm_bindgen]
 pub fn bench(bot: &str, games: u32, seed: u32) -> Result<String, JsError> {
-    let kind = BotKind::parse(bot).map_err(|e| JsError::new(&e))?;
+    let make = bench_bot(bot).map_err(|e| JsError::new(&e))?;
     let ms = Rc::new(RefCell::new(Vec::new()));
     let mut rng = SmallRng::seed_from_u64(seed as u64);
     for g in 0..games {
         let timed = Timed {
-            inner: make_bot(kind),
+            inner: make(),
             ms: ms.clone(),
         };
         let mut s = Session::new(Box::new(timed), seed as u64 * 1000 + g as u64);
