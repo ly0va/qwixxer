@@ -2351,9 +2351,15 @@ with the lookahead: +0.73pp a game for one freed seat (+0.35pp plain).
 
 Bench vs GA (1M, local): `win` **63.3%** (99% CI 63.22–63.43, ties 1.8%),
 against 62.1% plain: +1.2pp, as against Master, and level with win-search
-before the lookahead (63.3%).
+before the lookahead (63.3%). `win-search` with the lookahead vs GA
+(user, big machine): **63.7%**, +0.4pp over the static net.
 
-Open: `win-search` vs GA with the lookahead; speed (batch the per-candidate colour-phase evaluations); whether Master
+Current standings (freed locks, passive lookahead): vs GA, `win` 63.3%
+and `win-search` 63.7%, against the pair net's 60.1% and pair-search's
+62.7% (above); `win` vs Master 53.47% (gate above; about 53.3% in the
+user's bench). The E-era Results table above predates both changes.
+
+Open: speed (batch the per-candidate colour-phase evaluations); whether Master
 gains from the lookahead too (`--b-lookahead`); a round fitted on
 freed-policy labels; the pair net's lock bug.
 
