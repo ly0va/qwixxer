@@ -158,6 +158,27 @@ pub struct SearchStats {
     /// Rollout samples per candidate, summed over truncated searches
     /// (`/ searched` = mean samples used; below `k_samples` with `seq`).
     pub rollout_samples: u64,
+    /// `Some` turns on the rollout-lookahead probe: every searched decision
+    /// also rolls its shortlist out both ways and records it here.
+    pub lookahead_probe: Option<Vec<LookaheadProbe>>,
+}
+
+/// One searched decision's shortlist rolled out `k_samples` times each with
+/// plain and with lookahead passive decisions, on the same dice.
+#[derive(Debug, Clone)]
+pub struct LookaheadProbe {
+    /// Static value per candidate (the bot's evaluate units).
+    pub statics: Vec<f32>,
+    /// Rollout mean per candidate: plain passive decisions (production).
+    pub lite: Vec<f32>,
+    /// Rollout mean per candidate: the passive lookahead in rollouts.
+    pub look: Vec<f32>,
+    /// Per-sample rollout values, plain then lookahead, per candidate.
+    pub lite_samples: Vec<Vec<f32>>,
+    pub look_samples: Vec<Vec<f32>>,
+    /// Wall time of the two rollout sets.
+    pub lite_secs: f64,
+    pub look_secs: f64,
 }
 
 /// Search knobs. `Default` is the production configuration (Phase 21:
@@ -190,6 +211,9 @@ pub struct SearchConfig {
     /// Candidates searched per decision (top by static value), at least 2.
     /// With `seq`, candidates that fall decisively behind stop sampling.
     pub cands: usize,
+    /// Rollout passive decisions valued at the end of the active player's
+    /// turn when the bot looks ahead ([`Fidelity::LiteLookahead`](super::sim::Fidelity::LiteLookahead)).
+    pub rollout_lookahead: bool,
 }
 
 /// Production rollout/static blend weight (Phase 25).
@@ -212,6 +236,7 @@ impl Default for SearchConfig {
             stop: SEQ_STOP,
             gate: GATE_MARGIN,
             cands: SEARCH_CANDS,
+            rollout_lookahead: false,
         }
     }
 }
@@ -238,7 +263,8 @@ impl SearchConfig {
     /// (λ in [0, 1]) / `noblend`, `seq=N` / `noseq`
     /// (sequential sampling from N up to k; `noseq` = fixed k), `cands=N`
     /// (candidates searched, ≥ 2), `stop=C` (sequential threshold, may be
-    /// `inf`), `gate=G` (close-gate margin ≥ 0). Empty = production.
+    /// `inf`), `gate=G` (close-gate margin ≥ 0), `rlook` (the passive
+    /// lookahead inside rollouts). Empty = production.
     pub fn parse(spec: &str) -> Result<Self, String> {
         let mut cfg = Self::default();
         let num = |key: &str, v: &str| v.parse::<usize>().map_err(|e| format!("{key}={v}: {e}"));
@@ -255,6 +281,7 @@ impl SearchConfig {
                 None if tok == "strat" => cfg.stratify = true,
                 None if tok == "noblend" => cfg.blend = None,
                 None if tok == "noseq" => cfg.seq = None,
+                None if tok == "rlook" => cfg.rollout_lookahead = true,
                 Some(("k", v)) => cfg.k_samples = num("k", v)?,
                 Some(("lock", v)) => cfg.lock_k = Some(num("lock", v)?),
                 Some(("blend", v)) => cfg.blend = Some(real("blend", v, 1.0)?),
@@ -265,7 +292,7 @@ impl SearchConfig {
                 _ => {
                     return Err(format!(
                         "unknown search option {tok:?} (passive, nopassive, lock=N, nolock, strat, k=N, \
-                     blend=λ, noblend, seq=N, noseq, stop=C, gate=G, cands=N)"
+                     blend=λ, noblend, seq=N, noseq, stop=C, gate=G, cands=N, rlook)"
                     ))
                 }
             }
@@ -308,6 +335,9 @@ impl std::fmt::Display for SearchConfig {
         }
         // Always printed: Phase 26 logs show the same spec without it (2).
         write!(f, ",cands={}", self.cands)?;
+        if self.rollout_lookahead {
+            write!(f, ",rlook")?;
+        }
         Ok(())
     }
 }
@@ -610,6 +640,19 @@ impl<B: WinProb> SearchBot<B> {
         first_active: usize,
         ks: std::ops::Range<usize>,
     ) -> Vec<Vec<f32>> {
+        self.rollout_values_with(entries, active, seed, first_active, ks, self.cfg.rollout_lookahead)
+    }
+
+    /// [`Self::rollout_values`] with the rollout lookahead given.
+    fn rollout_values_with(
+        &self,
+        entries: &[(Vec<State>, bool)],
+        active: &[bool],
+        seed: u64,
+        first_active: usize,
+        ks: std::ops::Range<usize>,
+        lookahead: bool,
+    ) -> Vec<Vec<f32>> {
         let n = entries[0].0.len();
         let mut sims: Vec<SimGame> = Vec::new();
         let mut sim_owner: Vec<usize> = Vec::new(); // entry index per sim
@@ -631,6 +674,7 @@ impl<B: WinProb> SearchBot<B> {
         }
 
         let mut driver = BatchedRollouts::new(&self.bot, sims);
+        driver.passive_lookahead = lookahead;
         for _ in 0..(HORIZON_ROUNDS * n) {
             if driver.all_over() {
                 break;
@@ -684,6 +728,34 @@ impl<B: WinProb> SearchBot<B> {
         out
     }
 
+    /// The lookahead probe (see [`SearchStats::lookahead_probe`]); no effect
+    /// on play.
+    fn probe_lookahead(&self, cands: &[Candidate], entries: &[(Vec<State>, bool)], seed: u64, first_active: usize) {
+        let Some(stats) = &self.stats else { return };
+        if stats.borrow().lookahead_probe.is_none() {
+            return;
+        }
+        let all = vec![true; entries.len()];
+        let ks = 0..self.cfg.k_samples;
+        let run = |look: bool| {
+            let t = std::time::Instant::now();
+            let v = self.rollout_values_with(entries, &all, seed, first_active, ks.clone(), look);
+            (v, t.elapsed().as_secs_f64())
+        };
+        let ((lite_samples, lite_secs), (look_samples, look_secs)) = (run(false), run(true));
+        let mean = |v: &Vec<Vec<f32>>| v.iter().map(|x| x.iter().sum::<f32>() / x.len() as f32).collect();
+        let row = LookaheadProbe {
+            statics: cands.iter().take(entries.len()).map(|c| c.value).collect(),
+            lite: mean(&lite_samples),
+            look: mean(&look_samples),
+            lite_samples,
+            look_samples,
+            lite_secs,
+            look_secs,
+        };
+        stats.borrow_mut().lookahead_probe.as_mut().unwrap().push(row);
+    }
+
     /// Shared post-static-eval flow: search the top-K entries, pick.
     /// `entries[i]` = (full player states after candidate i's deterministic
     /// completion of the current turn, game-already-over flag). Returns the
@@ -701,6 +773,7 @@ impl<B: WinProb> SearchBot<B> {
         let k_max = self.cfg.k_samples;
         let mut k = self.cfg.seq.unwrap_or(k_max).min(k_max);
         let mut active = vec![true; entries.len()];
+        self.probe_lookahead(cands, &entries, seed, first_active);
         let mut values = self.rollout_values(&entries, &active, seed, first_active, 0..k);
         let mut sampled = k * entries.len();
         loop {
@@ -1551,6 +1624,13 @@ mod tests {
     }
 
     #[test]
+    fn search_config_parses_the_rollout_lookahead() {
+        let cfg = SearchConfig::parse("rlook").unwrap();
+        assert!(cfg.rollout_lookahead && !SearchConfig::default().rollout_lookahead);
+        assert_eq!(SearchConfig::parse(&cfg.to_string()), Ok(cfg));
+    }
+
+    #[test]
     fn search_config_parses_blend_and_gate() {
         let cfg = SearchConfig::parse("blend=0.4,gate=0.3").unwrap();
         assert_eq!(cfg.blend, Some(0.4));
@@ -1782,6 +1862,7 @@ mod tests {
                 stop: SEQ_STOP,
                 gate: GATE_MARGIN,
                 cands: SEARCH_CANDS,
+                rollout_lookahead: false,
             }
         );
         assert_eq!(SearchConfig::parse(&cfg.to_string()), Ok(cfg));

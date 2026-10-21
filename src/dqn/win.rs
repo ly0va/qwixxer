@@ -2062,6 +2062,46 @@ mod tests {
         assert!(win.is_finite());
     }
 
+    /// Rollouts with the passive lookahead play exactly the sequential sims
+    /// that use it, and it changes some of their games.
+    #[test]
+    fn lockstep_rollouts_with_the_lookahead_match_sequential_sims() {
+        use crate::strategy::sim::{play_sim_turn, BatchedRollouts, Fidelity, SimGame};
+        use rand::{rngs::SmallRng, SeedableRng};
+        let bot = WinStrategy::from_model(&random_model(70, 16));
+        let sims = || -> Vec<SimGame> {
+            (0..16u64)
+                .map(|k| SimGame {
+                    states: vec![State::default(); 2],
+                    active: (k % 2) as usize,
+                    rngs: (0..2).map(|i| SmallRng::seed_from_u64(900 + 10 * k + i)).collect(),
+                    over: false,
+                })
+                .collect()
+        };
+        let run = |lookahead: bool| {
+            let mut d = BatchedRollouts::new(&bot, sims());
+            d.passive_lookahead = lookahead;
+            for _ in 0..20 {
+                d.step_turn();
+            }
+            d.sims
+        };
+        let mut seq = sims();
+        for _ in 0..20 {
+            seq.iter_mut()
+                .for_each(|s| play_sim_turn(&bot, s, Fidelity::LiteLookahead));
+        }
+        let (look, lite) = (run(true), run(false));
+        for (a, b) in seq.iter().zip(&look) {
+            assert_eq!((a.over, a.active, &a.states), (b.over, b.active, &b.states));
+        }
+        assert!(
+            look.iter().zip(&lite).any(|(a, b)| a.states != b.states),
+            "the lookahead changed nothing"
+        );
+    }
+
     /// A candidate that ends the game, alone or with the opponent's locks,
     /// is valued by its result in every frame, with or without a tempo
     /// head; the net values only games that go on.

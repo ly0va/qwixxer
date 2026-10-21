@@ -4,8 +4,8 @@
 //! mid-turn, with all players' decisions driven by a `Bot`.
 
 use super::bot_impl::{
-    active_phase1_impl, active_phase2_choices_with, eval_decision, eval_decision_next, passive_phase1_choices_with,
-    phase1_plan_choices_with, Decision,
+    active_phase1_impl, active_phase2_choices_with, eval_decision, eval_decision_next, passive_decide,
+    passive_phase1_choices_with, phase1_plan_choices_with, Decision,
 };
 use super::{Bot, Next};
 use crate::game::DiceSource;
@@ -22,6 +22,10 @@ pub enum Fidelity {
     /// nested opponent simulation. Used inside search rollouts (one net
     /// evaluation per decision; sims are approximations).
     Lite,
+    /// [`Lite`](Fidelity::Lite) with passive decisions valued at the end of
+    /// the active player's turn when the bot looks ahead
+    /// ([`Bot::passive_lookahead`]), as it does in play.
+    LiteLookahead,
 }
 
 pub struct SimGame {
@@ -91,12 +95,16 @@ pub fn play_sim_turn(bot: &impl Bot, sim: &mut SimGame, fidelity: Fidelity) {
         let m = if j == sim.active {
             match fidelity {
                 Fidelity::Full => active_phase1_impl(bot, &snapshot[j], &view, dice),
-                Fidelity::Lite => eval_decision(
+                Fidelity::Lite | Fidelity::LiteLookahead => eval_decision(
                     bot,
                     phase1_plan_choices_with(&snapshot[j], &view, dice, bot.force_lock()),
                     &view,
                 ),
             }
+        } else if fidelity == Fidelity::LiteLookahead {
+            // `view` is turn-ordered from j: the active player sits at
+            // (active − j − 1) mod n.
+            passive_decide(bot, &snapshot[j], &view, dice, (sim.active + n - j - 1) % n)
         } else {
             eval_decision_next(
                 bot,
@@ -142,6 +150,9 @@ pub fn play_sim_turn(bot: &impl Bot, sim: &mut SimGame, fidelity: Fidelity) {
 pub struct BatchedRollouts<'a, B: Bot> {
     pub bot: &'a B,
     pub sims: Vec<SimGame>,
+    /// Passive decisions as [`Fidelity::LiteLookahead`] plays them (each
+    /// valued unbatched, at the end of the active player's turn).
+    pub passive_lookahead: bool,
 }
 
 /// One unevaluated decision gathered from a sim.
@@ -157,7 +168,11 @@ struct PendingChoice {
 
 impl<'a, B: Bot> BatchedRollouts<'a, B> {
     pub fn new(bot: &'a B, sims: Vec<SimGame>) -> Self {
-        Self { bot, sims }
+        Self {
+            bot,
+            sims,
+            passive_lookahead: false,
+        }
     }
 
     pub fn all_over(&self) -> bool {
@@ -204,6 +219,11 @@ impl<'a, B: Bot> BatchedRollouts<'a, B> {
             let dice = dice_of[li];
             for j in 0..n {
                 let view = SimGame::opp_view(&snapshots[li], j);
+                if j != sim.active && self.passive_lookahead && self.bot.passive_lookahead() {
+                    marks[li][j] =
+                        passive_decide(self.bot, &snapshots[li][j], &view, dice, (sim.active + n - j - 1) % n);
+                    continue;
+                }
                 let decision = if j == sim.active {
                     phase1_plan_choices_with(&snapshots[li][j], &view, dice, self.bot.force_lock())
                 } else {
