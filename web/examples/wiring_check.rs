@@ -1,6 +1,6 @@
 //! Checks the web bots end to end, natively.
-//! 1. Master+ (web `make_bot`) decides exactly like the CLI's production
-//!    pair-search (`SearchBot::new(PairStrategy::load("pair_model"))`).
+//! 1. Master+ and Master (web `make_bot`) decide exactly like the CLI's
+//!    production win-search and win net (`win_model`).
 //! 2. Win rates of each web bot against the GA champion, with the GA playing
 //!    the human seat through the web `Session` API (bot starts every game).
 //!
@@ -8,11 +8,11 @@
 //! Optional second argument: comma-separated bots for part 2 only, skipping
 //! part 1 (e.g. `-- 3000 newbie,student`).
 
-use qwixxer::dqn::pair::PairStrategy;
+use qwixxer::dqn::win::WinStrategy;
 use qwixxer::state::{Mark, State};
 use qwixxer::strategy::search::{SearchBot, SearchConfig};
 use qwixxer::strategy::Strategy;
-use qwixxer_web::bots::{make_bot, BotKind, MASTER_PLUS_SPEC};
+use qwixxer_web::bots::{make_bot, BotKind};
 use qwixxer_web::session::{Phase, Session, SheetSnap, Snapshot, Sq};
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
@@ -29,10 +29,11 @@ fn states(snap: &Snapshot) -> (State, State) {
 
 /// Part 1: identical decisions on positions from real games.
 fn same_decisions(positions: usize) {
-    assert_eq!(SearchConfig::parse(MASTER_PLUS_SPEC).unwrap(), SearchConfig::default());
-    println!("Master+ config: {}", SearchConfig::parse(MASTER_PLUS_SPEC).unwrap());
+    println!("Master+ config: {}", SearchConfig::win());
     let mut web = make_bot(BotKind::MasterPlus);
-    let mut cli = SearchBot::new(PairStrategy::load("pair_model"));
+    let mut cli = SearchBot::with_config(WinStrategy::load("win_model"), SearchConfig::win());
+    let mut web_master = make_bot(BotKind::Master);
+    let mut cli_master = WinStrategy::load("win_model");
     let mut student = make_bot(BotKind::Student);
     let mut rng = SmallRng::seed_from_u64(7);
     let (mut checked, mut differ) = (0, 0);
@@ -50,8 +51,16 @@ fn same_decisions(positions: usize) {
                 cli.active_phase1(&bot, &[you], dice),
                 cli.passive_phase1(&bot, &[you], dice, 0),
             );
+            let c = (
+                web_master.active_phase1(&bot, &[you], dice),
+                web_master.passive_phase1(&bot, &[you], dice, 0),
+            );
+            let d = (
+                cli_master.active_phase1(&bot, &[you], dice),
+                cli_master.passive_phase1(&bot, &[you], dice, 0),
+            );
             checked += 1;
-            if a != b {
+            if a != b || c != d {
                 differ += 1;
             }
             advance(&mut s, &mut student);

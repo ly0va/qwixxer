@@ -1,10 +1,9 @@
 //! Browser/Node latency benchmark: plays games with random human choices and
 //! times every call into the bot.
 
-use crate::bots::{make_bot, win, BotKind};
+use crate::bots::{make_bot, BotKind};
 use crate::session::{Phase, Session};
 use qwixxer::state::{Mark, State};
-use qwixxer::strategy::search::{SearchBot, SearchConfig};
 use qwixxer::strategy::Strategy;
 use rand::rngs::SmallRng;
 use rand::seq::SliceRandom;
@@ -46,18 +45,13 @@ impl Strategy for Timed {
     }
 }
 
-/// A web bot by id, or the win net (`win`, `win_search`), which the UI
-/// does not offer yet.
+/// A web bot by id.
 fn bench_bot(bot: &str) -> Result<fn() -> Box<dyn Strategy>, String> {
-    Ok(match bot {
-        "win" => || Box::new(win()),
-        "win_search" => || Box::new(SearchBot::with_config(win(), SearchConfig::win())),
-        _ => match BotKind::parse(bot)? {
-            BotKind::MasterPlus => || make_bot(BotKind::MasterPlus),
-            BotKind::Master => || make_bot(BotKind::Master),
-            BotKind::Student => || make_bot(BotKind::Student),
-            BotKind::Newbie => || make_bot(BotKind::Newbie),
-        },
+    Ok(match BotKind::parse(bot)? {
+        BotKind::MasterPlus => || make_bot(BotKind::MasterPlus),
+        BotKind::Master => || make_bot(BotKind::Master),
+        BotKind::Student => || make_bot(BotKind::Student),
+        BotKind::Newbie => || make_bot(BotKind::Newbie),
     })
 }
 

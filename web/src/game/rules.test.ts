@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { View } from '../engine/protocol';
-import { clickable, confirmState, logEntry, sheetModel, strikeOpen, type SheetUi } from './rules';
+import { clickable, confirmState, logEntry, predictedTurn, sheetModel, strikeOpen, type SheetUi } from './rules';
 
 const empty = () => ({ marks: [0, 1, 2, 3].map(() => Array(11).fill(false)), strikes: 0, score: 0, row_points: [0, 0, 0, 0] });
 function view(p: Partial<View>): View {
@@ -121,5 +121,18 @@ describe('log', () => {
         expect(e.lines[1]).toMatchObject({ who: 'You', chips: [], empty: '–' });
         const s = logEntry(8, { roller: 'you', you: [], you_strike: true, bot_white: null, bot_colour: null, bot_strike: false, locked: [] });
         expect(s.lines[0].chips).toEqual([{ kind: 'strike' }]);
+    });
+});
+
+describe('predictedTurn', () => {
+    it('words the opponent\'s predicted turn on their roll', () => {
+        const w = { row: 0, n: 7 }, c = { row: 2, n: 9 };
+        expect(predictedTurn({ white: w, colour: c, strike: false })).toEqual({
+            verb: 'marks',
+            chips: [{ kind: 'num', row: 0, n: 7 }, { kind: 'num', row: 2, n: 9 }],
+        });
+        expect(predictedTurn({ white: null, colour: c, strike: false }).chips).toHaveLength(1);
+        expect(predictedTurn({ white: null, colour: null, strike: true })).toEqual({ verb: 'takes', chips: [{ kind: 'strike' }] });
+        expect(predictedTurn({ white: null, colour: null, strike: false })).toEqual({ verb: 'passes', chips: [] });
     });
 });

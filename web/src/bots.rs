@@ -1,19 +1,13 @@
-//! The four web bots: Master+, Master, Student (spec "Implementation
-//! decisions") and Newbie, the hand-written Conservative.
+//! The four web bots: Master+ (win-search), Master (the win net), Student
+//! (the GA champion) and Newbie, the hand-written Conservative.
 
 use qwixxer::bot::{self, DNA};
-use qwixxer::dqn::pair::PairStrategy;
 use qwixxer::dqn::win::WinStrategy;
 use qwixxer::strategy::search::{SearchBot, SearchConfig};
 use qwixxer::strategy::{Conservative, Strategy};
 use std::sync::Arc;
 
 const CHAMPION: &[u8] = include_bytes!("../../champion.txt");
-pub(crate) const PAIR_MODEL: &[u8] = include_bytes!("../../pair_model/model.mpk");
-
-/// Master+ search config: "" = native production (`SearchConfig::default()`).
-/// Task 4's browser benchmark may set a lighter spec here.
-pub const MASTER_PLUS_SPEC: &str = "";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BotKind {
@@ -48,16 +42,14 @@ impl BotKind {
     }
 }
 
-/// Master+ as its concrete type (the explorer asks it to explain decisions).
-pub fn master_plus() -> SearchBot<PairStrategy> {
-    SearchBot::with_config(
-        PairStrategy::load_from_bytes(PAIR_MODEL),
-        SearchConfig::parse(MASTER_PLUS_SPEC).expect("MASTER_PLUS_SPEC"),
-    )
+/// Master+ as its concrete type (the explorer asks it to explain decisions):
+/// native production win-search.
+pub fn master_plus() -> SearchBot<WinStrategy> {
+    SearchBot::with_config(win(), SearchConfig::win())
 }
 
-/// The win net (not in the UI yet; the latency bench plays it as `win`,
-/// and as `win_search` under the production search).
+/// Master: the win net, as native `win` plays (passive lookahead, no
+/// forced safe locks).
 pub fn win() -> WinStrategy {
     WinStrategy::load_from_bytes(
         include_bytes!("../../win_model/config.json"),
@@ -70,7 +62,7 @@ pub fn win() -> WinStrategy {
 pub fn make_bot(kind: BotKind) -> Box<dyn Strategy> {
     match kind {
         BotKind::MasterPlus => Box::new(master_plus()),
-        BotKind::Master => Box::new(PairStrategy::load_from_bytes(PAIR_MODEL)),
+        BotKind::Master => Box::new(win()),
         BotKind::Student => Box::new(DNA::load_weights_from_bytes(CHAMPION, Arc::new(bot::default_genes()))),
         BotKind::Newbie => Box::<Conservative>::default(),
     }

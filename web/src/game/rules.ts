@@ -1,4 +1,4 @@
-import type { RollRecord, Sq, View } from '../engine/protocol';
+import type { OpponentTurn, RollRecord, Sq, View } from '../engine/protocol';
 
 export const ROWS = ['red', 'yellow', 'green', 'blue'] as const;
 export const NAME = ['Red', 'Yellow', 'Green', 'Blue'];
@@ -91,6 +91,13 @@ export interface LogEntry { n: number; lines: LogLine[] }
 export function chipsFor(marks: Sq[], strike: boolean): Chip[] {
     if (strike) return [{ kind: 'strike' }];
     return marks.flatMap((m): Chip[] => (isTerminal(m) ? [{ kind: 'num', row: m.row, n: m.n }, { kind: 'lock' }] : [{ kind: 'num', row: m.row, n: m.n }]));
+}
+
+/** The rolling opponent's predicted turn (explorer, their roll) as a verb and its chips. */
+export function predictedTurn(t: OpponentTurn): { verb: 'marks' | 'takes' | 'passes'; chips: Chip[] } {
+    const marks = [t.white, t.colour].filter((x): x is Sq => !!x);
+    const chips = chipsFor(marks, t.strike);
+    return { verb: t.strike ? 'takes' : chips.length ? 'marks' : 'passes', chips };
 }
 
 export function logEntry(n: number, rec: RollRecord): LogEntry {

@@ -5,7 +5,7 @@ import { BAD_LINK, ExplorerController, MAX_BATCH, MIN_BATCH } from './explorer.s
 import { encode } from './link';
 import { analysisKey, emptyPosition, toggleSquare } from './position';
 
-const answer = (p_win: number): Answer => ({ over: null, eval: { p_win, margin: 0, sigma: 10 }, moves: null, opponent_white: null });
+const answer = (p_win: number): Answer => ({ over: null, eval: { p_win, margin: 0 }, moves: null, opponent_white: null, opponent_turn: null });
 function memStore(init: Record<string, string> = {}): Store & { data: Record<string, string> } {
     const data = { ...init };
     return { data, get: (k) => data[k] ?? null, set: (k, v) => { data[k] = v; } };

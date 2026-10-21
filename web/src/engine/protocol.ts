@@ -30,11 +30,23 @@ export type Roller = 'you' | 'opponent';
 export interface SheetSnap { marks: boolean[][]; strikes: number }
 /** Mirrors explorer.rs `Position`. `locked` = rows closed by tapping their lock. */
 export interface Position { you: SheetSnap; opponent: SheetSnap; locked: boolean[]; dice: number[] | null; roller: Roller }
-export interface Eval { p_win: number; margin: number; sigma: number }
+/** The win net's view of the position: P(you win) for whoever rolls next, and the expected final difference. */
+export interface Eval { p_win: number; margin: number }
 /** `note` (only on Master+'s move when it isn't ranked first): why Master+ still plays it. */
 export interface MoveOut { marks: Sq[]; strike: boolean; pass: boolean; p_win: number; bots: BotKind[]; note: 'rolled_out' | 'rule' | null }
-/** `opponent_white`: on your roll, the opponent's predicted simultaneous white-sum mark (`mark: null` = pass). */
-export interface Answer { over: { you: number; opponent: number } | null; eval: Eval; moves: MoveOut[] | null; opponent_white: { mark: Sq | null } | null }
+/** The rolling opponent's predicted turn: white-sum mark, then colour mark or a strike (neither if the game ends first). */
+export interface OpponentTurn { white: Sq | null; colour: Sq | null; strike: boolean }
+/**
+ * `opponent_white`: on your roll, the opponent's predicted simultaneous white-sum mark (`mark: null` = pass).
+ * `opponent_turn`: on their roll, their predicted turn after your top-ranked move.
+ */
+export interface Answer {
+    over: { you: number; opponent: number } | null;
+    eval: Eval;
+    moves: MoveOut[] | null;
+    opponent_white: { mark: Sq | null } | null;
+    opponent_turn: OpponentTurn | null;
+}
 /** Mirrors explorer.rs `Analysis`: play-out totals of one batch (or a running sum). */
 export interface Analysis { games: number; wins: number; ties: number; diff_sum: number; diff_sq_sum: number }
 /**

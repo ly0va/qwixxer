@@ -1,21 +1,21 @@
 //! The state explorer (spec `docs/superpowers/specs/2026-10-14-state-explorer-design.md`):
-//! any two-sheet position, evaluated by the pair net, and for a roll every
-//! legal move of yours ranked by the pair net's chance to win after it (as
-//! Master+ judges it), tagged with the move each web bot would make in your
+//! any two-sheet position, evaluated by the win net, and for a roll every
+//! legal move of yours ranked by the win net's chance to win after it (as
+//! Master judges it), tagged with the move each web bot would make in your
 //! seat.
 
-use crate::bots::{make_bot, master_plus, BotKind, PAIR_MODEL};
+use crate::bots::{make_bot, master_plus, win, BotKind};
 use crate::selection::{active_options, n_locked, passive_options, union};
 use crate::session::{SheetSnap, Sq};
-use qwixxer::dqn::pair::{pair_features, PairStrategy};
-use qwixxer::dqn::{LOG_VAR_MAX, LOG_VAR_MIN};
+use qwixxer::dqn::win::WinStrategy;
 use qwixxer::state::{Mark, State};
 use qwixxer::strategy::bot_impl::{
-    active_phase1_choices, active_phase2_choices, eval_decision, passive_phase1_choices, Decision,
+    active_phase1_choices, active_phase2_choices_with, passive_lookahead_values, passive_phase1_choices_with,
+    passive_phase1_impl, passive_turn_predictions, Decision,
 };
 use qwixxer::strategy::search::{context_seed, phi, sample_player_seed, SearchBot, WinProb};
 use qwixxer::strategy::sim::{BatchedRollouts, SimGame};
-use qwixxer::strategy::{Bot, Strategy};
+use qwixxer::strategy::{Bot, Next, Strategy};
 use rand::rngs::SmallRng;
 use rand::SeedableRng;
 use serde::{Deserialize, Serialize};
@@ -58,11 +58,11 @@ impl Position {
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Eval {
-    /// The pair net's P(you win) (Master's and Master+'s evaluator).
+    /// The win net's P(you win) before the roll, for whoever rolls next
+    /// (Master's and Master+'s evaluator).
     pub p_win: f32,
-    /// Expected final score difference, you − opponent: current difference + μ.
+    /// Expected final score difference, you − opponent (the net's aux head).
     pub margin: f32,
-    pub sigma: f32,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -77,8 +77,8 @@ pub struct MoveOut {
     pub marks: Vec<Sq>,
     pub strike: bool,
     pub pass: bool,
-    /// The pair net's P(you win) after the move, judged as Master+ judges
-    /// it (see `Explorer::moves`).
+    /// The win net's P(you win) after the move, judged as Master judges it
+    /// (see `Explorer::moves`).
     pub p_win: f32,
     /// Ids of the bots that would make this move in your seat.
     pub bots: Vec<&'static str>,
@@ -96,6 +96,9 @@ pub struct Answer {
     /// On your roll (dice set, game not over): the white-sum mark the
     /// opponent is predicted to make at the same time (`mark: null` = pass).
     pub opponent_white: Option<OpponentWhite>,
+    /// On their roll (dice set, game not over): their predicted turn after
+    /// your top-ranked move, as Master's lookahead predicts it.
+    pub opponent_turn: Option<OpponentTurn>,
 }
 
 /// Spec "Engine" (`2026-10-15-explorer-analysis-design.md`): totals of
@@ -114,6 +117,15 @@ pub struct Analysis {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct OpponentWhite {
     pub mark: Option<Sq>,
+}
+
+/// The rolling opponent's turn: its white-sum mark, then its colour mark
+/// or a strike (neither when the game ends after the white sum).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct OpponentTurn {
+    pub white: Option<Sq>,
+    pub colour: Option<Sq>,
+    pub strike: bool,
 }
 
 /// One full turn of yours: marks in application order, a strike, or (both
@@ -183,10 +195,10 @@ pub fn legal_turns(you: &State, opp: &State, dice: [u8; 6], roller: Roller, opp_
     }
 }
 
-/// The opponent's white-sum mark on your roll, predicted as the bots predict
-/// it (`bot_impl::simulate_opp_phase1` with the pair net: Master's choice).
-pub fn predict_opp_white(net: &PairStrategy, you: &State, opp: &State, dice: [u8; 6]) -> Option<Mark> {
-    eval_decision(net, passive_phase1_choices(opp, from_ref(you), dice), from_ref(you))
+/// The opponent's white-sum mark on your roll, predicted as Master predicts
+/// it (`bot_impl::simulate_opp_phase1`: its plain passive decision).
+pub fn predict_opp_white(net: &WinStrategy, you: &State, opp: &State, dice: [u8; 6]) -> Option<Mark> {
+    passive_phase1_impl(net, opp, from_ref(you), dice)
 }
 
 /// Both sheets after your turn, with any row it closed applied to both.
@@ -208,7 +220,8 @@ pub fn after(you: &State, opp: &State, turn: &Turn) -> (State, State) {
 /// The turn `bot` would take in your seat: its own two-phase decision, as
 /// the game asks it (see `web/examples/wiring_check.rs`), with the
 /// opponent's predicted white-sum mark `opp_white` on your roll. The flag
-/// says whether a meta-rule forced its phase 2 (a safe lock).
+/// says whether a meta-rule forced its phase 2, judged with the safe-lock
+/// rule on or off (`force_lock`).
 pub fn bot_turn(
     bot: &mut dyn Strategy,
     you: &State,
@@ -216,6 +229,7 @@ pub fn bot_turn(
     opp_white: Option<Mark>,
     dice: [u8; 6],
     roller: Roller,
+    force_lock: bool,
 ) -> (Turn, bool) {
     match roller {
         // The active player (the opponent) is index 0 of the opponents.
@@ -228,7 +242,7 @@ pub fn bot_turn(
         ),
         Roller::You => {
             let w = bot.active_phase1(you, from_ref(opp), dice);
-            finish_turn(bot, you, opp, opp_white, dice, w)
+            finish_turn(bot, you, opp, (opp_white, dice), w, force_lock)
         }
     }
 }
@@ -237,13 +251,14 @@ pub fn bot_turn(
 /// mark `opp_white`: locks propagate, then (unless two rows are closed) the
 /// phase-2 decision `phase2(you, opponent, has_marked)` against the
 /// opponent's marked sheet; nothing marked is a strike. Also returns whether
-/// a meta-rule forced phase 2 and whether `phase2` reported a search.
+/// a meta-rule (with the safe-lock rule if `force_lock`) forced phase 2 and
+/// whether `phase2` reported a search.
 fn finish_turn_with(
     you: &State,
     opp: &State,
-    opp_white: Option<Mark>,
-    dice: [u8; 6],
+    (opp_white, dice): (Option<Mark>, [u8; 6]),
     w: Option<Mark>,
+    force_lock: bool,
     mut phase2: impl FnMut(&State, &State, bool) -> (Option<Mark>, bool),
 ) -> (Turn, bool, bool) {
     let mut marks: Vec<Mark> = w.into_iter().collect();
@@ -261,7 +276,7 @@ fn finish_turn_with(
         y.lock(locks);
         o.lock(locks);
         forced = matches!(
-            active_phase2_choices(&y, from_ref(&o), dice, w.is_some()),
+            active_phase2_choices_with(&y, from_ref(&o), dice, w.is_some(), force_lock),
             Decision::Forced(Some(_))
         );
         let (c, s) = phase2(&y, &o, w.is_some());
@@ -277,20 +292,21 @@ fn finish_turn(
     bot: &mut dyn Strategy,
     you: &State,
     opp: &State,
-    opp_white: Option<Mark>,
-    dice: [u8; 6],
+    (opp_white, dice): (Option<Mark>, [u8; 6]),
     w: Option<Mark>,
+    force_lock: bool,
 ) -> (Turn, bool) {
-    let (turn, forced, _) = finish_turn_with(you, opp, opp_white, dice, w, |y, o, hm| {
+    let (turn, forced, _) = finish_turn_with(you, opp, (opp_white, dice), w, force_lock, |y, o, hm| {
         (bot.active_phase2(y, from_ref(o), dice, hm), false)
     });
     (turn, forced)
 }
 
 pub struct Explorer {
-    net: PairStrategy,
-    /// Master+ ranks the moves (and is tagged); the other bots are only tagged.
-    plus: SearchBot<PairStrategy>,
+    /// Master's net: values the position and ranks the moves.
+    net: WinStrategy,
+    /// Master+ explains its own pick; the other bots are only tagged.
+    plus: SearchBot<WinStrategy>,
     others: Vec<(BotKind, Box<dyn Strategy>)>,
 }
 
@@ -303,7 +319,7 @@ impl Default for Explorer {
 impl Explorer {
     pub fn new() -> Self {
         Explorer {
-            net: PairStrategy::load_from_bytes(PAIR_MODEL),
+            net: win(),
             plus: master_plus(),
             others: BotKind::ALL[1..].iter().map(|&k| (k, make_bot(k))).collect(),
         }
@@ -312,7 +328,7 @@ impl Explorer {
     pub fn explore(&mut self, pos: &Position) -> Result<Answer, String> {
         pos.validate()?;
         let (you, opp, locked) = states(pos);
-        let eval = self.eval(&you, &opp);
+        let eval = self.eval(&you, &opp, pos.roller);
         let over = (you.strikes >= 4 || opp.strikes >= 4 || n_locked(locked) >= 2).then(|| Over {
             you: you.count_points(),
             opponent: opp.count_points(),
@@ -328,17 +344,30 @@ impl Explorer {
             }
             _ => (None, None),
         };
+        let opponent_turn = match (&moves, pos.roller, pos.dice) {
+            (Some(moves), Roller::Opponent, Some(dice)) => {
+                let best: Option<Mark> = moves[0].marks.first().map(|&q| q.into());
+                let t = passive_turn_predictions(&self.net, &you, from_ref(&opp), dice, 0, &[best])[0].2;
+                Some(OpponentTurn {
+                    white: t.white.map(Sq::from),
+                    colour: t.colour.map(Sq::from),
+                    strike: t.strike,
+                })
+            }
+            _ => None,
+        };
         Ok(Answer {
             over,
             eval,
             moves,
             opponent_white,
+            opponent_turn,
         })
     }
 
     /// Plays games `start .. start + count` from the position before the
     /// roll (its dice ignored), the roller first, both seats Master (the
-    /// pair net, batched across games). Game k's dice depend only on the
+    /// win net with its passive lookahead, batched across games). Game k's dice depend only on the
     /// position and k, so batches compose and replay exactly.
     pub fn analyze(&self, pos: &Position, start: u32, count: u32) -> Result<Analysis, String> {
         pos.validate()?;
@@ -362,6 +391,7 @@ impl Explorer {
             })
             .collect();
         let mut driver = BatchedRollouts::new(&self.net, sims);
+        driver.passive_lookahead = true;
         let mut turns = 0;
         while !driver.all_over() {
             driver.step_turn();
@@ -386,20 +416,27 @@ impl Explorer {
         Ok(a)
     }
 
-    fn eval(&self, you: &State, opp: &State) -> Eval {
-        let p_win = self.net.win_prob_multi(&[(you, from_ref(opp))])[0];
-        let (mu, log_var) = self.net.net.forward(&[pair_features(you, opp, from_ref(opp))])[0];
+    fn eval(&self, you: &State, opp: &State, roller: Roller) -> Eval {
+        let next = match roller {
+            Roller::You => Next::Me,
+            Roller::Opponent => Next::Opp,
+        };
         Eval {
-            p_win,
-            margin: (you.count_points() - opp.count_points()) as f32 + mu,
-            sigma: (0.5 * log_var.clamp(LOG_VAR_MIN, LOG_VAR_MAX)).exp(),
+            p_win: self.net.win_prob_multi_next(&[(you, from_ref(opp), next)])[0],
+            margin: self
+                .net
+                .net
+                .aux_states(you, opp)
+                .expect("the win model has aux heads")
+                .diff,
         }
     }
 
-    /// Spec "Moves": every legal turn with the pair net's P(win) after it,
-    /// judged as Master judges it (on your roll against the opponent's sheet
-    /// with its predicted white-sum mark `opp_white`; on theirs against their
-    /// sheet), highest first. When Master+'s or Master's move isn't first, a
+    /// Spec "Moves": every legal turn with the win net's P(win) after it,
+    /// judged as Master judges it (on your roll after your turn, against the
+    /// opponent's sheet with its predicted white-sum mark `opp_white`; on
+    /// theirs at the end of their predicted turn, Master's lookahead),
+    /// highest first. When Master+'s or Master's move isn't first, a
     /// note says why: Master+'s search preferred it ("rolled_out"), or a
     /// meta-rule forced it ("rule").
     fn moves(
@@ -416,8 +453,8 @@ impl Explorer {
         if let Some(m) = opp_white {
             opp_after.apply_mark(m);
         }
-        // Whether a meta-rule forced Master's (pair-net pipeline) phase-1 or
-        // passive decision; Master+ shares that pipeline.
+        // Whether a meta-rule forced Master's phase-1 or passive decision;
+        // Master+ shares that pipeline.
         let (explained, rule_first) = match roller {
             Roller::You => (
                 self.plus.explain_active_phase1(you, from_ref(opp), dice),
@@ -429,7 +466,7 @@ impl Explorer {
             Roller::Opponent => (
                 self.plus.explain_passive_phase1(you, from_ref(opp), dice, 0),
                 matches!(
-                    passive_phase1_choices(you, from_ref(opp), dice),
+                    passive_phase1_choices_with(you, from_ref(opp), dice, self.net.force_lock()),
                     Decision::Forced(Some(_))
                 ),
             ),
@@ -448,7 +485,13 @@ impl Explorer {
                 y
             })
             .collect();
-        let z = self.net.evaluate_batch(&posts, from_ref(&opp_after));
+        let z = match roller {
+            Roller::You => self.net.evaluate_batch_next(&posts, from_ref(&opp_after), Next::Opp),
+            Roller::Opponent => {
+                let marks: Vec<Option<Mark>> = turns.iter().map(|t| t.marks.first().copied()).collect();
+                passive_lookahead_values(&self.net, you, from_ref(opp), dice, 0, &marks)
+            }
+        };
         let mut out: Vec<MoveOut> = turns
             .iter()
             .zip(z)
@@ -465,8 +508,9 @@ impl Explorer {
         // Each bot's pick, and the note its row gets if it isn't first.
         // Master+'s colour mark may come from a search of its own.
         let plus = &mut self.plus;
+        let force_lock = self.net.force_lock();
         let (plus_turn, plus_forced2, plus_searched2) = match roller {
-            Roller::You => finish_turn_with(you, opp, opp_white, dice, explained.pick, |y, o, hm| {
+            Roller::You => finish_turn_with(you, opp, (opp_white, dice), explained.pick, force_lock, |y, o, hm| {
                 let e = plus.explain_active_phase2(y, from_ref(o), dice, hm);
                 (e.pick, !e.searched.is_empty())
             }),
@@ -488,7 +532,7 @@ impl Explorer {
         };
         let mut picks = vec![(BotKind::MasterPlus, plus_turn.key(), plus_note)];
         for (kind, bot) in self.others.iter_mut() {
-            let (turn, forced2) = bot_turn(bot.as_mut(), you, opp, opp_white, dice, roller);
+            let (turn, forced2) = bot_turn(bot.as_mut(), you, opp, opp_white, dice, roller, force_lock);
             let note = (*kind == BotKind::Master && (rule_first || forced2)).then_some("rule");
             picks.push((*kind, turn.key(), note));
         }
@@ -559,7 +603,59 @@ mod tests {
         assert!(a.over.is_none());
         assert!(a.moves.is_none());
         assert!((0.3..0.7).contains(&a.eval.p_win), "p_win {}", a.eval.p_win);
-        assert!(a.eval.sigma > 0.0);
+    }
+
+    #[test]
+    fn the_position_is_valued_by_the_win_net_for_whoever_rolls_next() {
+        let mut ex = Explorer::new();
+        let mut p = pos(None, Roller::You);
+        p.you.marks[0][2] = true; // red 4
+        let (you, opp, _) = states(&p);
+        let mine = ex.explore(&p).unwrap().eval;
+        p.roller = Roller::Opponent;
+        let theirs = ex.explore(&p).unwrap().eval;
+        let net = crate::bots::win();
+        let expect = |next| net.win_prob_multi_next(&[(&you, from_ref(&opp), next)])[0];
+        assert_eq!(mine.p_win, expect(Next::Me));
+        assert_eq!(theirs.p_win, expect(Next::Opp));
+        assert!(mine.p_win > theirs.p_win, "rolling next is worth something");
+        assert_eq!(mine.margin, net.net.aux_states(&you, &opp).unwrap().diff);
+    }
+
+    #[test]
+    fn their_roll_ranks_your_moves_by_masters_lookahead() {
+        let dice = [3, 4, 2, 5, 3, 1];
+        let p = pos(Some(dice), Roller::Opponent);
+        let moves = Explorer::new().explore(&p).unwrap().moves.unwrap();
+        let (you, opp, _) = states(&p);
+        let marks: Vec<Option<Mark>> = moves.iter().map(|m| m.marks.first().map(|&q| q.into())).collect();
+        let values = passive_lookahead_values(&crate::bots::win(), &you, from_ref(&opp), dice, 0, &marks);
+        for (m, v) in moves.iter().zip(values) {
+            assert_eq!(m.p_win, phi(v), "{m:?}");
+        }
+        assert!(moves[0].bots.contains(&"master"), "{moves:?}");
+    }
+
+    #[test]
+    fn their_roll_predicts_their_turn_after_your_best_move() {
+        let dice = [3, 4, 2, 5, 3, 1];
+        let p = pos(Some(dice), Roller::Opponent);
+        let a = Explorer::new().explore(&p).unwrap();
+        assert!(a.opponent_white.is_none());
+        let (you, opp, _) = states(&p);
+        let best: Option<Mark> = a.moves.unwrap()[0].marks.first().map(|&q| q.into());
+        let net = crate::bots::win();
+        let t = passive_turn_predictions(&net, &you, from_ref(&opp), dice, 0, &[best])[0].2;
+        assert_eq!(
+            a.opponent_turn,
+            Some(OpponentTurn {
+                white: t.white.map(Sq::from),
+                colour: t.colour.map(Sq::from),
+                strike: t.strike,
+            })
+        );
+        let mine = Explorer::new().explore(&pos(Some(dice), Roller::You)).unwrap();
+        assert!(mine.opponent_turn.is_none() && mine.opponent_white.is_some());
     }
 
     #[test]
@@ -640,16 +736,31 @@ mod tests {
         assert!(Explorer::new().explore(&p).is_err());
     }
 
-    /// A reported position: Master prefers the strike, Master+'s colour-mark
-    /// search prefers yellow 7, so Master+'s row (second) explains itself.
+    /// A position where Master+'s white-sum pick is Master's but its
+    /// colour-mark search overrules the net, so Master+'s row (below rank 1)
+    /// explains itself.
     #[test]
     fn master_plus_off_rank_one_by_its_colour_search_gets_a_note() {
-        let mut p = pos(Some([1, 3, 1, 4, 1, 1]), Roller::You);
-        for i in [0, 2, 3] {
-            p.you.marks[0][i] = true; // red 2, 4, 5
-        }
-        p.you.marks[1][3] = true; // yellow 5
-        let moves = Explorer::new().explore(&p).unwrap().moves.unwrap();
+        let dice = [5, 2, 6, 3, 2, 6];
+        let mut p = pos(Some(dice), Roller::You);
+        let marks = |s: &mut SheetSnap, rows: [&[usize]; 4], strikes: u8| {
+            for (r, idx) in rows.iter().enumerate() {
+                for &i in *idx {
+                    s.marks[r][i] = true;
+                }
+            }
+            s.strikes = strikes;
+        };
+        marks(&mut p.you, [&[], &[1, 2, 4, 5], &[2, 3, 7], &[2]], 1);
+        marks(&mut p.opponent, [&[0, 4, 5], &[], &[4], &[2, 7]], 1);
+        let mut ex = Explorer::new();
+        let (you, opp, _) = states(&p);
+        assert!(ex
+            .plus
+            .explain_active_phase1(&you, from_ref(&opp), dice)
+            .searched
+            .is_empty());
+        let moves = ex.explore(&p).unwrap().moves.unwrap();
         let plus = moves.iter().position(|m| m.bots.contains(&"master_plus")).unwrap();
         assert!(plus > 0, "{moves:?}");
         assert_eq!(moves[plus].note, Some("rolled_out"));
@@ -696,9 +807,10 @@ mod tests {
                 if plus != 0 && moves[plus].bots[0] == "master_plus" {
                     assert!(moves[plus].note.is_some(), "Master+ off rank 1 without a note: {p:?}");
                 }
-                // Master (the static net) is first unless a rule moved it.
+                // Master (the static net) is first, or tied first (a won game
+                // is worth exactly 1), unless a rule moved it.
                 let master = moves.iter().position(|m| m.bots.contains(&"master")).unwrap();
-                if master != 0 && moves[master].note.is_none() {
+                if master != 0 && moves[master].note.is_none() && moves[master].p_win != moves[0].p_win {
                     unexplained.push(format!("{:.3} vs {:.3}", moves[master].p_win, moves[0].p_win));
                 }
                 for id in ["master_plus", "master", "student", "newbie"] {

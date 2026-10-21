@@ -16,7 +16,7 @@ class FakeExplorer {
     explore(json: string) {
         const p = JSON.parse(json);
         if (p.bad) throw new Error('bad position');
-        return JSON.stringify({ over: null, eval: { p_win: 0.5, margin: 0, sigma: 10 }, moves: null, echo: p.roller });
+        return JSON.stringify({ over: null, eval: { p_win: 0.5, margin: 0 }, moves: null, echo: p.roller });
     }
     analyze(json: string, start: number, count: number) {
         const p = JSON.parse(json);

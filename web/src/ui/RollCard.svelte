@@ -1,7 +1,7 @@
 <script lang="ts">
     import type { ExplorerController } from '../game/explorer.svelte';
     import { closedRows } from '../game/position';
-    import { chipsFor } from '../game/rules';
+    import { chipsFor, predictedTurn } from '../game/rules';
     import ChipView from './Chip.svelte';
     import Die from './Die.svelte';
     let { x, compact = false }: { x: ExplorerController; compact?: boolean } = $props();
@@ -75,11 +75,19 @@
             {#if ow.mark}Opponent likely marks {#each chipsFor([ow.mark], false) as ch}<ChipView chip={ch} size={22} />{/each}{:else}Opponent likely passes{/if}
         </p>
     {/if}
+    <!-- On their roll the ranking plays out their predicted turn (Master's lookahead); shown after your top move. -->
+    {#if x.pos.roller === 'opponent' && x.answer?.opponent_turn}
+        {@const t = predictedTurn(x.answer.opponent_turn)}
+        <p class="opp" class:stale={x.pending}>
+            Opponent likely {t.verb} {#each t.chips as ch}<ChipView chip={ch} size={22} />{/each}<span class="after">after your top move</span>
+        </p>
+    {/if}
 </section>
 
 <style>
     .opp { margin: 0; display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--soft); min-height: 22px; }
     .opp.stale { opacity: 0.6; }
+    .opp .after { color: var(--muted); }
     .card { display: flex; flex-direction: column; gap: 10px; background: var(--paper); border-radius: 14px; padding: 12px 16px; box-shadow: 0 1px 0 var(--edge); }
     .card.compact { padding: 10px 12px; }
     .top { display: flex; align-items: center; gap: 10px; }
