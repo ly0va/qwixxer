@@ -47,11 +47,19 @@ pub fn board_features(state: &State) -> [f32; BOARD_FEATURES] {
             None => 0.0,
         };
     }
-    f[16] = state.strikes as f32 / 3.0;
-    f[17] = state.blanks() as f32 / 40.0;
-    f[18] = aggregate_weighted_probability(state);
-    f[19] = lockable_rows(state) as f32 / 4.0;
+    f[16..].copy_from_slice(&board_globals(state));
     f
+}
+
+/// The board-wide features [`board_features`] ends with: strikes, blanks,
+/// aggregate weighted probability, lockable rows.
+pub fn board_globals(state: &State) -> [f32; 4] {
+    [
+        state.strikes as f32 / 3.0,
+        state.blanks() as f32 / 40.0,
+        aggregate_weighted_probability(state),
+        lockable_rows(state) as f32 / 4.0,
+    ]
 }
 
 /// Full pair input. `paired` must be one of `all_opps` (the opponent we are
@@ -192,12 +200,7 @@ fn extract_linear(layer: &Linear<MyBackend>) -> (Vec<f32>, Vec<f32>, usize, usiz
 /// rows, locked flags) skip their contribution. `w` is input-major:
 /// `w[i * D_OUT..][..D_OUT]` are the weights input i contributes to every
 /// output.
-fn layer_forward<const D_IN: usize, const D_OUT: usize>(
-    x: &[f32; D_IN],
-    w: &[f32],
-    b: &[f32],
-    out: &mut [f32; D_OUT],
-) {
+fn layer_forward<const D_IN: usize, const D_OUT: usize>(x: &[f32; D_IN], w: &[f32], b: &[f32], out: &mut [f32; D_OUT]) {
     for t in 0..D_OUT / TILE {
         let mut acc: [f32; TILE] = b[t * TILE..(t + 1) * TILE].try_into().unwrap();
         for (i, &xi) in x.iter().enumerate() {
@@ -209,7 +212,7 @@ fn layer_forward<const D_IN: usize, const D_OUT: usize>(
             }
         }
         for (k, &a) in acc.iter().enumerate() {
-            out[t * TILE + k] = a.max(0.0);
+            out[t * TILE + k] = super::win::relu(a);
         }
     }
 }

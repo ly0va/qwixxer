@@ -4,7 +4,7 @@
 //!
 //! Design: docs/superpowers/specs/2026-10-15-win-net-design.md
 
-use super::pair::board_features;
+use super::pair::{board_features, board_globals};
 use super::MyBackend;
 use crate::state::State;
 use crate::strategy::search::WinProb;
@@ -38,11 +38,26 @@ pub fn win_input(me: &State, opp: &State) -> [f32; WIN_INPUTS] {
             x[TOKEN * r + 4 + k] = b[4 * k + r];
         }
     }
-    x[32..36].copy_from_slice(&a[16..20]);
-    x[36..40].copy_from_slice(&b[16..20]);
-    let cdiff = (me.count_points() - opp.count_points()) as f32;
-    x[40] = (cdiff / 100.0).clamp(-1.0, 1.0);
+    fill_globals(&mut x[4 * TOKEN..], (me, &a[16..20]), (opp, &b[16..20]));
     x
+}
+
+/// The global inputs after the row tokens, from each board's
+/// [`board_globals`]: [`GLOBALS`] of them for [`win_input`], and with
+/// `out` [`T_GLOBALS`] long [`thermo_input`]'s strike bits after them.
+/// Swapping the boards gives the swapped input's globals exactly.
+fn fill_globals(out: &mut [f32], me: (&State, &[f32]), opp: (&State, &[f32])) {
+    out[..4].copy_from_slice(me.1);
+    out[4..8].copy_from_slice(opp.1);
+    let cdiff = (me.0.count_points() - opp.0.count_points()) as f32;
+    out[8] = (cdiff / 100.0).clamp(-1.0, 1.0);
+    if out.len() == T_GLOBALS {
+        for (side, strikes) in [me.0.strikes, opp.0.strikes].into_iter().enumerate() {
+            for j in 1..=3 {
+                out[GLOBALS + 3 * side + j - 1] = (strikes as usize >= j) as u8 as f32;
+            }
+        }
+    }
 }
 
 /// The same position from the opponent's side: swap the halves of every
@@ -102,12 +117,8 @@ pub fn thermo_input(me: &State, opp: &State) -> [f32; WIN_INPUTS_T] {
         }
     }
     let g = 4 * T_TOKEN;
-    x[g..g + GLOBALS].copy_from_slice(&plain[4 * TOKEN..]);
-    for (side, strikes) in [me.strikes, opp.strikes].into_iter().enumerate() {
-        for j in 1..=3 {
-            x[g + GLOBALS + 3 * side + j - 1] = (strikes as usize >= j) as u8 as f32;
-        }
-    }
+    let (a, b) = (&plain[4 * TOKEN..][..4], &plain[4 * TOKEN + 4..][..4]);
+    fill_globals(&mut x[g..], (me, a), (opp, b));
     x
 }
 
@@ -368,6 +379,19 @@ struct ManualAux {
 
 // ---- Manual inference path ----
 
+/// max(v, 0) as a comparison: `f32::max` is a libm call (`fmaxf`) on wasm,
+/// whose `f32.max` differs from it on NaN and ±0, and the call stops the
+/// layer's output loop from vectorizing. Same values (a NaN still gives 0);
+/// only a −0 sum comes out +0, which no later sum can tell apart.
+#[inline(always)]
+pub(crate) fn relu(v: f32) -> f32 {
+    if v > 0.0 {
+        v
+    } else {
+        0.0
+    }
+}
+
 /// One dense layer, weights input-major as burn stores them:
 /// `w[i * d_out..][..d_out]` are input i's weights to every output.
 struct Dense {
@@ -399,7 +423,7 @@ impl Dense {
         }
         if relu {
             for o in out.iter_mut() {
-                *o = o.max(0.0);
+                *o = self::relu(*o);
             }
         }
     }
@@ -449,7 +473,7 @@ impl Dense {
         for (l, a) in acc.iter().enumerate() {
             let o = &mut out[(s0 + l) * self.d_out + t0..][..T];
             for k in 0..T {
-                o[k] = if relu { a[k].max(0.0) } else { a[k] };
+                o[k] = if relu { self::relu(a[k]) } else { a[k] };
             }
         }
     }
@@ -639,23 +663,27 @@ impl ManualWinNet {
         pairs.chunks(CHUNK).flat_map(|c| self.logit_chunk(c)).collect()
     }
 
+    /// The full input for `me` against `opp` in the net's encoding.
+    fn input(&self, me: &State, opp: &State) -> Vec<f32> {
+        if self.is_thermo() {
+            thermo_input(me, opp).to_vec()
+        } else {
+            win_input(me, opp).to_vec()
+        }
+    }
+
     fn logit_chunk(&self, pairs: &[(&State, &State)]) -> Vec<f32> {
         let (w, t) = (self.width, self.token);
-        let len = 4 * t + if self.is_thermo() { T_GLOBALS } else { GLOBALS };
-        // Input 2k is position k, input 2k + 1 its swap; padded to whole lanes.
+        let g_len = if self.is_thermo() { T_GLOBALS } else { GLOBALS };
+        // Input 2k is position k, input 2k + 1 its swap; padded to whole
+        // lanes. Only the globals are built: the row tokens are looked up.
         let m = (2 * pairs.len()).next_multiple_of(LANES);
-        let mut xs = vec![0.0f32; m * len];
+        let mut globals = vec![0.0f32; m * g_len];
         for (k, (me, opp)) in pairs.iter().enumerate() {
-            let (a, b) = xs[2 * k * len..(2 * k + 2) * len].split_at_mut(len);
-            if self.is_thermo() {
-                let x = thermo_input(me, opp);
-                a.copy_from_slice(&x);
-                b.copy_from_slice(&swap_thermo(&x));
-            } else {
-                let x = win_input(me, opp);
-                a.copy_from_slice(&x);
-                b.copy_from_slice(&swap_input(&x));
-            }
+            let (gm, go) = (board_globals(me), board_globals(opp));
+            let (a, b) = globals[2 * k * g_len..(2 * k + 2) * g_len].split_at_mut(g_len);
+            fill_globals(a, (me, &gm), (opp, &go));
+            fill_globals(b, (opp, &go), (me, &gm));
         }
         let (mut h, mut e) = (Vec::new(), Vec::new());
         // Row encoder: looked up, or computed for a row no game reaches.
@@ -674,7 +702,12 @@ impl ManualWinNet {
                     if let (Some(mine), Some(theirs)) = halves {
                         dst.copy_from_slice(&self.row_codes[(mine * HALVES + theirs) * w..][..w]);
                     } else {
-                        self.row1.apply(&xs[j * len + r * t..][..t], &mut h, true);
+                        let x = if j % 2 == 0 {
+                            self.input(me, opp)
+                        } else {
+                            self.input(opp, me)
+                        };
+                        self.row1.apply(&x[r * t..][..t], &mut h, true);
                         self.row2.apply(&h, &mut e, true);
                         dst.copy_from_slice(&e);
                     }
@@ -688,13 +721,16 @@ impl ManualWinNet {
             }
         }
         self.pair.apply_batch(&pooled, w, 2 * m, &mut h, true);
-        let g_len = len - 4 * t;
         let mut cat = vec![0.0f32; m * (w + g_len)];
-        for ((c, pp), x) in cat.chunks_mut(w + g_len).zip(h.chunks(2 * w)).zip(xs.chunks(len)) {
+        for ((c, pp), x) in cat
+            .chunks_mut(w + g_len)
+            .zip(h.chunks(2 * w))
+            .zip(globals.chunks(g_len))
+        {
             for k in 0..w {
                 c[k] = (c[k] + pp[k]) + pp[w + k];
             }
-            c[w..].copy_from_slice(&x[4 * t..]);
+            c[w..].copy_from_slice(x);
         }
         self.head1.apply_batch(&cat, w + g_len, m, &mut h, true);
         self.head2.apply_batch(&h, 2 * w, m, &mut e, true);
