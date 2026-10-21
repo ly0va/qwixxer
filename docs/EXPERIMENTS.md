@@ -2439,3 +2439,48 @@ while a whole extra rollout averages every turn's dice.
 cheaper than the policy's net that keeps most of the correlation (f need
 not be the policy), or with an expensive rollout policy (full fidelity,
 search), where the luck cost is small by comparison.
+
+### Finished games valued exactly
+
+Every win-net value (active, passive, search leaves; `WinStrategy::values`)
+checks the two boards after lock propagation: if the game is over, the
+value is its result (`probit_of_outcome`; P(win) 1, ½, 0), not the net.
+This covers what the meta-rules missed: game-ending ties, and games ended
+only by the opponent's simultaneous phase-1 lock. Bench `win ga -n 20000`:
+12679/6962/359 against 12676/6961/363 (noise-sized); wasm latency
+unchanged (`7a63ce5`).
+
+### Lookahead in rollouts: rejected
+
+Win-search rollouts decide passive marks plainly (Lite), the policy that
+lost 1.2pp against GA when the bot itself plays it. `rlook` in a
+`SearchConfig` spec (`QWIXXER_SEARCH=rlook`, bots `win-search-exp[-b]`)
+values rollout passive candidates at the end of the active player's turn
+instead (`Fidelity::LiteLookahead`; unbatched). Rollouts last one round,
+so a rollout has about two such decisions.
+
+Probe (`examples/rollout_lookahead_probe.rs`, `cbd9a55`): 240 win-search
+self-play games, both seats; at each of the 8,990 searched decisions the
+shortlist rolled out 512 times per candidate both ways on the same dice
+(decisions draw no dice, so every difference is the passive policy's):
+
+| | |
+|---|---:|
+| candidate value \|look − lite\| (P(win)) | mean 0.0016, p50 0.0006, p99 0.016 |
+| its paired SE | 0.0009 |
+| blended pick − runner-up gap \|shift\| | mean 0.0012, p99 0.013 |
+| that gap's sampling SE at 512 samples | 0.0026 |
+| picks that change (full-512 blended argmax) | 1.08%, 0.20 per seat-game |
+| gain on those, by lookahead rollouts | +0.052pp per seat-game |
+| the same switches, by plain rollouts | −0.044pp |
+| rollout time | ×2.61 |
+
+The values move by half the gap's noise at the full 512 samples
+(production usually stops at 32–64). The changed picks are near-ties,
+each side scoring its own pick higher by about the same amount; even
+its own estimate, which selects on noise, is at most 0.05pp, out of reach
+of a 1M bench. For 2.6× the rollout cost (about 2× win-search's browser
+latency).
+
+**Verdict:** not adopted; `rlook` stays off. Worth re-probing only with a
+net whose plain and lookahead passive decisions differ more.
