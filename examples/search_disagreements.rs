@@ -333,6 +333,41 @@ fn report(log: &[SearchRecord], games: u64) {
     );
     println!();
 
+    // Endgame-only searches (not close) by the static top-two gap: what a
+    // gap cap on the endgame gate would keep.
+    let eg: Vec<&SearchRecord> = log.iter().filter(|r| r.endgame && !r.close).collect();
+    println!(
+        "endgame only: static gap, top two  all {}",
+        quantiles(eg.iter().map(|r| r.statics[0] - r.statics[1]).collect())
+    );
+    println!(
+        "                                   overruled {}",
+        quantiles(
+            eg.iter()
+                .filter(|r| r.pick != 0)
+                .map(|r| r.statics[0] - r.statics[1])
+                .collect()
+        )
+    );
+    println!("  gap bucket      searches  overrules  margin sum");
+    let edges = [0.05f32, 0.1, 0.2, 0.3, 0.5, 1.0, f32::INFINITY];
+    for w in edges.windows(2) {
+        let b: Vec<_> = eg
+            .iter()
+            .filter(|r| (w[0]..w[1]).contains(&(r.statics[0] - r.statics[1])))
+            .collect();
+        let o: Vec<_> = b.iter().filter(|r| r.pick != 0).collect();
+        println!(
+            "  {:>4.2}..{:<6.2} {:>9} {:>10} {:>11.2}",
+            w[0],
+            w[1],
+            b.len(),
+            o.len(),
+            o.iter().map(|r| (r.scores[r.pick] - r.scores[0]) as f64).sum::<f64>()
+        );
+    }
+    println!();
+
     let mut rng = SmallRng::seed_from_u64(1);
     let mut sample: Vec<&&SearchRecord> = over.iter().collect();
     sample.shuffle(&mut rng);
