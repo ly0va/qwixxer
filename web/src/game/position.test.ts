@@ -101,8 +101,10 @@ describe('sheet model and text', () => {
     it('formats chances, margins and results', () => {
         expect(percent(0.3786, 0)).toBe('38%');
         expect(percent(0.41249, 1)).toBe('41.2%');
-        expect(marginText(-8.6)).toBe('Opponent ahead by about 9');
-        expect(marginText(3.2)).toBe('You ahead by about 3');
+        expect(marginText(-8.6)).toBe('Opponent ahead by ~9 points');
+        expect(marginText(3.2)).toBe('You ahead by ~3 points');
+        expect(marginText(1.4)).toBe('You ahead by ~1 point');
+        expect(marginText(-0.6)).toBe('Opponent ahead by ~1 point');
         expect(marginText(0.3)).toBe('Level');
         expect(overText({ you: 41, opponent: 33 })).toBe('You win 41 – 33');
         expect(overText({ you: 30, opponent: 33 })).toBe('Opponent wins 33 – 30');

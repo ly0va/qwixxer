@@ -12,6 +12,8 @@ export const MIN_BATCH = 8;
 export const MAX_BATCH = 512;
 /** Once ± is below this (2 points), rest as long as each batch took: half a core. */
 export const REST_BELOW = 0.02;
+/** A position's analysis stops here (± about 0.2 points). */
+export const MAX_GAMES = 50_000;
 
 /**
  * ± below REST_BELOW, judged with the plus-four estimate (two extra wins and
@@ -196,7 +198,7 @@ export class ExplorerController {
         this.looping = true;
         this.analysing = true;
         try {
-            while (this.active && !P.isOver(this.pos)) {
+            while (this.active && !P.isOver(this.pos) && !this.finished()) {
                 const key = P.analysisKey(this.pos);
                 // A new position's games may be much longer: start small again.
                 if (key !== this.batchKey) {
@@ -204,7 +206,7 @@ export class ExplorerController {
                     this.batchKey = key;
                 }
                 const prev = this.analysis?.key === key ? this.analysis.totals : P.ZERO_ANALYSIS;
-                const count = this.batch;
+                const count = Math.min(this.batch, MAX_GAMES - prev.games);
                 const t0 = this.now();
                 const r = await this.engine.analyze(P.toEngine(this.pos), prev.games, count);
                 const ms = this.now() - t0;
@@ -213,7 +215,7 @@ export class ExplorerController {
                 if (P.analysisKey(this.pos) === key && cur.games === prev.games) {
                     const totals = P.addAnalysis(cur, r);
                     this.analysis = { key, totals };
-                    if (precise(totals) && this.active) await this.rest(ms);
+                    if (precise(totals) && this.active && !this.finished()) await this.rest(ms);
                 }
             }
         } catch {
@@ -222,6 +224,11 @@ export class ExplorerController {
             this.looping = false;
             this.analysing = false;
         }
+    }
+
+    /** The current position has all MAX_GAMES play-outs. */
+    private finished() {
+        return this.analysis?.key === P.analysisKey(this.pos) && this.analysis.totals.games >= MAX_GAMES;
     }
 
     private rest(ms: number) {

@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { Answer, Engine, Position } from '../engine/protocol';
 import type { Store } from './controller.svelte';
-import { BAD_LINK, ExplorerController, MAX_BATCH, MIN_BATCH } from './explorer.svelte';
+import { BAD_LINK, ExplorerController, MAX_BATCH, MAX_GAMES, MIN_BATCH } from './explorer.svelte';
 import { encode } from './link';
 import { analysisKey, emptyPosition, toggleSquare } from './position';
 
@@ -345,11 +345,11 @@ describe('ExplorerController analysis fixes', () => {
 describe('ExplorerController analysis throttle', () => {
     function setupRest() {
         const t = { now: 0 };
-        const an: { start: number; resolve: (v: any) => void }[] = [];
+        const an: { start: number; count: number; resolve: (v: any) => void }[] = [];
         const timers: { f: () => void; ms: number }[] = [];
         const engine = {
             explore: vi.fn(() => new Promise(() => {})),
-            analyze: vi.fn((_p: Position, start: number) => new Promise((resolve) => an.push({ start, resolve }))),
+            analyze: vi.fn((_p: Position, start: number, count: number) => new Promise((resolve) => an.push({ start, count, resolve }))),
         } as unknown as Engine;
         const x = new ExplorerController(engine, memStore(), undefined, (f, ms) => void timers.push({ f, ms }), () => t.now);
         x.init();
@@ -400,6 +400,30 @@ describe('ExplorerController analysis throttle', () => {
         await flush();
         expect(timers).toHaveLength(0);
         expect(an).toHaveLength(2);
+    });
+
+    it('stops for good at MAX_GAMES, asking only for the games left', async () => {
+        const { x, an, timers, precise } = setupRest();
+        x.setActive(true);
+        an[0].resolve(precise(MAX_GAMES - 100));
+        await flush();
+        timers[0].f();
+        await flush();
+        expect(an[1]).toMatchObject({ start: MAX_GAMES - 100, count: 100 });
+        an[1].resolve(precise(100));
+        await flush();
+        expect(x.analysis?.totals.games).toBe(MAX_GAMES);
+        expect(an).toHaveLength(2);
+        expect(timers).toHaveLength(1);
+        expect(x.analysing).toBe(false);
+        x.setActive(false);
+        x.setActive(true);
+        await flush();
+        expect(an).toHaveLength(2); // still done on return
+        x.tapSquare('you', 0, 0);
+        await flush();
+        expect(an).toHaveLength(3); // a new position starts again
+        expect(an[2].start).toBe(0);
     });
 
     it('leaving during the rest sends nothing more', async () => {

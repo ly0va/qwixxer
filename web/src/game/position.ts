@@ -143,8 +143,9 @@ export const percent = (p: number, digits: 0 | 1) => `${(p * 100).toFixed(digits
 
 export function marginText(margin: number): string {
     const m = Math.round(margin);
-    if (m > 0) return `You ahead by about ${m}`;
-    if (m < 0) return `Opponent ahead by about ${-m}`;
+    const pts = (n: number) => `~${n} ${n === 1 ? 'point' : 'points'}`;
+    if (m > 0) return `You ahead by ${pts(m)}`;
+    if (m < 0) return `Opponent ahead by ${pts(-m)}`;
     return 'Level';
 }
 

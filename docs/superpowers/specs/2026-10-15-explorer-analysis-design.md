@@ -91,6 +91,10 @@ request and one reply per batch, like `explore`. No streaming messages.
   totals), so a small
   one-sided sample (plain ± = 0) never counts as precise. An edit or a pause
   ends a rest at once; a new position starts at full speed.
+- **Stop:** at 50,000 play-outs (`MAX_GAMES`, ± about 0.2 points) the
+  loop stops for that position; the last batch asks only for the games
+  left. Leaving and returning doesn't restart it; an edit other than the
+  dice does.
 - **Game over:** no analysis.
 - Totals live in memory only.
 
@@ -108,8 +112,8 @@ Position card (desktop and phone compact form):
   whole percent; once ± < 0.5, to one decimal ("54.3%").
 - New line under the bar: a small pulsing dot while analysis runs, then
   "± 1.2 · 3,200 games". The dot is absent when paused or over.
-- Margin text "Opponent ahead by about 9", "You ahead by…", "Level", from
-  the play-outs' mean diff.
+- Margin text "Opponent ahead by ~9 points", "You ahead by ~1 point",
+  "Level", from the play-outs' mean diff.
 - Until the first batch for a position arrives, the previous position's
   numbers stay, faded (as edits do now); on a cold open with none, "…".
 - Game over: the result, as now; no dot, no game count.
