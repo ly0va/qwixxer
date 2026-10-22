@@ -48,7 +48,7 @@ export interface Answer {
     opponent_turn: OpponentTurn | null;
 }
 /** Mirrors explorer.rs `Analysis`: play-out totals of one batch (or a running sum). */
-export interface Analysis { games: number; wins: number; ties: number; diff_sum: number; diff_sq_sum: number }
+export interface Analysis { games: number; win_sum: number; win_sq_sum: number; diff_sum: number }
 /**
  * Why an engine call failed: `snapshot` when `restore` rejected the saved
  * game itself (bad JSON or values), `engine` for anything else (the wasm or

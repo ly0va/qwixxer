@@ -21,7 +21,7 @@ class FakeExplorer {
     analyze(json: string, start: number, count: number) {
         const p = JSON.parse(json);
         if (p.over) throw new Error('the game is over');
-        return JSON.stringify({ games: count, wins: start, ties: 0, diff_sum: 0, diff_sq_sum: 0 });
+        return JSON.stringify({ games: count, win_sum: start, win_sq_sum: 0, diff_sum: 0 });
     }
     free() {}
 }
@@ -75,7 +75,7 @@ describe('engine worker handler', () => {
         const { send } = setup(0);
         const made = FakeExplorer.made;
         const r = await send(1, 'analyze', [{ roller: 'you' }, 40, 25]);
-        expect(r).toEqual({ id: 1, ok: true, result: { games: 25, wins: 40, ties: 0, diff_sum: 0, diff_sq_sum: 0 } });
+        expect(r).toEqual({ id: 1, ok: true, result: { games: 25, win_sum: 40, win_sq_sum: 0, diff_sum: 0 } });
         await send(2, 'explore', [{ roller: 'you' }]);
         expect(FakeExplorer.made).toBe(made + 1);
         const bad = await send(3, 'analyze', [{ over: true }, 0, 10]);

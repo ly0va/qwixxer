@@ -12,5 +12,5 @@ for (const n of [8, 64, 256]) {
     const t0 = performance.now();
     ex.analyze(pos, 0, n);
     const ms = performance.now() - t0;
-    console.log(`${n} games: ${ms.toFixed(0)} ms, ${((n / ms) * 1000).toFixed(0)} games/s`);
+    console.log(`${n} play-outs: ${ms.toFixed(0)} ms, ${((n / ms) * 1000).toFixed(0)} play-outs/s`);
 }

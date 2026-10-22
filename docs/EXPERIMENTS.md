@@ -2717,3 +2717,39 @@ beside the search; the explorer is fast enough. In Master-vs-Master play
 the active player's real phase-1 decision equals the passive player's
 prediction and could be shared within a turn (about half the cost), but
 that would only speed data generation, and training is done.
+
+### Explorer play-outs: 4 turns, then the net
+
+The explorer's Position card played every game to the end (Master vs
+Master, no passive lookahead). `examples/net_vs_playouts.rs` compares
+cheaper estimates on 600 turn starts of win-net self-play (one per game,
+both points of view), against 4,000 full play-outs per position. Each
+estimate uses 1,000 samples that play `d` turns and then take the net's
+P(win), or the result where the game ended. "Own error" is the RMS
+difference with both sampling noises removed: the error more samples
+can't fix.
+
+| estimate | own error | max diff | sd per sample | turns per sample | samples for ± 1 pt | turns for ± 1 pt |
+|---|---:|---:|---:|---:|---:|---:|
+| net alone | 0.0114 | 0.131 | – | 0 | 1 | 0 |
+| 1 turn | 0.0064 | 0.085 | 0.108 | 1.0 | 116 | 116 |
+| 2 turns | 0.0039 | 0.036 | 0.151 | 2.0 | 227 | 445 |
+| 3 turns | 0.0023 | 0.044 | 0.184 | 2.9 | 338 | 974 |
+| 4 turns | 0 | 0.046 | 0.211 | 3.8 | 445 | 1,674 |
+| 6 turns | 0 | 0.043 | 0.256 | 5.4 | 656 | 3,541 |
+| 8 turns | 0 | 0.039 | 0.293 | 6.9 | 860 | 5,903 |
+| to the end | 0 | 0.051 | 0.443 | 12.9 | 1,962 | 25,376 |
+
+(± 1 pt: a standard error of 0.01.) Bias stays within ± 0.001
+throughout; "to the end" is a second, independent set of full play-outs,
+so its 0 checks the method. The net's error is mostly late-game (0.016
+with 30+ marks on the board, 0.001 under 10), and that is what a few
+turns fix (4 turns: 0.0026 and 0). Exact 1-ply, enumerating all rolls
+instead of sampling them, measured 0.0074: sampling loses nothing.
+
+The explorer now plays 4 turns (`PLAY_OUT_TURNS`) and values the leaves
+by the net, its margin by the aux head's predicted score difference. In
+WASM, ± 1 point takes 0.36 s from the empty position (25.3 s before) and
+0.11 s in a midgame (6.4 s): about 60–70×, more than the table's 15×
+average, because early positions are quiet after 4 turns. The margin
+loses its spread: the samples never reach a final score.

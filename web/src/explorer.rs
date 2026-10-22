@@ -102,17 +102,24 @@ pub struct Answer {
 }
 
 /// Spec "Engine" (`2026-10-15-explorer-analysis-design.md`): totals of
-/// play-out games `start .. start + count` of a position. Batches add up.
+/// play-outs `start .. start + count` of a position. Batches add up.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Analysis {
     pub games: u32,
-    /// Games you win (higher final score) and games tied.
-    pub wins: u32,
-    pub ties: u32,
-    /// Sum, and sum of squares, of your final score minus the opponent's.
+    /// Sum, and sum of squares, of each play-out's value for you: a
+    /// finished game's result (1 win, ½ tie, 0 loss), else the win net's
+    /// P(you win) after [`PLAY_OUT_TURNS`] turns.
+    pub win_sum: f64,
+    pub win_sq_sum: f64,
+    /// Sum of each play-out's final score difference, you − opponent: a
+    /// finished game's, else the net's predicted one (its aux head).
     pub diff_sum: f64,
-    pub diff_sq_sum: f64,
 }
+
+/// Turns a play-out plays before the net values it. Phase 28: at 4 the
+/// estimate matches full play-outs (no measurable systematic error) with
+/// about 15× fewer simulated turns for the same ±.
+pub const PLAY_OUT_TURNS: usize = 4;
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct OpponentWhite {
@@ -380,12 +387,12 @@ impl Explorer {
         })
     }
 
-    /// Plays games `start .. start + count` from the position before the
-    /// roll (its dice ignored), the roller first, both seats Master (the
-    /// win net, batched across games) without its passive lookahead, which
-    /// barely moves the numbers and costs well over twice the time. Game
-    /// k's dice depend only on the position and k, so batches compose and
-    /// replay exactly.
+    /// Plays `start .. start + count` from the position before the roll (its
+    /// dice ignored) for [`PLAY_OUT_TURNS`] turns, the roller first, both
+    /// seats Master (the win net, batched across games) without its passive
+    /// lookahead, which barely moves the numbers and costs well over twice
+    /// the time; then values each by the net. Play-out k's dice depend only
+    /// on the position and k, so batches compose and replay exactly.
     pub fn analyze(&self, pos: &Position, start: u32, count: u32) -> Result<Analysis, String> {
         self.play_outs(pos, start, count, false)
     }
@@ -414,26 +421,42 @@ impl Explorer {
             .collect();
         let mut driver = BatchedRollouts::new(&self.net, sims);
         driver.passive_lookahead = lookahead;
-        let mut turns = 0;
-        while !driver.all_over() {
+        for _ in 0..PLAY_OUT_TURNS {
             driver.step_turn();
-            turns += 1;
-            assert!(turns <= 200, "play-out exceeded 200 turns");
         }
+        let live: Vec<(&State, &[State], Next)> = driver
+            .sims
+            .iter()
+            .filter(|s| !s.over)
+            .map(|s| {
+                (
+                    &s.states[0],
+                    &s.states[1..],
+                    if s.active == 0 { Next::Me } else { Next::Opp },
+                )
+            })
+            .collect();
+        let mut leaf = self.net.win_prob_multi_next(&live).into_iter();
         let mut a = Analysis {
             games: 0,
-            wins: 0,
-            ties: 0,
+            win_sum: 0.0,
+            win_sq_sum: 0.0,
             diff_sum: 0.0,
-            diff_sq_sum: 0.0,
         };
         for sim in &driver.sims {
-            let d = (sim.states[0].count_points() - sim.states[1].count_points()) as f64;
+            let (you, opp) = (&sim.states[0], &sim.states[1]);
+            let (w, d) = if sim.over {
+                (
+                    SimGame::outcome(&sim.states),
+                    (you.count_points() - opp.count_points()) as f32,
+                )
+            } else {
+                (leaf.next().unwrap(), self.margin(you, opp))
+            };
             a.games += 1;
-            a.wins += (d > 0.0) as u32;
-            a.ties += (d == 0.0) as u32;
-            a.diff_sum += d;
-            a.diff_sq_sum += d * d;
+            a.win_sum += w as f64;
+            a.win_sq_sum += (w * w) as f64;
+            a.diff_sum += d as f64;
         }
         Ok(a)
     }
@@ -445,13 +468,17 @@ impl Explorer {
         };
         Eval {
             p_win: self.net.win_prob_multi_next(&[(you, from_ref(opp), next)])[0],
-            margin: self
-                .net
-                .net
-                .aux_states(you, opp)
-                .expect("the win model has aux heads")
-                .diff,
+            margin: self.margin(you, opp),
         }
+    }
+
+    /// The net's predicted final score difference, you − opponent.
+    fn margin(&self, you: &State, opp: &State) -> f32 {
+        self.net
+            .net
+            .aux_states(you, opp)
+            .expect("the win model has aux heads")
+            .diff
     }
 
     /// Spec "Moves": every legal turn with the win net's P(win) after it,
@@ -898,15 +925,22 @@ mod tests {
         let a = ex.analyze(&p, 0, 40).unwrap();
         let b = ex.analyze(&p, 40, 60).unwrap();
         let all = ex.analyze(&p, 0, 100).unwrap();
-        assert_eq!(all.games, 100);
-        assert_eq!(
-            (a.games + b.games, a.wins + b.wins, a.ties + b.ties),
-            (all.games, all.wins, all.ties)
-        );
-        // Diffs are integers, so f64 sums are exact.
-        assert_eq!(a.diff_sum + b.diff_sum, all.diff_sum);
-        assert_eq!(a.diff_sq_sum + b.diff_sq_sum, all.diff_sq_sum);
+        assert_eq!((all.games, a.games + b.games), (100, 100));
+        let close = |x: f64, y: f64| (x - y).abs() < 1e-9;
+        assert!(close(a.win_sum + b.win_sum, all.win_sum));
+        assert!(close(a.win_sq_sum + b.win_sq_sum, all.win_sq_sum));
+        assert!(close(a.diff_sum + b.diff_sum, all.diff_sum));
         assert_eq!(ex.analyze(&p, 0, 100).unwrap(), all);
+    }
+
+    /// From the empty position no game can end within PLAY_OUT_TURNS turns,
+    /// so every sample is the net's value, strictly between a loss and a
+    /// win, and its margin the aux head's, not a whole number.
+    #[test]
+    fn analysis_stops_after_a_few_turns_and_asks_the_net() {
+        let a = Explorer::new().analyze(&pos(None, Roller::You), 0, 50).unwrap();
+        assert!(a.win_sq_sum < a.win_sum && a.win_sq_sum > a.win_sum * a.win_sum / 50.0);
+        assert_ne!(a.diff_sum, a.diff_sum.round());
     }
 
     #[test]
@@ -948,8 +982,8 @@ mod tests {
     #[test]
     fn analysis_of_the_empty_position_is_roughly_even() {
         let a = Explorer::new().analyze(&pos(None, Roller::You), 0, 300).unwrap();
-        let p = (a.wins as f64 + a.ties as f64 / 2.0) / a.games as f64;
+        let p = a.win_sum / a.games as f64;
         assert!((0.35..0.65).contains(&p), "p {p}");
-        assert!(a.diff_sq_sum > 0.0);
+        assert!((a.diff_sum / a.games as f64).abs() < 10.0);
     }
 }

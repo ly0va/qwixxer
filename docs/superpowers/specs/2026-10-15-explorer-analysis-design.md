@@ -4,6 +4,15 @@
 (`2026-10-14-state-explorer-design.md`); where the two differ, this spec
 wins.
 
+**Revision (2026-10-22): truncated play-outs.** Each play-out now stops
+after 4 turns (`PLAY_OUT_TURNS`) and takes the win net's P(win) and its
+predicted final score difference (aux head) there; a game that ends sooner
+counts its result. Phase 28 measured no systematic error against full
+play-outs at 4 turns, and ±1 point now takes about 60–70× less time. The
+totals become sums of those values, ± comes from their spread, and the
+margin line drops its spread (the samples never reach a final score). The
+sections below are updated to match.
+
 ## Goal
 
 The explorer's "chance you win" for the position is the pair net's static
@@ -27,7 +36,7 @@ New call in `web/src/explorer.rs`, exposed on `WasmExplorer`:
 
 ```
 analyze(position_json, start: u32, count: u32) -> {
-  games: u32, wins: u32, ties: u32, diff_sum: f64, diff_sq_sum: f64
+  games: u32, win_sum: f64, win_sq_sum: f64, diff_sum: f64
 }
 ```
 
@@ -42,8 +51,11 @@ analyze(position_json, start: u32, count: u32) -> {
   excluded) and *k* alone. Consequences: batches compose exactly
   (`[0, a)` + `[a, b)` = `[0, b)`), and the same position always yields
   the same totals.
-- `diff` is your final score minus the opponent's. `wins` counts games you
-  win, `ties` equal scores.
+- Each play-out runs at most 4 turns. Its win value is the result if the
+  game ended (1 win, ½ tie, 0 loss), else the win net's P(you win) for
+  whoever rolls next; its `diff` is your final score minus the opponent's,
+  or the net's predicted one (aux head). `win_sum` / `win_sq_sum` sum the
+  win values and their squares, `diff_sum` the diffs.
 - A game-over position (4 strikes on a sheet, two closed rows) is an
   error; the caller never asks.
 
@@ -56,8 +68,8 @@ request and one reply per batch, like `explore`. No streaming messages.
 
 `ExplorerController` (`web/src/game/explorer.svelte.ts`) drives the loop:
 
-- Keeps running totals for the current position: games, wins, ties,
-  diff sum, diff² sum.
+- Keeps running totals for the current position: games, win sum, win²
+  sum, diff sum.
 - Sends one `analyze` batch at a time; on reply, adds it to the totals
   and sends the next, starting at the current game count.
 - **Batch size** adapts so a batch takes about 100 ms: next count =
@@ -75,7 +87,8 @@ request and one reply per batch, like `explore`. No streaming messages.
   totals kept.
 - **Throttle:** once ± is below 2 points, the loop rests after each batch
   as long as the batch took (half a core). Precision for this test uses the
-  plus-four estimate ((wins + ties/2 + 2) / (games + 4)), so a small
+  plus-four estimate (two extra wins and two extra losses added to the
+  totals), so a small
   one-sided sample (plain ± = 0) never counts as precise. An edit or a pause
   ends a rest at once; a new position starts at full speed.
 - **Game over:** no analysis.
@@ -83,8 +96,9 @@ request and one reply per batch, like `explore`. No streaming messages.
 
 Derived numbers:
 
-- Win chance p = (wins + ties / 2) / games; ± = 1.96 · √(p(1 − p) / games).
-- Margin = mean diff; its spread = standard deviation of diff.
+- Win chance p = win sum / games; ± = 1.96 · √(v / games), v = win² sum /
+  games − p².
+- Margin = mean diff.
 
 ## UI
 
@@ -94,8 +108,8 @@ Position card (desktop and phone compact form):
   whole percent; once ± < 0.5, to one decimal ("54.3%").
 - New line under the bar: a small pulsing dot while analysis runs, then
   "± 1.2 · 3,200 games". The dot is absent when paused or over.
-- Margin text as before ("Opponent ahead by about 9 (± 15)", "You ahead
-  by…", "Level (± 15)"), from the play-outs' mean and spread of diff.
+- Margin text "Opponent ahead by about 9", "You ahead by…", "Level", from
+  the play-outs' mean diff.
 - Until the first batch for a position arrives, the previous position's
   numbers stay, faded (as edits do now); on a cold open with none, "…".
 - Game over: the result, as now; no dot, no game count.

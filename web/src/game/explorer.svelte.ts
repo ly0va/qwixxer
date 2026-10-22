@@ -19,9 +19,7 @@ export const REST_BELOW = 0.02;
  * counts as precise.
  */
 function precise(t: Analysis): boolean {
-    const n = t.games + 4;
-    const p = (t.wins + t.ties / 2 + 2) / n;
-    return 1.96 * Math.sqrt((p * (1 - p)) / n) < REST_BELOW;
+    return P.winChance(P.addAnalysis(t, { games: 4, win_sum: 2, win_sq_sum: 2, diff_sum: 0 })).pm < REST_BELOW;
 }
 
 /** Spec "Web: state explorer": the position being explored and its answer. */

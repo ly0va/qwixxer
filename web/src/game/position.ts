@@ -141,12 +141,11 @@ export function exploreSheet(p: ExPosition, who: Who): RowModel[] {
 
 export const percent = (p: number, digits: 0 | 1) => `${(p * 100).toFixed(digits)}%`;
 
-export function marginText(e: { margin: number; sigma: number }): string {
-    const m = Math.round(e.margin);
-    const s = Math.round(e.sigma);
-    if (m > 0) return `You ahead by about ${m} (± ${s})`;
-    if (m < 0) return `Opponent ahead by about ${-m} (± ${s})`;
-    return `Level (± ${s})`;
+export function marginText(margin: number): string {
+    const m = Math.round(margin);
+    if (m > 0) return `You ahead by about ${m}`;
+    if (m < 0) return `Opponent ahead by about ${-m}`;
+    return 'Level';
 }
 
 export function overText(o: { you: number; opponent: number }): string {
@@ -162,27 +161,24 @@ export const analysisKey = (p: ExPosition) => JSON.stringify([p.you, p.opponent,
 export const isOver = (p: ExPosition) =>
     p.you.strikes >= 4 || p.opponent.strikes >= 4 || closedRows(p).filter(Boolean).length >= 2;
 
-export const ZERO_ANALYSIS: Analysis = { games: 0, wins: 0, ties: 0, diff_sum: 0, diff_sq_sum: 0 };
+export const ZERO_ANALYSIS: Analysis = { games: 0, win_sum: 0, win_sq_sum: 0, diff_sum: 0 };
 
 export const addAnalysis = (a: Analysis, b: Analysis): Analysis => ({
     games: a.games + b.games,
-    wins: a.wins + b.wins,
-    ties: a.ties + b.ties,
+    win_sum: a.win_sum + b.win_sum,
+    win_sq_sum: a.win_sq_sum + b.win_sq_sum,
     diff_sum: a.diff_sum + b.diff_sum,
-    diff_sq_sum: a.diff_sq_sum + b.diff_sq_sum,
 });
 
-/** Ties count half; ± is 1.96 standard errors. */
+/** Mean value and ± (1.96 standard errors), the spread taken from the values. */
 export function winChance(t: Analysis): { p: number; pm: number } {
-    const p = (t.wins + t.ties / 2) / t.games;
-    return { p, pm: 1.96 * Math.sqrt((p * (1 - p)) / t.games) };
+    const p = t.win_sum / t.games;
+    const v = Math.max(0, t.win_sq_sum / t.games - p * p);
+    return { p, pm: 1.96 * Math.sqrt(v / t.games) };
 }
 
-/** Mean final score difference and its spread, for `marginText`. */
-export function analysisMargin(t: Analysis): { margin: number; sigma: number } {
-    const mean = t.diff_sum / t.games;
-    return { margin: mean, sigma: Math.sqrt(Math.max(0, t.diff_sq_sum / t.games - mean * mean)) };
-}
+/** Mean final score difference, for `marginText`. */
+export const analysisMargin = (t: Analysis) => t.diff_sum / t.games;
 
 /** Whole percent until ± < 0.5 points, then one decimal. */
 export const chanceText = (w: { p: number; pm: number }) => percent(w.p, w.pm < 0.005 ? 1 : 0);

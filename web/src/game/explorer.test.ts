@@ -178,7 +178,7 @@ describe('ExplorerController analysis', () => {
         } as unknown as Engine;
         const reply = (games: number, wins: number) => {
             const c = calls.filter((c) => c.kind === 'analyze').at(-1)!;
-            c.resolve({ games, wins, ties: 0, diff_sum: games, diff_sq_sum: games * 4 });
+            c.resolve({ games, win_sum: wins, win_sq_sum: wins, diff_sum: games });
         };
         return { engine, calls, reply, analyses: () => calls.filter((c) => c.kind === 'analyze') };
     }
@@ -204,7 +204,7 @@ describe('ExplorerController analysis', () => {
         expect(analyses()[1].start).toBe(MIN_BATCH);
         reply(analyses()[1].count!, 1);
         await flush();
-        expect(x.analysis?.totals.wins).toBe(6);
+        expect(x.analysis?.totals.win_sum).toBe(6);
     });
 
     it('a mark edit restarts at zero and discards the stale reply; a dice edit does not restart', async () => {
@@ -217,16 +217,16 @@ describe('ExplorerController analysis', () => {
         const c1 = analyses()[1].count!;
         reply(c1, c1 / 2); // about even, so not yet precise enough to rest
         await flush();
-        expect(x.analysis?.totals.wins).toBe(3 + c1 / 2); // dice-only: kept accumulating
+        expect(x.analysis?.totals.win_sum).toBe(3 + c1 / 2); // dice-only: kept accumulating
         x.tapSquare('you', 0, 0);
         reply(analyses()[2].count!, 7); // started before the edit: stale
         await flush();
-        expect(x.analysis?.totals.wins).toBe(3 + c1 / 2);
+        expect(x.analysis?.totals.win_sum).toBe(3 + c1 / 2);
         expect(x.analysis?.key).not.toBe(analysisKey(x.pos)); // old numbers stay (faded) until fresh ones arrive
         expect(analyses()[3].start).toBe(0);
         reply(analyses()[3].count!, 1);
         await flush();
-        expect(x.analysis).toMatchObject({ key: analysisKey(x.pos), totals: { wins: 1 } });
+        expect(x.analysis).toMatchObject({ key: analysisKey(x.pos), totals: { win_sum: 1 } });
     });
 
     it('never has two batches in flight, and an explore call goes before the next batch', async () => {
@@ -330,13 +330,13 @@ describe('ExplorerController analysis fixes', () => {
         x.init();
         x.setActive(true);
         t.now += 1; // 8 games in 1 ms: the next batch grows
-        an[0].resolve({ games: MIN_BATCH, wins: 0, ties: 0, diff_sum: 0, diff_sq_sum: 0 });
+        an[0].resolve({ games: MIN_BATCH, win_sum: 0, win_sq_sum: 0, diff_sum: 0 });
         await flush();
         expect(an[1].count).toBeGreaterThan(MIN_BATCH);
         expect(x.settled).toBe(true);
         x.tapSquare('you', 0, 0);
         expect(x.settled).toBe(false);
-        an[1].resolve({ games: an[1].count, wins: 0, ties: 0, diff_sum: 0, diff_sq_sum: 0 }); // stale
+        an[1].resolve({ games: an[1].count, win_sum: 0, win_sq_sum: 0, diff_sum: 0 }); // stale
         await flush();
         expect(an[2].count).toBe(MIN_BATCH);
     });
@@ -354,14 +354,14 @@ describe('ExplorerController analysis throttle', () => {
         const x = new ExplorerController(engine, memStore(), undefined, (f, ms) => void timers.push({ f, ms }), () => t.now);
         x.init();
         // 10,000 games at 50%: ± ≈ 0.98 points, below the 2-point threshold.
-        const precise = (games = 10000) => ({ games, wins: games / 2, ties: 0, diff_sum: 0, diff_sq_sum: 0 });
+        const precise = (games = 10000) => ({ games, win_sum: games / 2, win_sq_sum: games / 2, diff_sum: 0 });
         return { x, an, timers, t, precise };
     }
 
     it('runs back to back while ± ≥ 2 points', async () => {
         const { x, an, timers } = setupRest();
         x.setActive(true);
-        an[0].resolve({ games: 100, wins: 50, ties: 0, diff_sum: 0, diff_sq_sum: 0 }); // ± ≈ 9.8
+        an[0].resolve({ games: 100, win_sum: 50, win_sq_sum: 50, diff_sum: 0 }); // ± ≈ 9.8
         await flush();
         expect(an).toHaveLength(2);
         expect(timers).toHaveLength(0);
@@ -396,7 +396,7 @@ describe('ExplorerController analysis throttle', () => {
     it('a small one-sided sample is not precise enough to rest', async () => {
         const { x, an, timers } = setupRest();
         x.setActive(true);
-        an[0].resolve({ games: 8, wins: 0, ties: 0, diff_sum: -80, diff_sq_sum: 800 }); // ± 0 by the plain formula
+        an[0].resolve({ games: 8, win_sum: 0, win_sq_sum: 0, diff_sum: -80 }); // ± 0 by the plain formula
         await flush();
         expect(timers).toHaveLength(0);
         expect(an).toHaveLength(2);

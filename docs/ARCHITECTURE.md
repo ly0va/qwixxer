@@ -569,23 +569,26 @@ sides) copies the game's current view into it.
 **Explorer analysis** (spec
 `docs/superpowers/specs/2026-10-15-explorer-analysis-design.md`). The
 Position card's win chance and margin are a play-out estimate, not the net's
-P(win): `Explorer::analyze(position, start, count)` plays games
+P(win): `Explorer::analyze(position, start, count)` plays out
 `start .. start + count` from the position before the roll (dice ignored),
-both seats Master through `BatchedRollouts` (Lite fidelity, as Master+'s own
-play-outs), with game k's dice seeded from the position and k, so batches
-compose exactly and replay identically. It returns wins, ties and the sum and
-sum of squares of the final score difference. `ExplorerController` runs one
+both seats Master without its passive lookahead through `BatchedRollouts`,
+for 4 turns (`PLAY_OUT_TURNS`), then values each by the net: P(win) and the
+aux head's predicted final score difference, or the result where the game
+ended. Play-out k's dice are seeded from the position and k, so batches
+compose and replay identically. It returns the sum and sum of squares of
+the win values and the sum of the score differences. `ExplorerController` runs one
 `analyze` batch at a time while the explorer is on screen (route and tab
 visible), sizing batches toward 100 ms (8 to 512 games, back to 8 on a new
 position), back to back until ± < 2 points (plus-four estimate), then resting
 as long as each batch took (half a core), adding replies to
 totals keyed by the position without its dice (a dice edit keeps them; any
 other edit restarts them; a reply for an older position is dropped). The win
-chance counts ties as half, with ± = 1.96 standard errors; it shows one
+chance is the mean win value, with ± = 1.96 standard errors from the
+values' spread; it shows one
 decimal once ± < 0.5 points. The move list shows the net's P(win) after each
 move as a percentage with one decimal ("54.6%"). Throughput in WASM (Node, `node
-web/scripts/analyze-bench.mjs`, 2026-10-15): about 440 games/s from the
-empty position (the longest games).
+web/scripts/analyze-bench.mjs`, 2026-10-22): about 1,250 play-outs/s from the
+empty position; ± 1 point there takes about 0.4 s (25 s with full play-outs).
 
 **Look.** Light/dark tokens in `styles/theme.css`, self-hosted Barlow and
 Barlow Condensed (`@fontsource/*`). Squares, strike boxes and actions are real

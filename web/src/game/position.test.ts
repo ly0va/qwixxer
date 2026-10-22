@@ -101,9 +101,9 @@ describe('sheet model and text', () => {
     it('formats chances, margins and results', () => {
         expect(percent(0.3786, 0)).toBe('38%');
         expect(percent(0.41249, 1)).toBe('41.2%');
-        expect(marginText({ margin: -8.6, sigma: 14.9 })).toBe('Opponent ahead by about 9 (± 15)');
-        expect(marginText({ margin: 3.2, sigma: 10.4 })).toBe('You ahead by about 3 (± 10)');
-        expect(marginText({ margin: 0.3, sigma: 12 })).toBe('Level (± 12)');
+        expect(marginText(-8.6)).toBe('Opponent ahead by about 9');
+        expect(marginText(3.2)).toBe('You ahead by about 3');
+        expect(marginText(0.3)).toBe('Level');
         expect(overText({ you: 41, opponent: 33 })).toBe('You win 41 – 33');
         expect(overText({ you: 30, opponent: 33 })).toBe('Opponent wins 33 – 30');
         expect(overText({ you: 20, opponent: 20 })).toBe('Draw 20 – 20');
@@ -111,7 +111,7 @@ describe('sheet model and text', () => {
 });
 
 describe('analysis numbers', () => {
-    const t = (games: number, wins: number, ties: number, diff_sum = 0, diff_sq_sum = 0) => ({ games, wins, ties, diff_sum, diff_sq_sum });
+    const t = (games: number, win_sum: number, win_sq_sum: number, diff_sum = 0) => ({ games, win_sum, win_sq_sum, diff_sum });
 
     it('analysisKey ignores dice only', () => {
         const p = emptyPosition();
@@ -132,14 +132,14 @@ describe('analysis numbers', () => {
     });
 
     it('adds batches and derives the win chance, ± and margin', () => {
-        const s = addAnalysis(addAnalysis(ZERO_ANALYSIS, t(100, 50, 10, 200, 10000)), t(300, 170, 20, 600, 30000));
-        expect(s).toEqual(t(400, 220, 30, 800, 40000));
+        const s = addAnalysis(addAnalysis(ZERO_ANALYSIS, t(100, 50, 30, 200)), t(300, 170, 90, 600));
+        expect(s).toEqual(t(400, 220, 120, 800));
+        // Values between 0 and 1: ± comes from their spread, here
+        // 120/400 − 0.55² = 0.0025, not 0.55 · 0.45.
         const w = winChance(s);
-        expect(w.p).toBeCloseTo((220 + 15) / 400);
-        expect(w.pm).toBeCloseTo(1.96 * Math.sqrt(w.p * (1 - w.p) / 400));
-        const m = analysisMargin(s);
-        expect(m.margin).toBe(2);
-        expect(m.sigma).toBeCloseTo(Math.sqrt(100 - 4));
+        expect(w.p).toBeCloseTo(0.55);
+        expect(w.pm).toBeCloseTo(1.96 * Math.sqrt(0.0025 / 400));
+        expect(analysisMargin(s)).toBe(2);
     });
 
     it('formats: whole percent until ± < 0.5 points, then one decimal', () => {
