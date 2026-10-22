@@ -613,9 +613,6 @@ enum Commands {
         /// [default: 42]
         #[arg(long)]
         seed: Option<u64>,
-        /// Also label every safe-lock firing, rebuilt without the rule (the lock and the best other moves)
-        #[arg(long)]
-        locks: bool,
         /// Continue the dataset in --out up to --positions (settings not given come from it)
         #[arg(long)]
         resume: bool,
@@ -1330,7 +1327,6 @@ fn main() {
             holdout,
             keep,
             seed,
-            locks,
             resume,
         }) => {
             let fail = |e: String| -> ! {
@@ -1338,14 +1334,8 @@ fn main() {
                 std::process::exit(2);
             };
             let cfg = if resume {
-                let c =
-                    dqn::win_data::resume_cfg(&out, positions, player, rollouts, cand_rollouts, holdout, keep, seed)
-                        .unwrap_or_else(|e| fail(e));
-                // Given, --locks must match the dataset (validate checks).
-                dqn::win_data::DataCfg {
-                    locks: c.locks || locks,
-                    ..c
-                }
+                dqn::win_data::resume_cfg(&out, positions, player, rollouts, cand_rollouts, holdout, keep, seed)
+                    .unwrap_or_else(|e| fail(e))
             } else {
                 dqn::win_data::DataCfg {
                     player: player.unwrap_or_else(|| fail("--player is required (except with --resume)".into())),
@@ -1355,7 +1345,6 @@ fn main() {
                     cand_rollouts: cand_rollouts.unwrap_or(64),
                     holdout: holdout.unwrap_or(0.1),
                     keep: keep.unwrap_or(1.0),
-                    locks,
                     seed: seed.unwrap_or(42),
                     resume: false,
                 }

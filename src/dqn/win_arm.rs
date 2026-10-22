@@ -963,7 +963,6 @@ mod tests {
             cand_rollouts: 2,
             holdout: 0.5,
             keep: 1.0,
-            locks: false,
             seed: 3,
             resume: false,
         };
@@ -1396,7 +1395,6 @@ mod tests {
             cand_rollouts: 64,
             holdout: 0.5,
             keep: None,
-            locks: None,
             train_turns: 0,
             train_decisions: 0,
             heldout_turns: 0,

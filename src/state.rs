@@ -938,10 +938,6 @@ mod tests {
         Move::Single(Mark { row, number })
     }
 
-    fn double(r1: usize, n1: u8, r2: usize, n2: u8) -> Move {
-        Move::Double(Mark { row: r1, number: n1 }, Mark { row: r2, number: n2 })
-    }
-
     // ---- find_smart_lock ----
 
     #[test]

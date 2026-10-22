@@ -2240,7 +2240,8 @@ behind and hurt when ahead (Phase 16's pattern), passive declines worst
 **`win-data --locks`** labels every firing rebuilt without the rule (the
 lock first, then the best two other moves), ~1.2 decisions a game. Round 3
 (`arm_f2`, user) fitted on it changed nothing: own error at lock decisions
-0.129 against T's 0.124, 50.00% vs T both with and without the rule (4M).
+0.129 against T's 0.124, 50.00% vs T both with and without the rule (4M). (`--locks` was
+later removed: nothing used it after this.)
 
 **The bug.** Every training board is lock-propagated (a row I lock is
 closed on the opponent's board too, which the thermometer input shows as

@@ -7,8 +7,7 @@ use crate::dqn::pair::PairStrategy;
 use crate::dqn::win::WinModelConfig;
 use crate::dqn::win::{input_tensor, sigmoid, swap_input, win_input, ManualWinNet, WinModel, WinStrategy, WIN_INPUTS};
 use crate::dqn::win_distill::{
-    capture_active1, capture_active2, capture_lock_active1, capture_lock_active2, capture_lock_passive,
-    capture_passive, label_decision, CandDecision, CandGroup,
+    capture_active1, capture_active2, capture_passive, label_decision, CandDecision, CandGroup,
 };
 use crate::dqn::{MyBackend, TRAIN_SEED};
 use crate::game::{Game, Player};
@@ -512,20 +511,14 @@ pub(crate) struct TurnEnds<B: Bot> {
     pub(crate) recorded: Rc<RefCell<Vec<(State, State)>>>,
     /// The close-gate margin and the captured decisions.
     pub(crate) capture: Option<(f32, Rc<RefCell<Vec<CandDecision>>>)>,
-    /// Also capture every safe-lock firing, rule-free and ungated.
-    pub(crate) locks: bool,
 }
 
 impl<B: Bot> TurnEnds<B> {
-    /// Keeps the decision `capture` returns; whether it returned one.
-    fn keep(&self, capture: impl FnOnce(&B, f32) -> Option<CandDecision>) -> bool {
+    /// Keeps the decision `capture` returns, if any.
+    fn keep(&self, capture: impl FnOnce(&B, f32) -> Option<CandDecision>) {
         if let Some((margin, buf)) = &self.capture {
-            if let Some(d) = capture(&self.bot, *margin) {
-                buf.borrow_mut().push(d);
-                return true;
-            }
+            buf.borrow_mut().extend(capture(&self.bot, *margin));
         }
-        false
     }
 }
 
@@ -537,17 +530,12 @@ impl<B: Bot> std::fmt::Debug for TurnEnds<B> {
 
 impl<B: Bot> Strategy for TurnEnds<B> {
     fn active_phase1(&mut self, state: &State, opp_states: &[State], dice: [u8; 6]) -> Option<Mark> {
-        // A freed bot's ordinary capture may already hold the lock decision.
-        if !self.keep(|b, m| capture_active1(b, state, opp_states, dice, m)) && self.locks {
-            self.keep(|b, _| capture_lock_active1(b, state, opp_states, dice));
-        }
+        self.keep(|b, m| capture_active1(b, state, opp_states, dice, m));
         active_phase1_impl(&self.bot, state, opp_states, dice)
     }
 
     fn active_phase2(&mut self, state: &State, opp_states: &[State], dice: [u8; 6], has_marked: bool) -> Option<Mark> {
-        if !self.keep(|b, m| capture_active2(b, state, opp_states, dice, has_marked, m)) && self.locks {
-            self.keep(|b, _| capture_lock_active2(b, state, opp_states, dice, has_marked));
-        }
+        self.keep(|b, m| capture_active2(b, state, opp_states, dice, has_marked, m));
         let mark = active_phase2_impl(&self.bot, state, opp_states, dice, has_marked);
         let mut no_mark = *state;
         if !has_marked {
@@ -560,9 +548,7 @@ impl<B: Bot> Strategy for TurnEnds<B> {
     }
 
     fn passive_phase1(&mut self, state: &State, opp_states: &[State], dice: [u8; 6], active: usize) -> Option<Mark> {
-        if !self.keep(|b, m| capture_passive(b, state, opp_states, dice, active, m)) && self.locks {
-            self.keep(|b, _| capture_lock_passive(b, state, opp_states, dice, active));
-        }
+        self.keep(|b, m| capture_passive(b, state, opp_states, dice, active, m));
         passive_decide(&self.bot, state, opp_states, dice, active)
     }
 }
@@ -689,7 +675,6 @@ pub fn rollout_round_by<P: Bot + Clone + 'static>(
                                 bot: player.clone(),
                                 recorded: bufs[i].clone(),
                                 capture: cand.map(|c| (c.margin, caps[i].clone())),
-                                locks: false,
                             };
                             Player::new(
                                 Box::new(rec),
@@ -765,7 +750,6 @@ pub fn turn_ends_by<P: Bot + Clone + 'static>(
                             bot: player.clone(),
                             recorded: bufs[i].clone(),
                             capture: None,
-                            locks: false,
                         };
                         Player::new(
                             Box::new(rec),
@@ -1563,41 +1547,6 @@ mod tests {
     }
 
     #[test]
-    fn a_lock_decision_is_captured_once() {
-        use crate::dqn::pair::PairStrategy;
-        use crate::strategy::recorder::lockable;
-        use crate::strategy::NoLock;
-        let (me, opps) = (lockable(), [State::default()]);
-        let colour = [6, 1, 6, 1, 1, 1];
-        let captured = |free: bool| {
-            let buf: Rc<RefCell<Vec<CandDecision>>> = Default::default();
-            let pair = PairStrategy::load("pair_model");
-            let mut rec: Box<dyn Strategy> = if free {
-                Box::new(TurnEnds {
-                    bot: NoLock(pair),
-                    recorded: Default::default(),
-                    capture: Some((f32::INFINITY, buf.clone())),
-                    locks: true,
-                })
-            } else {
-                Box::new(TurnEnds {
-                    bot: pair,
-                    recorded: Default::default(),
-                    capture: Some((f32::INFINITY, buf.clone())),
-                    locks: true,
-                })
-            };
-            rec.active_phase2(&me, &opps, colour, true);
-            let n = buf.borrow().len();
-            n
-        };
-        // Under the rule only the lock capture sees it; freed, the ordinary
-        // capture takes it and the lock capture does not repeat it.
-        assert_eq!(captured(false), 1);
-        assert_eq!(captured(true), 1);
-    }
-
-    #[test]
     fn data_games_play_the_bots_own_passive_decision() {
         use crate::strategy::recorder::{lockable, lockable_row, Points};
         use crate::strategy::{Lookahead, NoLock};
@@ -1616,7 +1565,6 @@ mod tests {
             bot: bot.clone(),
             recorded: Default::default(),
             capture: None,
-            locks: false,
         };
         assert_ne!(turn_ends.passive_phase1(&me, &opps, dice, 0), red12);
         let mut recorder = Recorder {

@@ -7,8 +7,8 @@
 use crate::dqn::win::{swap_input, win_input, WIN_INPUTS};
 use crate::state::{Mark, State};
 use crate::strategy::bot_impl::{
-    active_phase1_choices, active_phase2_choices, active_phase2_choices_with, is_safe_lock, passive_lookahead_values,
-    passive_phase1_choices, passive_phase1_choices_with, passive_turn_ends, phase1_plan_choices_with, Decision,
+    active_phase1_choices, active_phase2_choices_with, passive_lookahead_values, passive_phase1_choices_with,
+    passive_turn_ends, Decision,
 };
 use crate::strategy::search::{
     context_seed, gates_with, passive_first_active, phase1_entry, phase2_entry, rollout_final_states, SEARCH_CANDS,
@@ -171,113 +171,6 @@ pub fn capture_passive(
     })
 }
 
-/// The safe lock the rule forces in `decision`, if it does.
-fn fired(state: &State, decision: &Decision) -> Option<Mark> {
-    match *decision {
-        Decision::Forced(Some(m)) if is_safe_lock(state, Some(m)) => Some(m),
-        _ => None,
-    }
-}
-
-/// A safe-lock firing rebuilt without the rule: the lock first, then the
-/// best `SEARCH_CANDS − 1` other choices by static value. `None` when
-/// nothing else is legal. The lock is kept even when the rule-free
-/// pipeline prunes it (active phase 1: a plan that locks the same row in
-/// the colour phase can dominate it).
-fn lock_shortlist(lock: Mark, choices: Vec<(Option<Mark>, State, f32)>) -> Option<Vec<Option<Mark>>> {
-    let mut others: Vec<(Option<Mark>, State, f32)> = choices.into_iter().filter(|c| c.0 != Some(lock)).collect();
-    if others.is_empty() {
-        return None;
-    }
-    others.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap());
-    Some(
-        std::iter::once(Some(lock))
-            .chain(others.into_iter().take(SEARCH_CANDS - 1).map(|c| c.0))
-            .collect(),
-    )
-}
-
-/// Active phase 1 where the rule forces a safe lock: the lock and the best
-/// other phase-1 marks (rule-free, as [`capture_active1`] collapses them),
-/// each completed as [`phase1_entry`] completes it. Never gated.
-pub fn capture_lock_active1(bot: &impl Bot, state: &State, opps: &[State], dice: [u8; 6]) -> Option<CandDecision> {
-    if opps.is_empty() {
-        return None;
-    }
-    let (decision, sim_opp) = active_phase1_choices(bot, state, opps, dice);
-    let lock = fired(state, &decision)?;
-    let Decision::Choices(plans) = phase1_plan_choices_with(state, &sim_opp, dice, false) else {
-        return None;
-    };
-    let marks = lock_shortlist(lock, best_plan_per_mark(valued(bot, &plans, &sim_opp, Next::Opp)))?;
-    Some(CandDecision {
-        entries: marks
-            .iter()
-            .map(|&m| phase1_entry(bot, state, &sim_opp, dice, m))
-            .collect(),
-        first_active: 1 % (opps.len() + 1),
-        seed: context_seed(state, opps, dice),
-    })
-}
-
-/// Active phase 2 where the rule forces a safe lock, as
-/// [`capture_lock_active1`].
-pub fn capture_lock_active2(
-    bot: &impl Bot,
-    state: &State,
-    opps: &[State],
-    dice: [u8; 6],
-    has_marked: bool,
-) -> Option<CandDecision> {
-    if opps.is_empty() {
-        return None;
-    }
-    let lock = fired(state, &active_phase2_choices(state, opps, dice, has_marked))?;
-    let Decision::Choices(choices) = active_phase2_choices_with(state, opps, dice, has_marked, false) else {
-        return None;
-    };
-    let marks = lock_shortlist(lock, valued(bot, &choices, opps, Next::Opp))?;
-    let post = |m: Option<Mark>| {
-        let mut s = *state;
-        match m {
-            Some(x) => s.apply_mark(x),
-            None if !has_marked => s.apply_strike(),
-            None => {}
-        }
-        s
-    };
-    Some(CandDecision {
-        entries: marks.iter().map(|&m| phase2_entry(post(m), opps)).collect(),
-        first_active: 1 % (opps.len() + 1),
-        seed: context_seed(state, opps, dice),
-    })
-}
-
-/// Passive phase 1 where the rule forces a safe lock, as
-/// [`capture_lock_active1`]; each entry completes the turn as
-/// [`passive_turn_ends`] does.
-pub fn capture_lock_passive(
-    bot: &impl Bot,
-    state: &State,
-    opps: &[State],
-    dice: [u8; 6],
-    active_player: usize,
-) -> Option<CandDecision> {
-    if opps.is_empty() {
-        return None;
-    }
-    let lock = fired(state, &passive_phase1_choices(state, opps, dice))?;
-    let Decision::Choices(choices) = passive_phase1_choices_with(state, opps, dice, false) else {
-        return None;
-    };
-    let marks = lock_shortlist(lock, passive_valued(bot, &choices, state, opps, dice, active_player))?;
-    Some(CandDecision {
-        entries: passive_turn_ends(bot, state, opps, dice, active_player, &marks),
-        first_active: passive_first_active(active_player, opps.len() + 1),
-        seed: context_seed(state, opps, dice),
-    })
-}
-
 /// One labelled decision: a training sample per kept candidate (best static
 /// value first) and the CRN spread of each runner-up's difference to the
 /// first candidate.
@@ -413,6 +306,7 @@ mod tests {
     use super::*;
     use crate::dqn::pair::PairStrategy;
     use crate::dqn::win_train::turn_ends_by;
+    use crate::strategy::bot_impl::{active_phase2_choices, passive_phase1_choices};
 
     fn pair() -> PairStrategy {
         PairStrategy::load("pair_model")
@@ -513,48 +407,6 @@ mod tests {
     }
 
     #[test]
-    fn a_lock_firing_is_captured_rule_free_with_the_lock_first() {
-        use crate::strategy::search::{passive_entry, passive_first_active, phase1_entry};
-        let bot = pair();
-        let (me, opps) = (lockable(), [State::default()]);
-        let lock = Some(Mark { row: 0, number: 12 });
-        let white = [6, 6, 1, 1, 1, 1]; // white sum 12
-        let colour = [6, 1, 6, 1, 1, 1]; // white 6 + red 6
-        let seed = |d| context_seed(&me, &opps, d);
-        let shortlist = |d: &CandDecision| (2..=SEARCH_CANDS).contains(&d.entries.len());
-
-        // The rule forces the lock, so the ordinary captures see no choice.
-        assert!(capture_passive(&bot, &me, &opps, white, 0, f32::INFINITY).is_none());
-        let d = capture_lock_passive(&bot, &me, &opps, white, 0).unwrap();
-        assert!(shortlist(&d));
-        assert_eq!(
-            board(&d.entries[0]),
-            board(&passive_entry(&bot, &me, &opps, white, 0, lock))
-        );
-        assert_eq!((d.first_active, d.seed), (passive_first_active(0, 2), seed(white)));
-
-        let d = capture_lock_active2(&bot, &me, &opps, colour, true).unwrap();
-        assert!(shortlist(&d));
-        let mut post = me;
-        post.apply_mark(lock.unwrap());
-        assert_eq!(board(&d.entries[0]), board(&phase2_entry(post, &opps)));
-        assert_eq!((d.first_active, d.seed), (1, seed(colour)));
-
-        let d = capture_lock_active1(&bot, &me, &opps, white).unwrap();
-        assert!(shortlist(&d));
-        let sim_opp = active_phase1_choices(&bot, &me, &opps, white).1;
-        assert_eq!(
-            board(&d.entries[0]),
-            board(&phase1_entry(&bot, &me, &sim_opp, white, lock))
-        );
-        assert_eq!((d.first_active, d.seed), (1, seed(white)));
-        // The other entries are distinct moves, none of them the lock.
-        for e in &d.entries[1..] {
-            assert_ne!(board(e), board(&d.entries[0]));
-        }
-    }
-
-    #[test]
     fn ordinary_captures_follow_the_bots_lock_rule() {
         use crate::strategy::NoLock;
         // Under the rule the lock is forced, so there is nothing to capture;
@@ -569,19 +421,6 @@ mod tests {
         assert!(capture_active2(&free, &me, &opps, colour, true, inf).is_some());
         assert!(capture_active1(&pair(), &me, &opps, white, inf).is_none());
         assert!(capture_active1(&free, &me, &opps, white, inf).is_some());
-    }
-
-    #[test]
-    fn without_a_safe_lock_there_is_no_lock_capture() {
-        let bot = pair();
-        let opps = [State::default()];
-        for (me, dice) in [(State::default(), [6, 6, 1, 1, 1, 1]), (lockable(), [3, 4, 2, 5, 1, 1])] {
-            assert!(capture_lock_passive(&bot, &me, &opps, dice, 0).is_none());
-            assert!(capture_lock_active2(&bot, &me, &opps, dice, true).is_none());
-            assert!(capture_lock_active1(&bot, &me, &opps, dice).is_none());
-        }
-        let dice = [6, 6, 1, 1, 1, 1];
-        assert!(capture_lock_passive(&bot, &lockable(), &[], dice, 0).is_none());
     }
 
     #[test]
