@@ -125,6 +125,70 @@ pub struct Luck {
     pub average: f32,
 }
 
+/// The win net with its values remembered: the same values, bit for bit
+/// (each board is valued on its own, whatever the batch), each board once.
+/// Two players only, as the explorer is.
+#[derive(Debug)]
+struct CachedNet<'a> {
+    net: &'a WinStrategy,
+    seen: std::cell::RefCell<std::collections::HashMap<(State, State, Next), f32>>,
+}
+
+impl<'a> CachedNet<'a> {
+    fn new(net: &'a WinStrategy) -> Self {
+        CachedNet {
+            net,
+            seen: Default::default(),
+        }
+    }
+}
+
+impl Bot for CachedNet<'_> {
+    fn evaluate(&self, our_state: &State, opp_states: &[State]) -> f32 {
+        self.evaluate_batch(from_ref(our_state), opp_states)[0]
+    }
+    fn evaluate_batch(&self, candidates: &[State], opp_states: &[State]) -> Vec<f32> {
+        self.evaluate_batch_next(candidates, opp_states, Next::Opp)
+    }
+    fn evaluate_batch_multi(&self, groups: &[(&[State], &[State])]) -> Vec<Vec<f32>> {
+        let framed: Vec<_> = groups.iter().map(|g| (g.0, g.1, Next::Opp)).collect();
+        self.evaluate_batch_multi_next(&framed)
+    }
+    fn evaluate_batch_next(&self, candidates: &[State], opp_states: &[State], next: Next) -> Vec<f32> {
+        self.evaluate_batch_multi_next(&[(candidates, opp_states, next)])
+            .pop()
+            .unwrap()
+    }
+    fn evaluate_batch_multi_next(&self, groups: &[(&[State], &[State], Next)]) -> Vec<Vec<f32>> {
+        let mut seen = self.seen.borrow_mut();
+        let mut missing: Vec<(&[State], &[State], Next)> = vec![];
+        for &(cands, opps, next) in groups {
+            debug_assert_eq!(opps.len(), 1);
+            for c in cands {
+                if !seen.contains_key(&(*c, opps[0], next)) {
+                    missing.push((from_ref(c), opps, next));
+                }
+            }
+        }
+        for (g, v) in missing.iter().zip(self.net.evaluate_batch_multi_next(&missing)) {
+            seen.insert((g.0[0], g.1[0], g.2), v[0]);
+        }
+        groups
+            .iter()
+            .map(|&(cands, opps, next)| cands.iter().map(|c| seen[&(*c, opps[0], next)]).collect())
+            .collect()
+    }
+    fn force_lock(&self) -> bool {
+        self.net.force_lock()
+    }
+    fn passive_lookahead(&self) -> bool {
+        self.net.passive_lookahead()
+    }
+    fn terminal_value(&self, states: &[State]) -> f32 {
+        self.net.terminal_value(states)
+    }
+}
+
 /// Every distinct roll with its probability: the white dice unordered (21
 /// pairs, 1/36 or 2/36), times the four colour dice (1,296 outcomes).
 fn rolls() -> impl Iterator<Item = ([u8; 6], f64)> {
@@ -516,6 +580,22 @@ impl Explorer {
         opp_white: Option<Mark>,
     ) -> (Vec<Turn>, Vec<State>, Vec<f32>) {
         let turns = legal_turns(you, opp, dice, roller, opp_white);
+        let (posts, p_wins) = self.turn_values(you, opp, &turns, roller, opp_white, dice);
+        (turns, posts, p_wins)
+    }
+
+    /// Your sheet after each of `turns` and the P(win) after it, as
+    /// [`Explorer::valued_turns`] judges it. On your roll the values don't
+    /// depend on the dice.
+    fn turn_values(
+        &self,
+        you: &State,
+        opp: &State,
+        turns: &[Turn],
+        roller: Roller,
+        opp_white: Option<Mark>,
+        dice: [u8; 6],
+    ) -> (Vec<State>, Vec<f32>) {
         let mut opp_after = *opp;
         if let Some(m) = opp_white {
             opp_after.apply_mark(m);
@@ -540,7 +620,7 @@ impl Explorer {
                 passive_lookahead_values(&self.net, you, from_ref(opp), dice, 0, &marks)
             }
         };
-        (turns, posts, z.into_iter().map(phi).collect())
+        (posts, z.into_iter().map(phi).collect())
     }
 
     /// Each legal turn and the P(win) the move list shows for it, the
@@ -581,7 +661,65 @@ impl Explorer {
 
     /// E[f]: the move list's top P(win) averaged over every roll.
     fn average_top(&self, you: &State, opp: &State, roller: Roller) -> f64 {
-        rolls().map(|(d, w)| w * self.top(you, opp, d, roller) as f64).sum()
+        match roller {
+            Roller::You => self.average_top_yours(you, opp),
+            Roller::Opponent => self.average_top_theirs(you, opp),
+        }
+    }
+
+    /// E[f] on their roll: the move list's valuation run on every roll, its
+    /// net calls cached ([`CachedNet`]): rolls share most of the boards the
+    /// opponent's predicted turn values.
+    fn average_top_theirs(&self, you: &State, opp: &State) -> f64 {
+        let net = CachedNet::new(&self.net);
+        rolls()
+            .map(|(d, w)| {
+                let marks: Vec<Option<Mark>> = legal_turns(you, opp, d, Roller::Opponent, None)
+                    .iter()
+                    .map(|t| t.marks.first().copied())
+                    .collect();
+                let best = passive_lookahead_values(&net, you, from_ref(opp), d, 0, &marks)
+                    .into_iter()
+                    .fold(f32::MIN, f32::max);
+                w * phi(best) as f64
+            })
+            .sum()
+    }
+
+    /// E[f] on your roll. Per white pair the opponent's predicted white-sum
+    /// mark is fixed and a turn's value depends on your sheet after it, so
+    /// each distinct turn is valued once; each colour outcome takes the
+    /// best of the turns it makes legal.
+    fn average_top_yours(&self, you: &State, opp: &State) -> f64 {
+        let mut total = 0.0;
+        let mut outcomes = rolls().peekable();
+        while let Some(&(first, w)) = outcomes.peek() {
+            let opp_white = predict_opp_white(&self.net, you, opp, first);
+            let mut keys = std::collections::HashMap::new();
+            let mut distinct: Vec<Turn> = vec![];
+            let mut legal: Vec<Vec<usize>> = Vec::with_capacity(1296);
+            while let Some(&(d, _)) = outcomes.peek() {
+                if d[..2] != first[..2] {
+                    break;
+                }
+                outcomes.next();
+                let ix = legal_turns(you, opp, d, Roller::You, opp_white)
+                    .into_iter()
+                    .map(|t| {
+                        *keys.entry(t.key()).or_insert_with(|| {
+                            distinct.push(t);
+                            distinct.len() - 1
+                        })
+                    })
+                    .collect();
+                legal.push(ix);
+            }
+            let values = self.turn_values(you, opp, &distinct, Roller::You, opp_white, first).1;
+            for ix in &legal {
+                total += w * ix.iter().map(|&i| values[i]).fold(f32::MIN, f32::max) as f64;
+            }
+        }
+        total
     }
 
     /// [`Explorer::average_top`] by brute force over every distinct roll.
@@ -1058,6 +1196,17 @@ mod tests {
         for p in luck_positions() {
             let top = Explorer::new().explore(&p).unwrap().moves.unwrap()[0].p_win;
             assert_eq!(Explorer::new().luck(&p).unwrap().this_roll, top, "{p:?}");
+        }
+    }
+
+    #[test]
+    fn the_average_is_exact() {
+        let ex = Explorer::new();
+        for p in luck_positions() {
+            let (you, opp, _) = states(&p);
+            let want = ex.luck_reference(&you, &opp, p.roller);
+            let got = ex.luck(&p).unwrap().average as f64;
+            assert!((got - want).abs() < 1e-5, "{p:?}: {got} vs {want}");
         }
     }
 
