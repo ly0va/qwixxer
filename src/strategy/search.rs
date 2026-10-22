@@ -1298,6 +1298,8 @@ impl<B: WinProb> SearchBot<B> {
         // bot; the rollout starts at the seat after the active player.
         let shortlist = &cands[..self.shortlist_len(&cands)];
         let marks: Vec<Option<Mark>> = shortlist.iter().map(|c| c.mark).collect();
+        // Revisit (EXPERIMENTS, Phase 28 "Open"): the static values above
+        // already computed these turn ends; keeping them would save a pass.
         let entries = passive_turn_ends(&self.bot, state, opp_states, dice, active_player, &marks);
 
         let seed = context_seed(state, opp_states, dice);

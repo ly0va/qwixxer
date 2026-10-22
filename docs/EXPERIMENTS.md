@@ -2693,3 +2693,21 @@ labels from the fixed pipeline would barely differ.
 The explorer also gained a matching note: when the net values a pruned,
 dominated move above the bots' pick (possible, the net is not monotone
 everywhere), the pick's row gets the "rule" note (`84e6451`).
+
+### Open: repeated work in the passive lookahead
+
+Found in the pre-merge review; left for later (behaviour is right, only
+time is lost):
+
+- `passive_turn_predictions` (`bot_impl.rs`) decides the active player's
+  colour phase with one net call per passive candidate. A decision with
+  c candidates makes about c + 3 calls; the per-candidate groups could go
+  through one `evaluate_batch_multi` call.
+- `explain_passive_phase1` (`search.rs`) values every candidate with
+  `passive_lookahead_values`, which computes the turn ends, then calls
+  `passive_turn_ends` again for the shortlist. The first pass's ends
+  could be kept and sliced. The explorer repeats the same predictions
+  once more for Master's pick and the opponent's predicted turn.
+
+The lookahead costs well over twice the time of a plain passive decision
+(play-outs: 164 against 430 games/s), so this is where to look first.
