@@ -1566,7 +1566,7 @@ mod tests {
     #[test]
     fn search_values_passive_candidates_by_the_lookahead() {
         use crate::strategy::recorder::{lockable, lockable_row, Points};
-        use crate::strategy::{Lookahead, NoLock};
+        use crate::strategy::{no_lock, with_lookahead};
         // My red lock ties the opponent's simultaneous yellow lock into a
         // game end I lose (it leads on green and blue).
         let mut active = lockable_row(1);
@@ -1582,9 +1582,9 @@ mod tests {
                 search_passive,
                 ..Default::default()
             };
-            let mut plain = SearchBot::with_config(NoLock(Points), cfg.clone());
+            let mut plain = SearchBot::with_config(no_lock(Points), cfg.clone());
             plain.force = true;
-            let mut looking = SearchBot::with_config(NoLock(Lookahead(Points)), cfg);
+            let mut looking = SearchBot::with_config(no_lock(with_lookahead(Points)), cfg);
             looking.force = true;
             if !search_passive {
                 assert_eq!(plain.passive_phase1(&me, &opps, dice, 0), red12);
@@ -2268,15 +2268,15 @@ mod tests {
 
     #[test]
     fn turn_completions_follow_the_bots_lock_rule() {
+        use crate::strategy::no_lock;
         use crate::strategy::recorder::{lockable, ShunsPoints};
-        use crate::strategy::NoLock;
         // My colour phase can lock red (white 6 + red 6), nothing else marked.
         let colour = [6, 1, 6, 1, 1, 1];
         let opps = [State::default()];
         let red = |e: (Vec<State>, bool), seat: usize| e.0[seat].locked()[0];
         assert!(red(phase1_entry(&ShunsPoints, &lockable(), &opps, colour, None), 0));
         assert!(!red(
-            phase1_entry(&NoLock(ShunsPoints), &lockable(), &opps, colour, None),
+            phase1_entry(&no_lock(ShunsPoints), &lockable(), &opps, colour, None),
             0
         ));
         // The active opponent can lock red with the white 12.
@@ -2285,15 +2285,15 @@ mod tests {
         let me = State::default();
         assert!(red(passive_entry(&ShunsPoints, &me, &active, white, 0, None), 1));
         assert!(!red(
-            passive_entry(&NoLock(ShunsPoints), &me, &active, white, 0, None),
+            passive_entry(&no_lock(ShunsPoints), &me, &active, white, 0, None),
             1
         ));
     }
 
     #[test]
     fn search_adjudicates_locks_only_under_the_rule() {
+        use crate::strategy::no_lock;
         use crate::strategy::recorder::{lockable, ShunsPoints};
-        use crate::strategy::NoLock;
         let colour = [6, 1, 6, 1, 1, 1];
         let (me, opps) = (lockable(), [State::default()]);
         let cfg = SearchConfig {
@@ -2313,7 +2313,7 @@ mod tests {
         });
         assert_eq!(n, 1);
         let (m, n) = adjudications(&|st| {
-            let mut bot = SearchBot::with_config(NoLock(ShunsPoints), cfg.clone());
+            let mut bot = SearchBot::with_config(no_lock(ShunsPoints), cfg.clone());
             bot.stats = Some(st.clone());
             bot.explain_active_phase2(&me, &opps, colour, true).pick
         });

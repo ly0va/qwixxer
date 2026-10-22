@@ -1,7 +1,7 @@
 //! THROWAWAY probe: where does the win net, freed from the safe-lock rule,
 //! decline the lock, and what does each decline cost?
 //!
-//! Plays the model against itself with the rule on (`ForceLock`). At every
+//! Plays the model against itself with the rule on (`with_lock`). At every
 //! decision where the rule fires, asks the net as it plays by default (no
 //! rule, passive lookahead) for its pick. Where the pick differs, the lock
 //! and the pick are each labelled with K full-game CRN rollouts by the
@@ -24,7 +24,7 @@ use crate::strategy::bot_impl::{
 use crate::strategy::search::phi;
 use crate::strategy::search::{context_seed, passive_entry, passive_first_active, phase2_entry, WinProb};
 use crate::strategy::sim::SimGame;
-use crate::strategy::{Bot, ForceLock, Next, NoLock, Rules, Strategy};
+use crate::strategy::{no_lock, with_lock, Bot, Next, Rules, Strategy};
 use rand::{rngs::SmallRng, SeedableRng};
 use rayon::prelude::*;
 use std::cell::RefCell;
@@ -90,8 +90,8 @@ impl Spy {
         });
     }
 
-    fn ruled(&self) -> ForceLock<WinStrategy> {
-        ForceLock(self.bot.clone())
+    fn ruled(&self) -> Rules<WinStrategy> {
+        with_lock(self.bot.clone())
     }
 
     fn free(&self) -> Rules<WinStrategy> {
@@ -156,7 +156,7 @@ fn entry(bot: &WinStrategy, e: &Event, m: Option<Mark>, sim_opp: &[State]) -> (V
                 return (all, true);
             }
             let view = SimGame::opp_view(&all, 0);
-            match active_phase2_impl(&NoLock(bot.clone()), &all[0], &view, e.dice, m.is_some()) {
+            match active_phase2_impl(&no_lock(bot.clone()), &all[0], &view, e.dice, m.is_some()) {
                 Some(x) => all[0].apply_mark(x),
                 None if m.is_none() => all[0].apply_strike(),
                 None => {}

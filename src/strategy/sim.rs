@@ -558,8 +558,8 @@ mod tests {
 
     #[test]
     fn sims_follow_the_bots_lock_rule() {
+        use crate::strategy::no_lock;
         use crate::strategy::recorder::ShunsPoints;
-        use crate::strategy::NoLock;
         for fidelity in [Fidelity::Lite, Fidelity::Full] {
             let one = |bot: &dyn Fn(&mut SimGame)| {
                 red_locks(|mut sims| {
@@ -568,11 +568,12 @@ mod tests {
                 })
             };
             assert!(one(&|s| play_sim_turn(&ShunsPoints, s, fidelity)) > 5);
-            assert_eq!(one(&|s| play_sim_turn(&NoLock(ShunsPoints), s, fidelity)), 0);
+            assert_eq!(one(&|s| play_sim_turn(&no_lock(ShunsPoints), s, fidelity)), 0);
         }
         let batched = |sims: Vec<SimGame>, free: bool| {
             if free {
-                let mut d = BatchedRollouts::new(&NoLock(ShunsPoints), sims);
+                let bot = no_lock(ShunsPoints);
+                let mut d = BatchedRollouts::new(&bot, sims);
                 d.step_turn();
                 d.sims
             } else {

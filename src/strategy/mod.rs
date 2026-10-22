@@ -80,86 +80,72 @@ pub trait Bot: std::fmt::Debug {
     }
 }
 
-/// `B` without the safe-lock rule: a lock is an ordinary candidate, valued
-/// like any other, wherever `B` decides (play, the opponent model, rollouts,
-/// turn completions, search).
-#[derive(Debug, Clone)]
-pub struct NoLock<B>(pub B);
-
-/// `B` with the safe-lock rule: every safe lock is played without asking
-/// the net (the default of every bot but the win net).
-#[derive(Debug, Clone)]
-pub struct ForceLock<B>(pub B);
-
-/// `B` valuing passive candidates against the opponent's board before its
-/// turn (the default of every bot but the win net).
-#[derive(Debug, Clone)]
-pub struct PlainPassive<B>(pub B);
-
-/// `B` playing out the active player's turn before valuing a passive
-/// candidate (see [`Bot::passive_lookahead`]).
-#[derive(Debug, Clone)]
-pub struct Lookahead<B>(pub B);
-
 /// `B` with either rule overridden at run time (`None` keeps `B`'s own):
-/// `.1` the safe-lock rule, `.2` the passive lookahead.
+/// `.1` the safe-lock rule, `.2` the passive lookahead. Delegates
+/// everything else to `B`.
 #[derive(Debug, Clone)]
 pub struct Rules<B>(pub B, pub Option<bool>, pub Option<bool>);
 
-/// A wrapper that delegates everything to `.0` but the two rules.
-macro_rules! rule_wrapper {
-    ($w:ident, |$s:ident| $force:expr, $look:expr) => {
-        impl<B: Bot> Bot for $w<B> {
-            fn evaluate(&self, our_state: &State, opp_states: &[State]) -> f32 {
-                self.0.evaluate(our_state, opp_states)
-            }
-            fn evaluate_batch(&self, candidates: &[State], opp_states: &[State]) -> Vec<f32> {
-                self.0.evaluate_batch(candidates, opp_states)
-            }
-            fn evaluate_batch_multi(&self, groups: &[(&[State], &[State])]) -> Vec<Vec<f32>> {
-                self.0.evaluate_batch_multi(groups)
-            }
-            fn evaluate_batch_next(&self, candidates: &[State], opp_states: &[State], next: Next) -> Vec<f32> {
-                self.0.evaluate_batch_next(candidates, opp_states, next)
-            }
-            fn evaluate_batch_multi_next(&self, groups: &[(&[State], &[State], Next)]) -> Vec<Vec<f32>> {
-                self.0.evaluate_batch_multi_next(groups)
-            }
-            fn force_lock(&self) -> bool {
-                #[allow(unused_variables)]
-                let $s = self;
-                $force
-            }
-            fn passive_lookahead(&self) -> bool {
-                #[allow(unused_variables)]
-                let $s = self;
-                $look
-            }
-            fn terminal_value(&self, states: &[State]) -> f32 {
-                self.0.terminal_value(states)
-            }
-        }
-
-        impl<B: search::WinProb> search::WinProb for $w<B> {
-            fn win_prob_multi(&self, groups: &[(&State, &[State])]) -> Vec<f32> {
-                self.0.win_prob_multi(groups)
-            }
-            fn win_prob_multi_next(&self, groups: &[(&State, &[State], Next)]) -> Vec<f32> {
-                self.0.win_prob_multi_next(groups)
-            }
-        }
-    };
+/// `B` without the safe-lock rule: a lock is an ordinary candidate, valued
+/// like any other, wherever `B` decides (play, the opponent model, rollouts,
+/// turn completions, search).
+pub fn no_lock<B>(b: B) -> Rules<B> {
+    Rules(b, Some(false), None)
 }
 
-rule_wrapper!(NoLock, |s| false, s.0.passive_lookahead());
-rule_wrapper!(ForceLock, |s| true, s.0.passive_lookahead());
-rule_wrapper!(PlainPassive, |s| s.0.force_lock(), false);
-rule_wrapper!(Lookahead, |s| s.0.force_lock(), true);
-rule_wrapper!(
-    Rules,
-    |s| s.1.unwrap_or_else(|| s.0.force_lock()),
-    s.2.unwrap_or_else(|| s.0.passive_lookahead())
-);
+/// `B` with the safe-lock rule: every safe lock is played without asking
+/// the net (the default of every bot but the win net).
+pub fn with_lock<B>(b: B) -> Rules<B> {
+    Rules(b, Some(true), None)
+}
+
+/// `B` valuing passive candidates against the opponent's board before its
+/// turn (the default of every bot but the win net).
+pub fn plain_passive<B>(b: B) -> Rules<B> {
+    Rules(b, None, Some(false))
+}
+
+/// `B` playing out the active player's turn before valuing a passive
+/// candidate (see [`Bot::passive_lookahead`]).
+pub fn with_lookahead<B>(b: B) -> Rules<B> {
+    Rules(b, None, Some(true))
+}
+
+impl<B: Bot> Bot for Rules<B> {
+    fn evaluate(&self, our_state: &State, opp_states: &[State]) -> f32 {
+        self.0.evaluate(our_state, opp_states)
+    }
+    fn evaluate_batch(&self, candidates: &[State], opp_states: &[State]) -> Vec<f32> {
+        self.0.evaluate_batch(candidates, opp_states)
+    }
+    fn evaluate_batch_multi(&self, groups: &[(&[State], &[State])]) -> Vec<Vec<f32>> {
+        self.0.evaluate_batch_multi(groups)
+    }
+    fn evaluate_batch_next(&self, candidates: &[State], opp_states: &[State], next: Next) -> Vec<f32> {
+        self.0.evaluate_batch_next(candidates, opp_states, next)
+    }
+    fn evaluate_batch_multi_next(&self, groups: &[(&[State], &[State], Next)]) -> Vec<Vec<f32>> {
+        self.0.evaluate_batch_multi_next(groups)
+    }
+    fn force_lock(&self) -> bool {
+        self.1.unwrap_or_else(|| self.0.force_lock())
+    }
+    fn passive_lookahead(&self) -> bool {
+        self.2.unwrap_or_else(|| self.0.passive_lookahead())
+    }
+    fn terminal_value(&self, states: &[State]) -> f32 {
+        self.0.terminal_value(states)
+    }
+}
+
+impl<B: search::WinProb> search::WinProb for Rules<B> {
+    fn win_prob_multi(&self, groups: &[(&State, &[State])]) -> Vec<f32> {
+        self.0.win_prob_multi(groups)
+    }
+    fn win_prob_multi_next(&self, groups: &[(&State, &[State], Next)]) -> Vec<f32> {
+        self.0.win_prob_multi_next(groups)
+    }
+}
 
 // ---- Interactive ----
 

@@ -408,12 +408,12 @@ mod tests {
 
     #[test]
     fn ordinary_captures_follow_the_bots_lock_rule() {
-        use crate::strategy::NoLock;
+        use crate::strategy::no_lock;
         // Under the rule the lock is forced, so there is nothing to capture;
         // freed, it is a choice like any other.
         let (me, opps) = (lockable(), [State::default()]);
         let (white, colour) = ([6, 6, 1, 1, 1, 1], [6, 1, 6, 1, 1, 1]);
-        let free = NoLock(pair());
+        let free = no_lock(pair());
         let inf = f32::INFINITY;
         assert!(capture_passive(&pair(), &me, &opps, white, 0, inf).is_none());
         assert!(capture_passive(&free, &me, &opps, white, 0, inf).is_some());
@@ -556,7 +556,7 @@ mod tests {
     #[test]
     fn a_passive_capture_ranks_its_candidates_as_search_does() {
         use crate::strategy::recorder::{lockable, lockable_row, Points};
-        use crate::strategy::{Lookahead, NoLock};
+        use crate::strategy::{no_lock, with_lookahead};
         // My red lock and the opponent's simultaneous yellow lock end the
         // game, and I lose: only the lookahead ranks the lock last.
         let mut active = lockable_row(1);
@@ -567,9 +567,9 @@ mod tests {
         }
         let (me, opps, dice) = (lockable(), [active], [6, 6, 1, 1, 1, 1]);
         let first_locks_red = |d: CandDecision| d.entries[0].0[0].locked()[0];
-        let plain = capture_passive(&NoLock(Points), &me, &opps, dice, 0, f32::INFINITY).unwrap();
+        let plain = capture_passive(&no_lock(Points), &me, &opps, dice, 0, f32::INFINITY).unwrap();
         assert!(first_locks_red(plain));
-        let looking = capture_passive(&NoLock(Lookahead(Points)), &me, &opps, dice, 0, f32::INFINITY).unwrap();
+        let looking = capture_passive(&no_lock(with_lookahead(Points)), &me, &opps, dice, 0, f32::INFINITY).unwrap();
         assert!(!first_locks_red(looking));
     }
 }

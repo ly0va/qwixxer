@@ -126,7 +126,7 @@ pub fn eval_decision_next(bot: &impl Bot, decision: Decision, eval_opps: &[State
 ///
 /// The safe-lock force is gated by `force_lock`. With `force_lock = false`
 /// the lock becomes an ordinary candidate (rule-free pipeline used by
-/// search-value distillation and [`NoLock`](super::NoLock) bots); `true`
+/// search-value distillation and [`no_lock`](super::no_lock) bots); `true`
 /// reproduces production.
 pub(crate) fn mark_choices_with(
     state: &State,
@@ -756,12 +756,12 @@ mod tests {
 
     #[test]
     fn a_bot_without_the_lock_rule_may_decline_a_safe_lock() {
-        use crate::strategy::{NoLock, Strategy};
+        use crate::strategy::{no_lock, Strategy};
         let (s, opps) = (lockable_state(), [State::default()]);
         let lock = Some(Mark { row: 0, number: 12 });
         let white = [6, 6, 1, 1, 1, 1]; // white sum 12
         let colour = [6, 1, 6, 1, 1, 1]; // white 6 + red 6
-        let (mut on, mut off) = (ShunsPoints, NoLock(ShunsPoints));
+        let (mut on, mut off) = (ShunsPoints, no_lock(ShunsPoints));
         assert_eq!(on.passive_phase1(&s, &opps, white, 1), lock);
         assert_eq!(on.active_phase1(&s, &opps, white), lock);
         assert_eq!(on.active_phase2(&s, &opps, colour, true), lock);
@@ -772,14 +772,14 @@ mod tests {
 
     #[test]
     fn the_opponents_predicted_reply_follows_the_bots_rule() {
-        use crate::strategy::NoLock;
+        use crate::strategy::no_lock;
         // The opponent can lock red with the white 12; the bot shuns points,
         // so only the rule makes it lock.
         let (me, opp) = (State::default(), lockable_state());
         let dice = [6, 6, 1, 1, 1, 1];
         let red = |s: Vec<State>| s[0].locked()[0];
         assert!(red(simulate_opp_phase1(&ShunsPoints, &me, &[opp], dice)));
-        assert!(!red(simulate_opp_phase1(&NoLock(ShunsPoints), &me, &[opp], dice)));
+        assert!(!red(simulate_opp_phase1(&no_lock(ShunsPoints), &me, &[opp], dice)));
     }
 
     use crate::strategy::recorder::Recorder;
@@ -821,14 +821,14 @@ mod tests {
     #[test]
     fn lookahead_declines_a_lock_that_ends_the_game_in_a_loss() {
         use crate::strategy::recorder::Points;
-        use crate::strategy::{Lookahead, NoLock};
+        use crate::strategy::{no_lock, with_lookahead};
         let (me, opps, dice) = race();
         let red12 = Some(Mark { row: 0, number: 12 });
         // Against the board before its turn, my lock is the most points...
-        assert_eq!(passive_decide(&NoLock(Points), &me, &opps, dice, 0), red12);
+        assert_eq!(passive_decide(&no_lock(Points), &me, &opps, dice, 0), red12);
         // ...but the opponent locks yellow with the same white 12: two locks
         // end the game before its colour phase, and I am behind.
-        let pick = passive_decide(&NoLock(Lookahead(Points)), &me, &opps, dice, 0);
+        let pick = passive_decide(&no_lock(with_lookahead(Points)), &me, &opps, dice, 0);
         assert_ne!(pick, red12);
         assert!(pick.is_some(), "a mark still beats skipping");
     }
@@ -836,9 +836,9 @@ mod tests {
     #[test]
     fn a_turn_that_ends_the_game_is_valued_by_its_result() {
         use crate::strategy::recorder::Points;
-        use crate::strategy::{Lookahead, NoLock};
+        use crate::strategy::{no_lock, with_lookahead};
         let (me, opps, dice) = race();
-        let bot = NoLock(Lookahead(Points));
+        let bot = no_lock(with_lookahead(Points));
         let red12 = Some(Mark { row: 0, number: 12 });
         let green12 = Some(Mark { row: 2, number: 12 });
         let values = passive_lookahead_values(&bot, &me, &opps, dice, 0, &[red12, green12]);
@@ -849,43 +849,43 @@ mod tests {
     #[test]
     fn a_turn_that_goes_on_is_valued_in_the_next_movers_frame() {
         use crate::strategy::recorder::Framed;
-        use crate::strategy::Lookahead;
+        use crate::strategy::with_lookahead;
         let dice = [3, 4, 2, 5, 6, 2];
         let me = State::default();
         let skip = [None];
         // Two players: I move after the active player.
-        let two = passive_lookahead_values(&Lookahead(Framed), &me, &[State::default()], dice, 0, &skip);
+        let two = passive_lookahead_values(&with_lookahead(Framed), &me, &[State::default()], dice, 0, &skip);
         assert_eq!(two, [1.0]);
         // Three players, the first opponent active: the second one is next.
         let three = [State::default(); 2];
         assert_eq!(
-            passive_lookahead_values(&Lookahead(Framed), &me, &three, dice, 0, &skip),
+            passive_lookahead_values(&with_lookahead(Framed), &me, &three, dice, 0, &skip),
             [-1.0]
         );
         // The second opponent active: I am next.
         assert_eq!(
-            passive_lookahead_values(&Lookahead(Framed), &me, &three, dice, 1, &skip),
+            passive_lookahead_values(&with_lookahead(Framed), &me, &three, dice, 1, &skip),
             [1.0]
         );
     }
 
     #[test]
     fn a_predicted_opponent_reply_never_looks_ahead() {
-        use crate::strategy::Lookahead;
+        use crate::strategy::with_lookahead;
         let (state, opps) = (State::default(), [State::default()]);
         let dice = [3, 4, 2, 5, 6, 2];
         let plain = Recorder::default();
         active_phase1_impl(&plain, &state, &opps, dice);
-        let looking = Lookahead(Recorder::default());
+        let looking = with_lookahead(Recorder::default());
         active_phase1_impl(&looking, &state, &opps, dice);
         assert_eq!(looking.0.take(), plain.take());
     }
 
     #[test]
     fn the_predicted_turn_rebuilds_the_active_board() {
+        use crate::strategy::no_lock;
         use crate::strategy::recorder::Points;
-        use crate::strategy::NoLock;
-        let bot = NoLock(Points);
+        let bot = no_lock(Points);
         let (me, opps, dice) = race();
         let red12 = Some(Mark { row: 0, number: 12 });
         let green12 = Some(Mark { row: 2, number: 12 });

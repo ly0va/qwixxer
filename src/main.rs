@@ -101,12 +101,12 @@ fn make_strategy(bot: &BotType) -> Box<dyn strategy::Strategy> {
         )),
         BotType::Win => Box::new(dqn::win::WinStrategy::load(&win_model_dir())),
         BotType::WinSearch => Box::new(win_search(dqn::win::WinStrategy::load(&win_model_dir()))),
-        BotType::WinLock => Box::new(strategy::ForceLock(dqn::win::WinStrategy::load(&win_model_dir()))),
-        BotType::WinSearchLock => Box::new(win_search(strategy::ForceLock(dqn::win::WinStrategy::load(
+        BotType::WinLock => Box::new(strategy::with_lock(dqn::win::WinStrategy::load(&win_model_dir()))),
+        BotType::WinSearchLock => Box::new(win_search(strategy::with_lock(dqn::win::WinStrategy::load(
             &win_model_dir(),
         )))),
-        BotType::WinPlain => Box::new(strategy::PlainPassive(dqn::win::WinStrategy::load(&win_model_dir()))),
-        BotType::WinSearchPlain => Box::new(win_search(strategy::PlainPassive(dqn::win::WinStrategy::load(
+        BotType::WinPlain => Box::new(strategy::plain_passive(dqn::win::WinStrategy::load(&win_model_dir()))),
+        BotType::WinSearchPlain => Box::new(win_search(strategy::plain_passive(dqn::win::WinStrategy::load(
             &win_model_dir(),
         )))),
         BotType::WinSearchExp | BotType::WinSearchExpB => Box::new(strategy::search::SearchBot::with_config(
@@ -321,10 +321,12 @@ impl StrategyTemplates {
             }
             BotType::Win => Box::new(self.win.as_ref().unwrap().clone()),
             BotType::WinSearch => Box::new(win_search(self.win.as_ref().unwrap().clone())),
-            BotType::WinLock => Box::new(strategy::ForceLock(self.win.as_ref().unwrap().clone())),
-            BotType::WinSearchLock => Box::new(win_search(strategy::ForceLock(self.win.as_ref().unwrap().clone()))),
-            BotType::WinPlain => Box::new(strategy::PlainPassive(self.win.as_ref().unwrap().clone())),
-            BotType::WinSearchPlain => Box::new(win_search(strategy::PlainPassive(self.win.as_ref().unwrap().clone()))),
+            BotType::WinLock => Box::new(strategy::with_lock(self.win.as_ref().unwrap().clone())),
+            BotType::WinSearchLock => Box::new(win_search(strategy::with_lock(self.win.as_ref().unwrap().clone()))),
+            BotType::WinPlain => Box::new(strategy::plain_passive(self.win.as_ref().unwrap().clone())),
+            BotType::WinSearchPlain => {
+                Box::new(win_search(strategy::plain_passive(self.win.as_ref().unwrap().clone())))
+            }
             BotType::WinSearchExp | BotType::WinSearchExpB => Box::new(strategy::search::SearchBot::with_config(
                 self.win.as_ref().unwrap().clone(),
                 exp_search_config(bot),

@@ -1598,7 +1598,7 @@ mod tests {
     #[test]
     fn data_games_play_the_bots_own_passive_decision() {
         use crate::strategy::recorder::{lockable, lockable_row, Points};
-        use crate::strategy::{Lookahead, NoLock};
+        use crate::strategy::{no_lock, with_lookahead};
         // My red lock and the opponent's simultaneous yellow lock end the
         // game, and I lose: only the lookahead sees it.
         let mut active = lockable_row(1);
@@ -1609,7 +1609,7 @@ mod tests {
         }
         let (me, opps, dice) = (lockable(), [active], [6, 6, 1, 1, 1, 1]);
         let red12 = Some(Mark { row: 0, number: 12 });
-        let bot = NoLock(Lookahead(Points));
+        let bot = no_lock(with_lookahead(Points));
         let mut turn_ends = TurnEnds {
             bot: bot.clone(),
             recorded: Default::default(),

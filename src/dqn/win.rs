@@ -1027,13 +1027,13 @@ impl Bot for WinStrategy {
     }
 
     /// The win net judges safe locks itself (Phase 28: freed, it beats the
-    /// rule by 0.38pp); [`ForceLock`](crate::strategy::ForceLock) restores it.
+    /// rule by 0.38pp); [`with_lock`](crate::strategy::with_lock) restores it.
     fn force_lock(&self) -> bool {
         false
     }
 
     /// Passive candidates are valued at the end of the active player's turn
-    /// (Phase 28); [`PlainPassive`](crate::strategy::PlainPassive) turns it off.
+    /// (Phase 28); [`plain_passive`](crate::strategy::plain_passive) turns it off.
     fn passive_lookahead(&self) -> bool {
         true
     }
@@ -2011,10 +2011,10 @@ mod tests {
 
     #[test]
     fn a_win_net_plays_without_the_lock_rule_unless_wrapped() {
-        use crate::strategy::{ForceLock, Next};
+        use crate::strategy::{with_lock, Next};
         let net = WinStrategy::load("win_model");
         assert!(!net.force_lock());
-        let ruled = ForceLock(net.clone());
+        let ruled = with_lock(net.clone());
         assert!(ruled.force_lock());
         // The wrapper changes the rule, never a value.
         let (a, b) = boards();
@@ -2033,13 +2033,13 @@ mod tests {
 
     #[test]
     fn a_win_net_looks_ahead_when_passive_unless_wrapped() {
-        use crate::strategy::{ForceLock, NoLock, PlainPassive, Rules};
+        use crate::strategy::{no_lock, plain_passive, with_lock, Rules};
         let net = WinStrategy::from_model(&random_model(12, 32));
         assert!(net.passive_lookahead());
-        assert!(!PlainPassive(net.clone()).passive_lookahead());
-        assert!(!PlainPassive(net.clone()).force_lock(), "the other rule is kept");
-        assert!(NoLock(net.clone()).passive_lookahead());
-        assert!(ForceLock(net.clone()).passive_lookahead());
+        assert!(!plain_passive(net.clone()).passive_lookahead());
+        assert!(!plain_passive(net.clone()).force_lock(), "the other rule is kept");
+        assert!(no_lock(net.clone()).passive_lookahead());
+        assert!(with_lock(net.clone()).passive_lookahead());
         assert!(!Rules(net.clone(), None, Some(false)).passive_lookahead());
         assert!(Rules(net.clone(), Some(true), None).force_lock());
         assert!(Rules(net.clone(), Some(true), None).passive_lookahead());
