@@ -335,8 +335,6 @@ pub fn passive_turn_predictions(
                 return (all, true, turn);
             }
             let view = SimGame::opp_view(&all, active);
-            // Revisit (EXPERIMENTS, Phase 28 "Open"): one net call per
-            // candidate here; the groups could share one batched call.
             let d = active_phase2_choices_with(&all[active], &view, dice, active_marked, bot.force_lock());
             turn.colour = eval_decision(bot, d, &view);
             match turn.colour {

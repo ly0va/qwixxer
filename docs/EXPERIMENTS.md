@@ -2694,20 +2694,26 @@ The explorer also gained a matching note: when the net values a pruned,
 dominated move above the bots' pick (possible, the net is not monotone
 everywhere), the pick's row gets the "rule" note (`84e6451`).
 
-### Open: repeated work in the passive lookahead
+### Passive lookahead cost: nothing to win
 
-Found in the pre-merge review; left for later (behaviour is right, only
-time is lost):
+The pre-merge review flagged two repeats: one net call per candidate for
+the active player's colour decision, and win-search recomputing the turn
+ends of its shortlist. Batching the colour decisions into one call
+(identical picks, checked against the per-candidate version on 400
+random positions) changed nothing measurable: 48.0 against 47.4 µs per
+decision on 3,000 random positions (2.1 candidates each, one thread). A
+native net call costs almost nothing; the time is the work itself:
 
-- `passive_turn_predictions` (`bot_impl.rs`) decides the active player's
-  colour phase with one net call per passive candidate. A decision with
-  c candidates makes about c + 3 calls; the per-candidate groups could go
-  through one `evaluate_batch_multi` call.
-- `explain_passive_phase1` (`search.rs`) values every candidate with
-  `passive_lookahead_values`, which computes the turn ends, then calls
-  `passive_turn_ends` again for the shortlist. The first pass's ends
-  could be kept and sliced. The explorer repeats the same predictions
-  once more for Master's pick and the opponent's predicted turn.
+| part of one passive lookahead decision | µs |
+|---|---:|
+| whole decision | 48 |
+| the active player's white-sum prediction (its full phase-1 decision) | 22 |
+| the candidates' colour decisions | 18 |
+| valuing the end boards | 8 |
+| (a plain passive decision, for scale) | 8 |
 
-The lookahead costs well over twice the time of a plain passive decision
-(play-outs: 164 against 430 games/s), so this is where to look first.
+Dropped. Win-search's repeat only touches searched decisions, small
+beside the search; the explorer is fast enough. In Master-vs-Master play
+the active player's real phase-1 decision equals the passive player's
+prediction and could be shared within a turn (about half the cost), but
+that would only speed data generation, and training is done.
