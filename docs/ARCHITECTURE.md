@@ -591,6 +591,24 @@ move as a percentage with one decimal ("54.6%"). Throughput in WASM (Node, `node
 web/scripts/analyze-bench.mjs`, 2026-10-22): about 1,250 play-outs/s from the
 empty position; ± 1 point there takes about 0.4 s (25 s with full play-outs).
 
+**Explorer roll luck** (spec
+`docs/superpowers/specs/2026-10-22-explorer-roll-luck-design.md`). With all
+six dice set, the Roll card shows luck = the move list's top P(win) for this
+roll minus that top value averaged over every roll, from your side.
+`Explorer::luck` returns both. The valuation is the move list's own
+(`move_values`), so f and its average share the net's errors, which cancel,
+and luck averages to exactly 0. The average is exact over the 27,216
+distinct rolls (white pair unordered × four colour dice), checked against a
+brute force in the tests. On your roll each distinct turn is valued once
+per white pair (the opponent's predicted white mark depends on the white
+dice only). On theirs the move list's code runs per roll, with the net's
+values cached (`CachedNet`, a few thousand distinct boards). WASM
+(`node web/scripts/luck-bench.mjs`, 2026-10-22): your roll 0.1–0.3 s,
+theirs 0.7–1.1 s. `ExplorerController` asks right after `explore`, one call
+in flight, dropping replies for older positions. The line keeps a fixed
+height from the moment the dice are set ("Roll luck …" until it arrives),
+so the layout never moves.
+
 **Look.** Light/dark tokens in `styles/theme.css`, self-hosted Barlow and
 Barlow Condensed (`@fontsource/*`). Squares, strike boxes and actions are real
 `<button>`s with descriptive labels and `aria-pressed` / `aria-disabled`

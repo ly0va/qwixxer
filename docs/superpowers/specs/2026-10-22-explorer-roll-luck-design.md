@@ -1,6 +1,8 @@
 # Web: explorer roll luck
 
-**Status:** design. Builds on the state explorer
+**Status:** implemented (branch `explorer-luck`). Opponent's roll: the move
+list's code per roll with a cached net, about 1 s in WASM (accepted in place
+of the 0.5 s target); the line reserves its height while computing. Builds on the state explorer
 (`2026-10-14-state-explorer-design.md`) and its analysis
 (`2026-10-15-explorer-analysis-design.md`).
 
