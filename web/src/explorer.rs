@@ -287,6 +287,21 @@ fn finish_turn_with(
     (Turn { marks, strike }, forced, searched)
 }
 
+/// For each move, whether pruning explains it sitting below others: the
+/// bots prune a move another one dominates row by row, though the net may
+/// value it higher. True when some move is valued above it and every such
+/// move is dominated by a listed one (`posts`, each move's resulting sheet).
+fn pruned_above(p_wins: &[f32], posts: &[State]) -> Vec<bool> {
+    let pruned = |j: usize| posts.iter().any(|k| post_state_dominates(k, &posts[j]));
+    p_wins
+        .iter()
+        .map(|&p| {
+            let mut above = (0..p_wins.len()).filter(|&j| p_wins[j] > p).peekable();
+            above.peek().is_some() && above.all(pruned)
+        })
+        .collect()
+}
+
 /// [`finish_turn_with`] for any bot: its own `active_phase2`.
 fn finish_turn(
     bot: &mut dyn Strategy,
@@ -543,16 +558,8 @@ impl Explorer {
             let note = (*kind == BotKind::Master && (rule_first || forced2)).then_some("rule");
             picks.push((*kind, turn.key(), note));
         }
-        // The bots prune a move another one dominates row by row, though
-        // the net may value it higher: when every move above a pick is so
-        // dominated, a rule explains the pick.
-        let pruned_above: Vec<bool> = (0..out.len())
-            .map(|i| {
-                (0..out.len())
-                    .filter(|&j| out[j].p_win > out[i].p_win)
-                    .all(|j| posts.iter().any(|k| post_state_dominates(k, &posts[j])))
-            })
-            .collect();
+        let p_wins: Vec<f32> = out.iter().map(|m| m.p_win).collect();
+        let pruned_above = pruned_above(&p_wins, &posts);
         let mut notes: Vec<Option<&'static str>> = vec![None; out.len()];
         for (kind, pick, note) in picks {
             // A pick that matches no listed move is an engine bug: it tags
@@ -782,6 +789,21 @@ mod tests {
         let plus = moves.iter().position(|m| m.bots.contains(&"master_plus")).unwrap();
         assert!(plus > 0, "{moves:?}");
         assert_eq!(moves[plus].note, Some("rolled_out"));
+    }
+
+    /// A move tied with the top has nothing above it to explain: no note.
+    #[test]
+    fn a_move_tied_with_the_top_is_not_explained_by_pruning() {
+        let mark = |n: u8| {
+            let mut s = State::default();
+            s.apply_mark(Mark { row: 0, number: n });
+            s
+        };
+        // Red 10 dominates red 11; red 5 and red 11 are valued equally.
+        let posts = [mark(5), mark(11), mark(10)];
+        assert_eq!(pruned_above(&[0.9, 0.9, 0.8], &posts), [false, false, false]);
+        // Red 11 above red 5 is dominated: pruning explains red 5.
+        assert_eq!(pruned_above(&[0.8, 0.9, 0.7], &posts), [true, false, false]);
     }
 
     /// White red 11 leaves the same marks as colour red 10 with one option
