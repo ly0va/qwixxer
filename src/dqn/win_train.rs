@@ -343,11 +343,16 @@ pub fn self_play_train(cfg: &WinTrainCfg) -> WinStrategy {
         "--init starts a fresh run; it cannot be combined with --start-iteration"
     );
     if let Some(init) = &cfg.init {
-        // win-train saves the net only: a tempo init would lose its head.
-        let tempo = WinModelConfig::load(format!("{init}/config.json")).is_ok_and(|c| c.is_tempo());
+        // win-train trains plain inputs and saves the net only: a tempo init
+        // would lose its head, a thermometer one could not be trained.
+        let c = WinModelConfig::load(format!("{init}/config.json"));
         assert!(
-            !tempo,
+            !c.as_ref().is_ok_and(|c| c.is_tempo()),
             "--init {init} has a tempo head: win-train trains nets without one"
+        );
+        assert!(
+            !c.as_ref().is_ok_and(|c| c.is_thermo()),
+            "--init {init} is a thermometer net: win-train trains plain nets only"
         );
     }
     if cfg.start_iteration == 0 {
@@ -377,7 +382,11 @@ pub fn self_play_train(cfg: &WinTrainCfg) -> WinStrategy {
     } else {
         let mcfg = match &cfg.init {
             Some(init) => {
-                WinModelConfig::load(format!("{init}/config.json")).expect("Failed to load init model config")
+                let mut c =
+                    WinModelConfig::load(format!("{init}/config.json")).expect("Failed to load init model config");
+                // The net only is saved: the dir must not claim the init's heads.
+                c.aux = None;
+                c
             }
             None => WinModelConfig::new().with_width(cfg.width),
         };
@@ -1526,6 +1535,46 @@ mod tests {
         assert!(r.rmse.is_finite() && r.rmse <= r.rmse_raw + 1e-6);
         assert_eq!(r.calibration.iter().map(|b| b.0).sum::<usize>(), 20);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    #[should_panic(expected = "is a thermometer net")]
+    fn a_thermometer_init_is_refused() {
+        let base = std::env::temp_dir().join(format!("qwixxer-win-train-thermo-{}", std::process::id()));
+        let base = base.to_str().unwrap().to_string();
+        let _ = std::fs::remove_dir_all(&base);
+        let init = format!("{base}/init");
+        std::fs::create_dir_all(&init).unwrap();
+        WinModelConfig::new()
+            .with_width(4)
+            .with_thermo(Some(true))
+            .save(format!("{init}/config.json"))
+            .unwrap();
+        let mut cfg = smoke_cfg(&format!("{base}/run"));
+        cfg.init = Some(init);
+        self_play_train(&cfg);
+    }
+
+    /// win-train saves the net only, so its dir must not claim the init's
+    /// aux heads.
+    #[test]
+    fn a_run_from_an_init_with_heads_writes_a_loadable_dir() {
+        let base = std::env::temp_dir().join(format!("qwixxer-win-train-aux-{}", std::process::id()));
+        let base = base.to_str().unwrap().to_string();
+        let _ = std::fs::remove_dir_all(&base);
+        let init = format!("{base}/init");
+        let device = Default::default();
+        let mcfg = WinModelConfig::new().with_width(4).with_aux(Some(true));
+        crate::dqn::win_pi::save_win(&init, &mcfg, &mcfg.init::<MyBackend>(&device));
+        crate::dqn::win::save_aux(&init, &crate::dqn::win::AuxHeads::<MyBackend>::new(4, &device));
+        let mut cfg = smoke_cfg(&format!("{base}/run"));
+        cfg.init = Some(init);
+        self_play_train(&cfg);
+        assert!(!WinModelConfig::load(format!("{}/config.json", cfg.dir))
+            .unwrap()
+            .has_aux());
+        WinStrategy::load(&cfg.dir);
+        std::fs::remove_dir_all(&base).unwrap();
     }
 
     #[test]
