@@ -2,7 +2,7 @@ use itertools::Itertools;
 use std::cmp::Ordering;
 use std::fmt;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct State {
     pub strikes: u8,
     rows: [Row; 4],
@@ -32,17 +32,6 @@ impl Default for State {
             strikes: 0,
             rows: [ascending, ascending, descending, descending],
         }
-    }
-}
-
-/// Only for the purpose of state domination - do not use for regular comparison
-impl PartialEq for State {
-    fn eq(&self, other: &Self) -> bool {
-        let asc = self.rows[0] == other.rows[0] && self.rows[1] == other.rows[1]
-            || self.rows[0] == other.rows[1] && self.rows[1] == other.rows[0];
-        let desc = self.rows[2] == other.rows[2] && self.rows[3] == other.rows[3]
-            || self.rows[2] == other.rows[3] && self.rows[3] == other.rows[2];
-        asc && desc && self.strikes == other.strikes
     }
 }
 
@@ -1135,6 +1124,7 @@ mod tests {
         assert!(!post_state_dominates(&a, &b));
         assert!(!post_state_dominates(&b, &a));
         assert_eq!(a.partial_cmp(&b), None);
+        assert_ne!(a, b);
     }
 
     #[test]
