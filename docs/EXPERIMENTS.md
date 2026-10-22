@@ -2646,3 +2646,49 @@ Going further needs labels that see further than the net (e.g. rollouts
 played by win-search), at far higher cost per label and still against
 near-tie margins. **`win_model` stays the champion**; remaining work on
 win-search is speed.
+
+### Two decision-pipeline fixes
+
+Both bugs came from the web explorer's random-position check (arbitrary
+boards, every bot's pick must be listed and explained), run at 3,000
+positions instead of 150. Both sit in the shared rule pipeline
+(`bot_impl.rs`), so they affected every bot, pair and GA included, and
+the candidate lists `win-data` labels. Each was benched head to head
+against a toggle that restores the old behaviour exactly (throwaway
+branches; the toggled bots replayed the old build's games identically,
+400 games, seed 42).
+
+**Phase 1 ending the game** (`3ed28df`). If the white phase closes the
+second row (counting the opponent's board) or gives a 4th strike, the
+game ends before the colour phase (`Game::play`). Phase-1 plans ignored
+this: a white mark that ended the game could still be followed by a
+colour mark in the plan's value, and the forced-win, losing-end and
+safe-lock checks looked at the planner's own board only. Plans now see
+the game end after the white phase.
+
+**Dominance swapped rows** (`e2e70f1`). `prune_dominated` drops a
+candidate whose result another beats on every row. `State`'s ordering
+also tried red↔yellow and green↔blue swapped, treating same-direction
+rows as interchangeable. They are not: the opponent's red and yellow
+differ. Example: locking yellow 12 was pruned by locking red 12 (the
+remaining yellow one step ahead of the remaining red), though the
+opponent's rows made yellow the far better lock. Rows are now compared in
+place.
+
+| bench (seed 42) | games | fixed | old | ties | sweeps fixed / old |
+|---|---:|---:|---:|---:|---|
+| `win` vs `win-old-end` | 100k | 49,113 | 48,871 | 2,016 | 143 / 37 |
+| `win-search` vs `win-search-old-end` | 20k | 9,802 | 9,770 | 428 | 26 / 13 |
+| `win` vs `win-old-dom` | 1M | 490,657 | 488,783 | 20,560 | 1,155 / 289 |
+| `win-search` vs `win-search-old-dom` | 10k | 4,902 | 4,892 | 206 | 12 / 6 |
+
+Swept dice pairings (one side wins both seats) act as a sign test: the
+static net's gains are certain (z ≈ 7.9 and 22.8), about +0.12 and
++0.09pp a seat-game. Win-search agrees in direction at smaller sizes; its
+search already overrules many of the affected picks. The standings above
+predate both fixes. No retrain: the affected decisions are rare and
+labels from the fixed pipeline would barely differ.
+
+The explorer also gained a matching note: when the net values a pruned,
+dominated move above the bots' pick (possible, the net is not monotone
+everywhere), the pick's row gets the "rule" note (`84e6451`).
