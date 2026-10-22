@@ -101,7 +101,15 @@ fn kind(r: &SearchRecord, i: usize) -> String {
         },
     };
     if r.context == SearchContext::ActiveP1 {
-        let colour = marks(post) as i32 - marks(pre) as i32 - r.marks[i].is_some() as i32;
+        // A lock's bonus counts as a mark in the row's total. A row closed
+        // by the opponent's lock (propagated) gets no bonus and at most one
+        // of my marks this turn.
+        let (pt, qt) = (pre.row_totals(), post.row_totals());
+        let (pf, qf) = (pre.row_free_values(), post.row_free_values());
+        let bonus = (0..4)
+            .filter(|&r| pf[r].is_some() && qf[r].is_none() && qt[r] >= pt[r] + 2)
+            .count() as i32;
+        let colour = marks(post) as i32 - marks(pre) as i32 - bonus - r.marks[i].is_some() as i32;
         let struck = post.strikes > pre.strikes;
         let tail = match (colour > 0, struck) {
             (true, _) => "+colour",
