@@ -3,7 +3,7 @@ import type { View } from '../engine/protocol';
 import {
     clearSheet, closedRows, emptyPosition, exploreSheet, fromView, marginText, nextUnsetDie, overText, percent, randomDice,
     setDie, sheetTotal, swapSides, tapStrike, toEngine, toggleLock, toggleSquare,
-    addAnalysis, analysisKey, analysisMargin, chanceText, gamesText, isOver, score, winChance, ZERO_ANALYSIS,
+    addAnalysis, analysisKey, analysisMargin, chanceText, gamesText, isOver, moveChance, winChance, ZERO_ANALYSIS,
 } from './position';
 
 const markRed = (idx: number[]) => idx.reduce((p, i) => toggleSquare(p, 'you', 0, i), emptyPosition());
@@ -149,9 +149,9 @@ describe('analysis numbers', () => {
         expect(gamesText({ p: 0.54, pm: 0.3 }, 1)).toBe('± 30.0 · 1 game');
     });
 
-    it('score is P(win) × 1000, rounded', () => {
-        expect(score(0.5464)).toBe(546);
-        expect(score(0)).toBe(0);
-        expect(score(1)).toBe(1000);
+    it('a move shows P(win) as a percentage with one decimal', () => {
+        expect(moveChance(0.5464)).toBe('54.6%');
+        expect(moveChance(0)).toBe('0.0%');
+        expect(moveChance(1)).toBe('100.0%');
     });
 });

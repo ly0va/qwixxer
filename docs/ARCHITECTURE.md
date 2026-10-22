@@ -583,7 +583,7 @@ totals keyed by the position without its dice (a dice edit keeps them; any
 other edit restarts them; a reply for an older position is dropped). The win
 chance counts ties as half, with ± = 1.96 standard errors; it shows one
 decimal once ± < 0.5 points. The move list shows the net's P(win) after each
-move as a score out of 1000. Throughput in WASM (Node, `node
+move as a percentage with one decimal ("54.6%"). Throughput in WASM (Node, `node
 web/scripts/analyze-bench.mjs`, 2026-10-15): about 440 games/s from the
 empty position (the longest games).
 

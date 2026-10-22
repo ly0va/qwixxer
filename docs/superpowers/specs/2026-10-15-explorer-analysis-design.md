@@ -102,9 +102,11 @@ Position card (desktop and phone compact form):
 
 Move list:
 
-- Each row's number is a **score out of 1000**: the net's P(win) for the
-  move × 1000, rounded ("546"). The bar stays, scaled to 1000.
-- Header: "*N* legal · score after each, out of 1000".
+- Each row's number is the net's P(win) for the move as a **percentage
+  with one decimal** ("54.6%"); the bar shows the same. (Was a score out
+  of 1000 while the pair net's P(win) was poorly calibrated; the win net's
+  is not.)
+- Header: "*N* legal · win chance after each".
 - Ranking, ties, bot tags and (i) notes are unchanged.
 
 The explorer spec's wording "your chance to win after each move" for the

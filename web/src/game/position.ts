@@ -190,5 +190,5 @@ export const chanceText = (w: { p: number; pm: number }) => percent(w.p, w.pm < 
 export const gamesText = (w: { p: number; pm: number }, games: number) =>
     `± ${(w.pm * 100).toFixed(1)} · ${games.toLocaleString('en-US')} ${games === 1 ? 'game' : 'games'}`;
 
-/** The move list's number: the net's P(win) as a score out of 1000. */
-export const score = (p: number) => Math.round(p * 1000);
+/** The move list's number: the net's P(win) as a percentage, one decimal. */
+export const moveChance = (p: number) => percent(p, 1);
