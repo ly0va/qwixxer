@@ -11,7 +11,7 @@
     // Why a bot plays a move ranked below the top (spec "Moves"), behind an (i).
     const NOTE = {
         rolled_out: 'Master+ played this roll out many times and prefers this move.',
-        rule: 'A fixed rule makes the bot play this move: a safe lock or a game-winning end.',
+        rule: 'A fixed rule makes the bot play this move.',
     };
     // The open tooltip (tap on phones; hover and focus show it too).
     let open = $state<number | null>(null);

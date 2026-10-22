@@ -8,7 +8,7 @@ use crate::bots::{make_bot, master_plus, win, BotKind};
 use crate::selection::{active_options, n_locked, passive_options, union};
 use crate::session::{SheetSnap, Sq};
 use qwixxer::dqn::win::WinStrategy;
-use qwixxer::state::{Mark, State};
+use qwixxer::state::{post_state_dominates, Mark, State};
 use qwixxer::strategy::bot_impl::{
     active_phase1_choices, active_phase2_choices_with, passive_lookahead_values, passive_phase1_choices_with,
     passive_phase1_impl, passive_turn_predictions, Decision,
@@ -84,7 +84,7 @@ pub struct MoveOut {
     pub bots: Vec<&'static str>,
     /// On Master+'s move when it isn't ranked first, why Master+ still
     /// plays it: "rolled_out" (its search preferred it) or "rule" (a
-    /// meta-rule forced it).
+    /// meta-rule forced it, or pruned every move above it as dominated).
     pub note: Option<&'static str>,
 }
 
@@ -438,7 +438,7 @@ impl Explorer {
     /// theirs at the end of their predicted turn, Master's lookahead),
     /// highest first. When Master+'s or Master's move isn't first, a
     /// note says why: Master+'s search preferred it ("rolled_out"), or a
-    /// meta-rule forced it ("rule").
+    /// meta-rule forced it or pruned every move above it ("rule").
     fn moves(
         &mut self,
         you: &State,
@@ -536,14 +536,25 @@ impl Explorer {
             let note = (*kind == BotKind::Master && (rule_first || forced2)).then_some("rule");
             picks.push((*kind, turn.key(), note));
         }
+        // The bots prune a move another one dominates row by row, though
+        // the net may value it higher: when every move above a pick is so
+        // dominated, a rule explains the pick.
+        let pruned_above: Vec<bool> = (0..out.len())
+            .map(|i| {
+                (0..out.len())
+                    .filter(|&j| out[j].p_win > out[i].p_win)
+                    .all(|j| posts.iter().any(|k| post_state_dominates(k, &posts[j])))
+            })
+            .collect();
         let mut notes: Vec<Option<&'static str>> = vec![None; out.len()];
         for (kind, pick, note) in picks {
             // A pick that matches no listed move is an engine bug: it tags
             // nothing, and development builds report it (the random-position
             // test pins that it never happens).
             if let Some(i) = keys.iter().position(|k| *k == pick) {
+                let pruned = matches!(kind, BotKind::MasterPlus | BotKind::Master) && pruned_above[i];
                 out[i].bots.push(kind.id());
-                notes[i] = notes[i].or(note);
+                notes[i] = notes[i].or(note).or(pruned.then_some("rule"));
             } else {
                 debug_assert!(false, "{} picked {:?}, which is not a listed move", kind.id(), pick);
             }
@@ -764,6 +775,30 @@ mod tests {
         let plus = moves.iter().position(|m| m.bots.contains(&"master_plus")).unwrap();
         assert!(plus > 0, "{moves:?}");
         assert_eq!(moves[plus].note, Some("rolled_out"));
+    }
+
+    /// White red 11 leaves the same marks as colour red 10 with one option
+    /// fewer, so the bots prune it, though the net values it higher on this
+    /// (unreachable) board: their row, below it, gets the rule note.
+    #[test]
+    fn a_pruned_dominated_move_above_the_bots_pick_gets_a_rule_note() {
+        let dice = [6, 5, 5, 3, 5, 1];
+        let mut p = pos(Some(dice), Roller::You);
+        let marks = |s: &mut SheetSnap, rows: [&[usize]; 4], strikes: u8| {
+            for (r, idx) in rows.iter().enumerate() {
+                for &i in *idx {
+                    s.marks[r][i] = true;
+                }
+            }
+            s.strikes = strikes;
+        };
+        marks(&mut p.you, [&[2, 7], &[0, 3, 7, 10], &[0, 2, 3, 4, 10], &[1, 5, 10]], 1);
+        marks(&mut p.opponent, [&[6, 9], &[6, 7], &[4, 6, 8, 9], &[2, 4, 5, 6]], 3);
+        let moves = Explorer::new().explore(&p).unwrap().moves.unwrap();
+        assert_eq!(moves[0].marks, [Sq { row: 0, n: 11 }], "{moves:?}");
+        let master = moves.iter().position(|m| m.bots.contains(&"master")).unwrap();
+        assert_eq!(moves[master].marks, [Sq { row: 0, n: 10 }], "{moves:?}");
+        assert_eq!(moves[master].note, Some("rule"));
     }
 
     /// Spec "Edge cases": arbitrary (unreachable) marks never panic, and
