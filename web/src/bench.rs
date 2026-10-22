@@ -45,24 +45,14 @@ impl Strategy for Timed {
     }
 }
 
-/// A web bot by id.
-fn bench_bot(bot: &str) -> Result<fn() -> Box<dyn Strategy>, String> {
-    Ok(match BotKind::parse(bot)? {
-        BotKind::MasterPlus => || make_bot(BotKind::MasterPlus),
-        BotKind::Master => || make_bot(BotKind::Master),
-        BotKind::Student => || make_bot(BotKind::Student),
-        BotKind::Newbie => || make_bot(BotKind::Newbie),
-    })
-}
-
 #[wasm_bindgen]
 pub fn bench(bot: &str, games: u32, seed: u32) -> Result<String, JsError> {
-    let make = bench_bot(bot).map_err(|e| JsError::new(&e))?;
+    let kind = BotKind::parse(bot).map_err(|e| JsError::new(&e))?;
     let ms = Rc::new(RefCell::new(Vec::new()));
     let mut rng = SmallRng::seed_from_u64(seed as u64);
     for g in 0..games {
         let timed = Timed {
-            inner: make(),
+            inner: make_bot(kind),
             ms: ms.clone(),
         };
         let mut s = Session::new(Box::new(timed), seed as u64 * 1000 + g as u64);
