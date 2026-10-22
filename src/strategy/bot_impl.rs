@@ -443,6 +443,10 @@ fn simulate_opp_phase1(bot: &impl Bot, state: &State, opp_states: &[State], dice
 ///
 /// The safe-lock force is gated by `force_lock` (the deciding bot's
 /// [`Bot::force_lock`]): `false` keeps the lock an ordinary candidate.
+///
+/// The game ends after phase 1 when our board and `comparison_opps`
+/// together have two closed rows (or four strikes): then there is no colour
+/// phase, and no strike for marking nothing (`Game::play`).
 pub(crate) fn phase1_plan_choices_with(
     state: &State,
     comparison_opps: &[State],
@@ -451,23 +455,29 @@ pub(crate) fn phase1_plan_choices_with(
 ) -> Decision {
     let white_sum = dice[0] + dice[1];
     let opp_best = comparison_opps.iter().map(|s| s.count_points()).max().unwrap_or(0);
+    let ends = |post: &State| ends_with(post, comparison_opps);
 
     let white_marks = state.generate_white_moves(white_sum);
-    let color_marks = state.generate_color_moves(dice);
 
     let mut plans: Vec<(Option<Mark>, Option<Mark>, State)> = Vec::new();
 
-    // Strike
-    {
+    // No white mark: the colour phase, or nothing if the opponents' white
+    // marks already end the game.
+    let no_white = if ends(state) {
+        *state
+    } else {
         let mut s = *state;
         s.apply_strike();
-        plans.push((None, None, s));
-    }
-    // Color-only singles
-    for &cm in &color_marks {
-        let mut s = *state;
-        s.apply_mark(cm);
-        plans.push((None, Some(cm), s));
+        s
+    };
+    plans.push((None, None, no_white));
+    if !ends(state) {
+        // Color-only singles
+        for &cm in &state.generate_color_moves(dice) {
+            let mut s = *state;
+            s.apply_mark(cm);
+            plans.push((None, Some(cm), s));
+        }
     }
     // White-only singles
     for &wm in &white_marks {
@@ -475,10 +485,13 @@ pub(crate) fn phase1_plan_choices_with(
         s.apply_mark(wm);
         plans.push((Some(wm), None, s));
     }
-    // Doubles
+    // Doubles, unless the white mark ends the game
     for &wm in &white_marks {
         let mut post_white = *state;
         post_white.apply_mark(wm);
+        if ends(&post_white) {
+            continue;
+        }
         for &cm in &post_white.generate_color_moves(dice) {
             let mut s = post_white;
             s.apply_mark(cm);
@@ -494,18 +507,16 @@ pub(crate) fn phase1_plan_choices_with(
     let winning = plans
         .iter()
         .enumerate()
-        .filter(|(_, (_, _, post))| post.would_end_game() && post.count_points() > opp_best)
+        .filter(|(_, (_, _, post))| ends(post) && post.count_points() > opp_best)
         .max_by_key(|(_, (_, _, post))| post.count_points());
     if let Some((i, _)) = winning {
         return Decision::Forced(plans[i].0);
     }
 
     // Remove losing game-ends
-    plans.retain(|(_, _, post)| !(post.would_end_game() && post.count_points() < opp_best));
+    plans.retain(|(_, _, post)| !(ends(post) && post.count_points() < opp_best));
     if plans.is_empty() {
-        let mut s = *state;
-        s.apply_strike();
-        plans.push((None, None, s));
+        plans.push((None, None, no_white));
     }
 
     // Force safe lock
@@ -515,7 +526,7 @@ pub(crate) fn phase1_plan_choices_with(
                 if state.would_lock_row(*m) && {
                     let mut s = *state;
                     s.apply_mark(*m);
-                    !s.would_end_game()
+                    !ends(&s)
                 } {
                     return Decision::Forced(Some(*m));
                 }
@@ -526,6 +537,13 @@ pub(crate) fn phase1_plan_choices_with(
     prune_dominated(&mut plans, |(_, _, s)| s);
 
     Decision::Choices(plans.into_iter().map(|(p1, _, s)| (p1, s)).collect())
+}
+
+/// Whether the game is over with our board `post` and `opps`, locks shared.
+fn ends_with(post: &State, opps: &[State]) -> bool {
+    let mut all: Vec<State> = std::iter::once(*post).chain(opps.iter().copied()).collect();
+    super::sim::SimGame::propagate_locks(&mut all);
+    super::sim::SimGame::game_over(&all)
 }
 
 /// Full phase-1 pipeline: simulate opponents' phase-1 responses, then run the
@@ -623,6 +641,87 @@ mod tests {
                 assert!(c.iter().any(|(m, _)| *m == Some(Mark { row: 0, number: 12 })))
             }
             Decision::Forced(_) => panic!("rule-free phase-1 pipeline must not force here"),
+        }
+    }
+
+    fn marked(marks: &[(usize, u8)]) -> State {
+        let mut s = State::default();
+        for &(row, number) in marks {
+            s.apply_mark(Mark { row, number });
+        }
+        s
+    }
+
+    /// The opponent has closed blue (28 points). I can close red with a
+    /// white 12, the second closed row, so the game ends after phase 1
+    /// with my red at 28: 29 with my yellow 2. A colour mark after it
+    /// (yellow 9: +2) never happens.
+    fn second_lock(opp_extra: &[(usize, u8)]) -> (State, State, [u8; 6]) {
+        let blue = [(3, 12), (3, 11), (3, 10), (3, 9), (3, 8), (3, 2)];
+        let opp = marked(&[&blue[..], opp_extra].concat());
+        let mut me = marked(&[(0, 2), (0, 3), (0, 4), (0, 5), (0, 6), (1, 2)]);
+        me.lock(opp.locked());
+        (me, opp, [6, 6, 1, 3, 1, 1]) // white 12; yellow 6 + 3 = 9
+    }
+
+    const RED12: Mark = Mark { row: 0, number: 12 };
+
+    #[test]
+    fn a_white_mark_that_ends_the_game_is_never_followed_by_a_colour_mark() {
+        // Opponent 29: red 12 alone ties, so it stays a candidate, as is.
+        let (me, opp, dice) = second_lock(&[(1, 2)]);
+        let mut alone = me;
+        alone.apply_mark(RED12);
+        assert_eq!((alone.count_points(), opp.count_points()), (29, 29));
+        let Decision::Choices(c) = phase1_plan_choices_with(&me, &[opp], dice, false) else {
+            panic!("a tie is no forced win")
+        };
+        let posts: Vec<State> = c.iter().filter(|(m, _)| *m == Some(RED12)).map(|(_, s)| *s).collect();
+        assert_eq!(posts, [alone]);
+    }
+
+    #[test]
+    fn a_white_mark_that_ends_the_game_behind_is_not_a_forced_win() {
+        // Opponent 30: red 12 alone loses 29–30; with yellow 9 it would
+        // have won 31–30.
+        let (me, opp, dice) = second_lock(&[(1, 2), (2, 12)]);
+        assert_eq!(opp.count_points(), 30);
+        match phase1_plan_choices_with(&me, &[opp], dice, false) {
+            Decision::Forced(m) => assert_ne!(m, Some(RED12)),
+            Decision::Choices(c) => assert!(c.iter().all(|(m, _)| *m != Some(RED12)), "a losing end"),
+        }
+        use crate::strategy::recorder::Points;
+        assert_ne!(active_phase1_impl(&Points, &me, &[opp], dice), Some(RED12));
+    }
+
+    #[test]
+    fn when_the_opponents_white_mark_ends_the_game_there_is_no_colour_phase() {
+        // The opponent's predicted white mark closes red as well as blue:
+        // my phase 1 is my whole turn, and passing costs no strike.
+        let blue = [(3, 12), (3, 11), (3, 10), (3, 9), (3, 8), (3, 2)];
+        let red = [(0, 2), (0, 3), (0, 4), (0, 5), (0, 6), (0, 12)];
+        let opp = marked(&[&blue[..], &red[..]].concat());
+        let mut me = marked(&[(1, 2)]);
+        me.lock(marked(&blue).locked());
+        let dice = [3, 4, 1, 3, 1, 1]; // white 7; colour sums 4..10
+        let whites = me.generate_white_moves(7);
+        assert!(!whites.is_empty());
+        let posts: Vec<State> = match phase1_plan_choices_with(&me, &[opp], dice, false) {
+            Decision::Choices(c) => c.into_iter().map(|(_, s)| s).collect(),
+            Decision::Forced(m) => vec![m.map_or(me, |m| {
+                let mut s = me;
+                s.apply_mark(m);
+                s
+            })],
+        };
+        for post in posts {
+            let ok = post == me
+                || whites.iter().any(|&w| {
+                    let mut s = me;
+                    s.apply_mark(w);
+                    s == post
+                });
+            assert!(ok, "only my white mark or nothing: {post:?}");
         }
     }
 
