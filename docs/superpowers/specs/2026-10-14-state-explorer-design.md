@@ -71,8 +71,8 @@ rows are closed, the six dice (each 1–6, or unset), and whose roll it is
 - **Dice:** tap a die to open a 1–6 picker under it; choosing a face sets it
   and moves the picker to the next unset die. "Random" sets all six; "Clear"
   unsets all six. Closed rows' colour dice render greyed and are ignored,
-  as in the game. On "Opponent's roll" only the white dice matter and the
-  colour dice render greyed.
+  as in the game. On "Opponent's roll" the colour dice set the opponent's
+  predicted turn (Master's lookahead), so they count too and are not greyed.
 
 Every edit re-evaluates (see "Engine"); the last answer stays on screen,
 faded, until the new one arrives.

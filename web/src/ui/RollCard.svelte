@@ -19,8 +19,9 @@
     const PICKER_W = 296;
     const pickerLeft = (i: number) => Math.max(0, Math.min(lead + i * (size + gap) + size / 2 - PICKER_W / 2, rowEnd - PICKER_W));
     const closed = $derived(closedRows(x.pos));
-    // Colour dice are ignored on the opponent's roll and for closed rows: greyed.
-    const out = (i: number) => i >= 2 && (x.pos.roller === 'opponent' || closed[i - 2]);
+    // Colour dice are ignored for closed rows: greyed. (On the opponent's roll
+    // they set the opponent's predicted turn, which ranks your moves.)
+    const out = (i: number) => i >= 2 && closed[i - 2];
     const d = $derived(x.pos.dice);
     const white = $derived(d[0] !== null && d[1] !== null ? String(d[0] + d[1]) : '–');
     // A click outside the picker closes it; a die button toggles it itself.
