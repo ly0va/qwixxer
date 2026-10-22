@@ -680,6 +680,33 @@ mod tests {
         assert_eq!(posts, [alone]);
     }
 
+    /// Red open from 12 and yellow from 11, both with five marks: either
+    /// 12 locks. Red 12 leaves yellow a step ahead of where yellow 12
+    /// leaves red, but the opponent's red and yellow rows differ, so both
+    /// locks stay for the net to judge.
+    #[test]
+    fn locking_red_or_yellow_are_both_candidates() {
+        let me = marked(&[
+            (0, 4),
+            (0, 7),
+            (0, 9),
+            (0, 10),
+            (0, 11),
+            (1, 2),
+            (1, 5),
+            (1, 6),
+            (1, 8),
+            (1, 10),
+        ]);
+        let opp = marked(&[(0, 4), (0, 5), (0, 8), (0, 9)]);
+        let Decision::Choices(c) = active_phase2_choices_with(&me, &[opp], [6, 4, 6, 6, 4, 1], false, false) else {
+            panic!("two locks and a strike leave a choice")
+        };
+        let marks: Vec<Option<Mark>> = c.iter().map(|(m, _)| *m).collect();
+        assert!(marks.contains(&Some(RED12)), "{marks:?}");
+        assert!(marks.contains(&Some(Mark { row: 1, number: 12 })), "{marks:?}");
+    }
+
     #[test]
     fn a_white_mark_that_ends_the_game_behind_is_not_a_forced_win() {
         // Opponent 30: red 12 alone loses 29–30; with yellow 9 it would
