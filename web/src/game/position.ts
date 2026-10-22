@@ -1,4 +1,4 @@
-import type { Analysis, Position, Roller, SheetSnap, View } from '../engine/protocol';
+import type { Analysis, Luck, Position, Roller, SheetSnap, View } from '../engine/protocol';
 import { NAME, numbers, ROWS, type CellLook, type CellModel, type LockLook, type RowModel } from './rules';
 
 /** The explorer's two sides (spec "The position"). */
@@ -186,6 +186,15 @@ export const chanceText = (w: { p: number; pm: number }) => percent(w.p, w.pm < 
 
 export const gamesText = (w: { p: number; pm: number }, games: number) =>
     `± ${(w.pm * 100).toFixed(1)} · ${games.toLocaleString('en-US')} ${games === 1 ? 'game' : 'games'}`;
+
+/** Spec "UI" (`2026-10-22-explorer-roll-luck-design.md`): the Roll card's luck line. */
+export function luckText(l: Luck): { label: string; value: string; tone: 'lucky' | 'unlucky' | 'average'; detail: string } {
+    const pts = Math.round((l.this_roll - l.average) * 1000) / 10;
+    const detail = `this roll ${percent(l.this_roll, 1)} · average ${percent(l.average, 1)}`;
+    if (pts > 0) return { label: 'Lucky roll', value: `+${pts.toFixed(1)} pts`, tone: 'lucky', detail };
+    if (pts < 0) return { label: 'Unlucky roll', value: `−${(-pts).toFixed(1)} pts`, tone: 'unlucky', detail };
+    return { label: 'Average roll', value: '', tone: 'average', detail };
+}
 
 /** The move list's number: the net's P(win) as a percentage, one decimal. */
 export const moveChance = (p: number) => percent(p, 1);

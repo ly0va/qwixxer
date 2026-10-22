@@ -1,6 +1,6 @@
 <script lang="ts">
-    import type { ExplorerController } from '../game/explorer.svelte';
-    import { closedRows } from '../game/position';
+    import { luckKey, type ExplorerController } from '../game/explorer.svelte';
+    import { closedRows, isOver, luckText } from '../game/position';
     import { chipsFor, predictedTurn } from '../game/rules';
     import ChipView from './Chip.svelte';
     import Die from './Die.svelte';
@@ -24,6 +24,11 @@
     const out = (i: number) => i >= 2 && closed[i - 2];
     const d = $derived(x.pos.dice);
     const white = $derived(d[0] !== null && d[1] !== null ? String(d[0] + d[1]) : '–');
+    // Spec "UI" (roll luck): the line holds its fixed height from the moment
+    // all six dice are set, so nothing moves when the number arrives.
+    const luckLine = $derived(d.every((v) => v !== null) && !isOver(x.pos));
+    const luck = $derived(x.luck ? luckText(x.luck.value) : null);
+    const luckStale = $derived(!!x.luck && x.luck.key !== luckKey(x.pos));
     // A click outside the picker closes it; a die button toggles it itself.
     // (closest, not contains: a picked face may already have left the DOM.)
     function outside(e: MouseEvent) {
@@ -69,6 +74,17 @@
         {/each}
         {#if !compact}<div class="wsum"><span>White sum</span><b>{white}</b></div>{/if}
     </div>
+    {#if luckLine}
+        <p class="luck" class:stale={luckStale} aria-live="polite">
+            {#if luck}
+                <span class="label">{luck.label}</span>
+                {#if luck.value}<b class={luck.tone}>{luck.value}</b>{/if}
+                <span class="detail">{luck.detail}</span>
+            {:else}
+                <span class="label muted">Roll luck …</span>
+            {/if}
+        </p>
+    {/if}
     <!-- Spec "Moves": on your roll the ranking assumes the opponent's predicted white-sum mark. -->
     {#if x.pos.roller === 'you' && x.answer?.opponent_white}
         {@const ow = x.answer.opponent_white}
@@ -86,6 +102,17 @@
 </section>
 
 <style>
+    .luck { margin: 0; height: 24px; display: flex; align-items: baseline; gap: 8px; white-space: nowrap; overflow: hidden; font-size: 15px; transition: opacity 0.15s; }
+    .compact .luck { height: 42px; flex-wrap: wrap; align-content: flex-start; row-gap: 2px; font-size: 14px; }
+    .compact .luck .detail { flex-basis: 100%; }
+    .luck .label { font-weight: 600; }
+    .luck .label.muted { color: var(--muted); }
+    .luck b { font-family: var(--cond); font-weight: 800; font-size: 20px; line-height: 1; }
+    .luck .lucky { color: var(--green-ink); }
+    .luck .unlucky { color: var(--red-ink); }
+    .luck .detail { font-size: 13px; color: var(--muted); }
+    .compact .luck .detail { font-size: 12px; }
+    .luck.stale { opacity: 0.6; }
     .opp { margin: 0; display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--soft); min-height: 22px; }
     .opp.stale { opacity: 0.6; }
     .opp .after { color: var(--muted); }

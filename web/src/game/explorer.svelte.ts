@@ -1,4 +1,4 @@
-import type { Analysis, Answer, Engine, Roller, View } from '../engine/protocol';
+import type { Analysis, Answer, Engine, Luck, Roller, View } from '../engine/protocol';
 import type { Store } from './controller.svelte';
 import { decode, encode } from './link';
 import * as P from './position';
@@ -24,6 +24,9 @@ function precise(t: Analysis): boolean {
     return P.winChance(P.addAnalysis(t, { games: 4, win_sum: 2, win_sq_sum: 2, diff_sum: 0 })).pm < REST_BELOW;
 }
 
+/** The whole position, dice and roller included: what roll luck belongs to. */
+export const luckKey = (p: ExPosition) => encode(p);
+
 /** Spec "Web: state explorer": the position being explored and its answer. */
 export class ExplorerController {
     pos = $state<ExPosition>(P.emptyPosition());
@@ -37,6 +40,8 @@ export class ExplorerController {
     analysis = $state<{ key: string; totals: Analysis } | null>(null);
     /** A batch loop is running. */
     analysing = $state(false);
+    /** Roll luck and the position (dice included) it belongs to. */
+    luck = $state<{ key: string; value: Luck } | null>(null);
 
     private engine: Engine;
     private store: Store;
@@ -44,6 +49,8 @@ export class ExplorerController {
     private later: (f: () => void, ms: number) => void;
     private inflight = false;
     private dirty = false;
+    private luckInflight = false;
+    private luckDirty = false;
     private noticeId = 0;
     private now: () => number;
     private active = false;
@@ -84,6 +91,7 @@ export class ExplorerController {
 
     /** Evaluate the position unless it has an answer or a call is already on it. */
     refresh() {
+        if (this.luck?.key !== luckKey(this.pos) && !this.luckInflight) void this.askLuck();
         if (this.pending || (this.answer && !this.error)) return;
         void this.evaluate();
     }
@@ -151,6 +159,7 @@ export class ExplorerController {
         this.showAll = false;
         try { this.store.set(SAVE, encode(p)); } catch { /* storage unavailable */ }
         void this.evaluate();
+        void this.askLuck();
         this.wake?.();
         void this.analyse();
     }
@@ -184,6 +193,40 @@ export class ExplorerController {
         } finally {
             this.inflight = false;
             this.pending = false;
+        }
+    }
+
+    /**
+     * Spec "Worker and controller" (`2026-10-22-explorer-roll-luck-design.md`):
+     * sent right after `explore`, so the move list comes first and the next
+     * analysis batch after. One call in flight; edits meanwhile coalesce
+     * into one for the latest position; a reply for an older one is
+     * dropped. Without all six dice, or with the game over, there is none.
+     */
+    private async askLuck() {
+        if (this.luckInflight) {
+            this.luckDirty = true;
+            return;
+        }
+        this.luckInflight = true;
+        try {
+            do {
+                this.luckDirty = false;
+                const pos = P.toEngine(this.pos);
+                if (pos.dice === null || P.isOver(this.pos)) {
+                    this.luck = null;
+                    break;
+                }
+                const key = luckKey(this.pos);
+                try {
+                    const value = await this.engine.luck(pos);
+                    if (luckKey(this.pos) === key) this.luck = { key, value };
+                } catch {
+                    // The move list shows engine errors.
+                }
+            } while (this.luckDirty);
+        } finally {
+            this.luckInflight = false;
         }
     }
 

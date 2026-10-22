@@ -3,7 +3,7 @@ import type { View } from '../engine/protocol';
 import {
     clearSheet, closedRows, emptyPosition, exploreSheet, fromView, marginText, nextUnsetDie, overText, percent, randomDice,
     setDie, sheetTotal, swapSides, tapStrike, toEngine, toggleLock, toggleSquare,
-    addAnalysis, analysisKey, analysisMargin, chanceText, gamesText, isOver, moveChance, winChance, ZERO_ANALYSIS,
+    addAnalysis, analysisKey, analysisMargin, chanceText, gamesText, isOver, luckText, moveChance, winChance, ZERO_ANALYSIS,
 } from './position';
 
 const markRed = (idx: number[]) => idx.reduce((p, i) => toggleSquare(p, 'you', 0, i), emptyPosition());
@@ -149,6 +149,12 @@ describe('analysis numbers', () => {
         expect(chanceText({ p: 0.5432, pm: 0.0049 })).toBe('54.3%');
         expect(gamesText({ p: 0.54, pm: 0.012 }, 3200)).toBe('± 1.2 · 3,200 games');
         expect(gamesText({ p: 0.54, pm: 0.3 }, 1)).toBe('± 30.0 · 1 game');
+    });
+
+    it('luck text: sign, one decimal, "Average roll" near zero', () => {
+        expect(luckText({ this_roll: 0.553, average: 0.521 })).toEqual({ label: 'Lucky roll', value: '+3.2 pts', tone: 'lucky', detail: 'this roll 55.3% · average 52.1%' });
+        expect(luckText({ this_roll: 0.494, average: 0.521 })).toMatchObject({ label: 'Unlucky roll', value: '−2.7 pts', tone: 'unlucky' });
+        expect(luckText({ this_roll: 0.5212, average: 0.521 })).toMatchObject({ label: 'Average roll', value: '', tone: 'average' });
     });
 
     it('a move shows P(win) as a percentage with one decimal', () => {

@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { Answer, Engine, Position } from '../engine/protocol';
 import type { Store } from './controller.svelte';
-import { BAD_LINK, ExplorerController, MAX_BATCH, MAX_GAMES, MIN_BATCH } from './explorer.svelte';
+import { BAD_LINK, ExplorerController, luckKey, MAX_BATCH, MAX_GAMES, MIN_BATCH } from './explorer.svelte';
 import { encode } from './link';
 import { analysisKey, emptyPosition, toggleSquare } from './position';
 
@@ -339,6 +339,64 @@ describe('ExplorerController analysis fixes', () => {
         an[1].resolve({ games: an[1].count, win_sum: 0, win_sq_sum: 0, diff_sum: 0 }); // stale
         await flush();
         expect(an[2].count).toBe(MIN_BATCH);
+    });
+});
+
+describe('ExplorerController luck', () => {
+    type Call = { kind: string; pos: Position; resolve: (v: any) => void };
+    function setupLuck() {
+        const calls: Call[] = [];
+        const push = (kind: string) => (pos: Position) => new Promise((resolve) => calls.push({ kind, pos: structuredClone(pos), resolve }));
+        const engine = { explore: vi.fn(push('explore')), analyze: vi.fn(push('analyze')), luck: vi.fn(push('luck')) } as unknown as Engine;
+        const x = new ExplorerController(engine, memStore());
+        x.init();
+        const kinds = () => calls.map((c) => c.kind);
+        const luck = () => calls.filter((c) => c.kind === 'luck');
+        return { x, calls, kinds, luck };
+    }
+
+    it('asks right after explore when all dice are set, before the next analysis batch', async () => {
+        const { x, kinds, luck } = setupLuck();
+        x.setActive(true);
+        x.random();
+        expect(kinds().slice(-2)).toEqual(['explore', 'luck']);
+        expect(luck()[0].pos.dice).toHaveLength(6);
+        luck()[0].resolve({ this_roll: 0.55, average: 0.5 });
+        await flush();
+        expect(x.luck).toEqual({ key: luckKey(x.pos), value: { this_roll: 0.55, average: 0.5 } });
+    });
+
+    it('a dice edit asks again and never lands an older reply', async () => {
+        const { x, luck } = setupLuck();
+        x.random();
+        x.openPicker(0);
+        x.pickFace(x.pos.dice[0] === 6 ? 1 : 6);
+        expect(luck()).toHaveLength(1); // one in flight: the edit waits for it
+        luck()[0].resolve({ this_roll: 0.1, average: 0.5 });
+        await flush();
+        expect(x.luck).toBeNull(); // for the old dice: dropped
+        expect(luck()).toHaveLength(2);
+        luck()[1].resolve({ this_roll: 0.6, average: 0.5 });
+        await flush();
+        expect(x.luck).toEqual({ key: luckKey(x.pos), value: { this_roll: 0.6, average: 0.5 } });
+    });
+
+    it('clearing the dice clears luck and asks nothing', async () => {
+        const { x, luck } = setupLuck();
+        x.random();
+        luck()[0].resolve({ this_roll: 0.55, average: 0.5 });
+        await flush();
+        x.clearDice();
+        await flush();
+        expect(x.luck).toBeNull();
+        expect(luck()).toHaveLength(1);
+    });
+
+    it('a finished game asks nothing', () => {
+        const { x, luck } = setupLuck();
+        x.tapStrike('opponent', 0); x.tapStrike('opponent', 1); x.tapStrike('opponent', 2); x.tapStrike('opponent', 3);
+        x.random();
+        expect(luck()).toHaveLength(0);
     });
 });
 
