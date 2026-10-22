@@ -116,6 +116,29 @@ pub struct Analysis {
     pub diff_sum: f64,
 }
 
+/// Spec "Engine" (`2026-10-22-explorer-roll-luck-design.md`): the move
+/// list's top P(win) for this roll, and its average over all rolls. Luck
+/// is the difference.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Luck {
+    pub this_roll: f32,
+    pub average: f32,
+}
+
+/// Every distinct roll with its probability: the white dice unordered (21
+/// pairs, 1/36 or 2/36), times the four colour dice (1,296 outcomes).
+fn rolls() -> impl Iterator<Item = ([u8; 6], f64)> {
+    (1..=6u8).flat_map(|a| {
+        (a..=6u8).flat_map(move |b| {
+            let w = if a == b { 1.0 } else { 2.0 } / 46_656.0;
+            (0..1296u32).map(move |c| {
+                let f = |k: u32| (c / 6u32.pow(k) % 6) as u8 + 1;
+                ([a, b, f(0), f(1), f(2), f(3)], w)
+            })
+        })
+    })
+}
+
 /// Turns a play-out plays before the net values it. Phase 28: at 4 the
 /// estimate matches full play-outs (no measurable systematic error) with
 /// about 15× fewer simulated turns for the same ±.
@@ -481,46 +504,22 @@ impl Explorer {
             .diff
     }
 
-    /// Spec "Moves": every legal turn with the win net's P(win) after it,
-    /// judged as Master judges it (on your roll after your turn, against the
-    /// opponent's sheet with its predicted white-sum mark `opp_white`; on
-    /// theirs at the end of their predicted turn, Master's lookahead),
-    /// highest first. When Master+'s or Master's move isn't first, a
-    /// note says why: Master+'s search preferred it ("rolled_out"), or a
-    /// meta-rule forced it or pruned every move above it ("rule").
-    fn moves(
-        &mut self,
+    /// Spec "Moves": each legal turn of yours, your sheet after it, and the
+    /// win net's P(win) after it, judged as Master judges it (see
+    /// [`Explorer::moves`]).
+    fn valued_turns(
+        &self,
         you: &State,
         opp: &State,
         dice: [u8; 6],
         roller: Roller,
         opp_white: Option<Mark>,
-    ) -> Vec<MoveOut> {
+    ) -> (Vec<Turn>, Vec<State>, Vec<f32>) {
         let turns = legal_turns(you, opp, dice, roller, opp_white);
-        let keys: Vec<_> = turns.iter().map(Turn::key).collect();
         let mut opp_after = *opp;
         if let Some(m) = opp_white {
             opp_after.apply_mark(m);
         }
-        // Whether a meta-rule forced Master's phase-1 or passive decision;
-        // Master+ shares that pipeline.
-        let (explained, rule_first) = match roller {
-            Roller::You => (
-                self.plus.explain_active_phase1(you, from_ref(opp), dice),
-                matches!(
-                    active_phase1_choices(&self.net, you, from_ref(opp), dice).0,
-                    Decision::Forced(Some(_))
-                ),
-            ),
-            Roller::Opponent => (
-                self.plus.explain_passive_phase1(you, from_ref(opp), dice, 0),
-                matches!(
-                    passive_phase1_choices_with(you, from_ref(opp), dice, self.net.force_lock()),
-                    Decision::Forced(Some(_))
-                ),
-            ),
-        };
-
         let posts: Vec<State> = turns
             .iter()
             .map(|t| {
@@ -541,14 +540,100 @@ impl Explorer {
                 passive_lookahead_values(&self.net, you, from_ref(opp), dice, 0, &marks)
             }
         };
+        (turns, posts, z.into_iter().map(phi).collect())
+    }
+
+    /// Each legal turn and the P(win) the move list shows for it, the
+    /// opponent's predicted white-sum mark included on your roll.
+    fn move_values(&self, you: &State, opp: &State, dice: [u8; 6], roller: Roller) -> (Vec<Turn>, Vec<f32>) {
+        let opp_white = match roller {
+            Roller::You => predict_opp_white(&self.net, you, opp, dice),
+            Roller::Opponent => None,
+        };
+        let (turns, _, p_wins) = self.valued_turns(you, opp, dice, roller, opp_white);
+        (turns, p_wins)
+    }
+
+    /// The move list's top P(win) for a roll: f in spec
+    /// `2026-10-22-explorer-roll-luck-design.md`.
+    fn top(&self, you: &State, opp: &State, dice: [u8; 6], roller: Roller) -> f32 {
+        self.move_values(you, opp, dice, roller)
+            .1
+            .into_iter()
+            .fold(f32::MIN, f32::max)
+    }
+
+    /// Spec "Engine" (`2026-10-22-explorer-roll-luck-design.md`): the move
+    /// list's top P(win) for the position's roll, and its average over
+    /// every roll.
+    pub fn luck(&self, pos: &Position) -> Result<Luck, String> {
+        pos.validate()?;
+        let dice = pos.dice.ok_or("no dice")?;
+        let (you, opp, locked) = states(pos);
+        if you.strikes >= 4 || opp.strikes >= 4 || n_locked(locked) >= 2 {
+            return Err("the game is over".into());
+        }
+        Ok(Luck {
+            this_roll: self.top(&you, &opp, dice, pos.roller),
+            average: self.average_top(&you, &opp, pos.roller) as f32,
+        })
+    }
+
+    /// E[f]: the move list's top P(win) averaged over every roll.
+    fn average_top(&self, you: &State, opp: &State, roller: Roller) -> f64 {
+        rolls().map(|(d, w)| w * self.top(you, opp, d, roller) as f64).sum()
+    }
+
+    /// [`Explorer::average_top`] by brute force over every distinct roll.
+    #[cfg(test)]
+    fn luck_reference(&self, you: &State, opp: &State, roller: Roller) -> f64 {
+        rolls().map(|(d, w)| w * self.top(you, opp, d, roller) as f64).sum()
+    }
+
+    /// Spec "Moves": every legal turn with the win net's P(win) after it,
+    /// judged as Master judges it (on your roll after your turn, against the
+    /// opponent's sheet with its predicted white-sum mark `opp_white`; on
+    /// theirs at the end of their predicted turn, Master's lookahead),
+    /// highest first. When Master+'s or Master's move isn't first, a
+    /// note says why: Master+'s search preferred it ("rolled_out"), or a
+    /// meta-rule forced it or pruned every move above it ("rule").
+    fn moves(
+        &mut self,
+        you: &State,
+        opp: &State,
+        dice: [u8; 6],
+        roller: Roller,
+        opp_white: Option<Mark>,
+    ) -> Vec<MoveOut> {
+        let (turns, posts, p_wins) = self.valued_turns(you, opp, dice, roller, opp_white);
+        let keys: Vec<_> = turns.iter().map(Turn::key).collect();
+        // Whether a meta-rule forced Master's phase-1 or passive decision;
+        // Master+ shares that pipeline.
+        let (explained, rule_first) = match roller {
+            Roller::You => (
+                self.plus.explain_active_phase1(you, from_ref(opp), dice),
+                matches!(
+                    active_phase1_choices(&self.net, you, from_ref(opp), dice).0,
+                    Decision::Forced(Some(_))
+                ),
+            ),
+            Roller::Opponent => (
+                self.plus.explain_passive_phase1(you, from_ref(opp), dice, 0),
+                matches!(
+                    passive_phase1_choices_with(you, from_ref(opp), dice, self.net.force_lock()),
+                    Decision::Forced(Some(_))
+                ),
+            ),
+        };
+
         let mut out: Vec<MoveOut> = turns
             .iter()
-            .zip(z)
-            .map(|(t, z)| MoveOut {
+            .zip(&p_wins)
+            .map(|(t, &p_win)| MoveOut {
                 marks: t.marks.iter().map(|&m| Sq::from(m)).collect(),
                 strike: t.strike,
                 pass: t.marks.is_empty() && !t.strike,
-                p_win: phi(z),
+                p_win,
                 bots: vec![],
                 note: None,
             })
@@ -585,7 +670,6 @@ impl Explorer {
             let note = (*kind == BotKind::Master && (rule_first || forced2)).then_some("rule");
             picks.push((*kind, turn.key(), note));
         }
-        let p_wins: Vec<f32> = out.iter().map(|m| m.p_win).collect();
         let pruned_above = pruned_above(&p_wins, &posts);
         let mut notes: Vec<Option<&'static str>> = vec![None; out.len()];
         for (kind, pick, note) in picks {
@@ -918,6 +1002,84 @@ mod tests {
             "Master off rank 1 without a note: {unexplained:?}"
         );
     }
+    /// Rows of a sheet marked at these indices (in row order).
+    fn marked(rows: [&[usize]; 4], strikes: u8) -> SheetSnap {
+        let mut s = sheet();
+        for (r, idx) in rows.iter().enumerate() {
+            for &i in *idx {
+                s.marks[r][i] = true;
+            }
+        }
+        s.strikes = strikes;
+        s
+    }
+
+    /// Positions for the luck tests, each with both rollers: the empty
+    /// one, a midgame, a late one with green closed, and one where the
+    /// opponent's white 2 closes blue, ending the game after phase 1 on
+    /// your roll.
+    fn luck_positions() -> Vec<Position> {
+        let mid = |dice| Position {
+            you: marked([&[0, 2, 3], &[1, 4], &[0, 1], &[2]], 1),
+            opponent: marked([&[1, 2], &[0, 3, 5], &[2], &[0, 1]], 0),
+            locked: [false; 4],
+            dice: Some(dice),
+            roller: Roller::You,
+        };
+        let late = |dice| Position {
+            you: marked([&[0, 1, 2, 3, 4, 5, 6], &[0, 1, 2, 3, 4], &[0, 1], &[0, 1, 2, 3]], 2),
+            opponent: marked(
+                [&[0, 1, 2, 3, 4, 5], &[0, 1, 2, 3, 4, 5, 6], &[0, 2], &[0, 1, 2, 3, 4]],
+                3,
+            ),
+            locked: [false, false, true, false],
+            dice: Some(dice),
+            roller: Roller::You,
+        };
+        let mut end = late([1, 1, 4, 2, 6, 3]);
+        end.opponent.marks[3] = [true, true, true, true, true, true, false, false, false, false, false];
+        let base = [
+            pos(Some([3, 4, 2, 5, 6, 1]), Roller::You),
+            mid([2, 5, 6, 3, 1, 4]),
+            late([6, 5, 2, 2, 4, 6]),
+            end,
+        ];
+        base.iter()
+            .flat_map(|p| {
+                let mut o = p.clone();
+                o.roller = Roller::Opponent;
+                [p.clone(), o]
+            })
+            .collect()
+    }
+
+    #[test]
+    fn luck_this_roll_is_the_move_lists_top() {
+        for p in luck_positions() {
+            let top = Explorer::new().explore(&p).unwrap().moves.unwrap()[0].p_win;
+            assert_eq!(Explorer::new().luck(&p).unwrap().this_roll, top, "{p:?}");
+        }
+    }
+
+    #[test]
+    fn the_rolls_cover_every_roll_once() {
+        let v: Vec<_> = rolls().collect();
+        assert_eq!(v.len(), 21 * 1296);
+        assert!((v.iter().map(|r| r.1).sum::<f64>() - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn luck_refuses_no_dice_and_a_finished_game() {
+        let ex = Explorer::new();
+        assert!(ex.luck(&pos(None, Roller::You)).is_err());
+        let mut p = pos(Some([1, 2, 3, 4, 5, 6]), Roller::You);
+        p.opponent.strikes = 4;
+        assert!(ex.luck(&p).is_err());
+        let mut p = pos(Some([1, 2, 3, 4, 5, 6]), Roller::You);
+        p.locked = [true, true, false, false];
+        assert!(ex.luck(&p).is_err());
+    }
+
     #[test]
     fn analysis_batches_compose_and_replay() {
         let ex = Explorer::new();
