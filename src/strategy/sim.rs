@@ -101,9 +101,10 @@ pub fn play_sim_turn(bot: &impl Bot, sim: &mut SimGame, fidelity: Fidelity) {
                     &view,
                 ),
             }
-        } else if fidelity == Fidelity::LiteLookahead {
-            // `view` is turn-ordered from j: the active player sits at
-            // (active − j − 1) mod n.
+        } else if fidelity != Fidelity::Lite {
+            // As in play: the bot's own passive decision, looking ahead
+            // when it does. `view` is turn-ordered from j: the active
+            // player sits at (active − j − 1) mod n.
             passive_decide(bot, &snapshot[j], &view, dice, (sim.active + n - j - 1) % n)
         } else {
             eval_decision_next(
@@ -327,6 +328,41 @@ mod tests {
     use crate::game::{Game, Player};
     use rand::SeedableRng;
     use std::sync::Arc;
+
+    /// The win net looks ahead on passive decisions in play; full fidelity
+    /// must too.
+    #[test]
+    fn sim_turn_loop_matches_game_play_for_the_win_net() {
+        let win = crate::dqn::win::WinStrategy::load("win_model");
+        assert!(win.passive_lookahead());
+        for seed in 0..20u64 {
+            let players: Vec<Player> = (0..2)
+                .map(|i| {
+                    Player::new(
+                        Box::new(win.clone()),
+                        Box::new(SmallRng::seed_from_u64(1000 * seed + i)),
+                    )
+                })
+                .collect();
+            let mut game = Game::new(players);
+            game.play();
+            let mut sim = SimGame {
+                states: vec![State::default(); 2],
+                active: 0,
+                rngs: (0..2).map(|i| SmallRng::seed_from_u64(1000 * seed + i)).collect(),
+                over: false,
+            };
+            while !sim.over {
+                play_sim_turn(&win, &mut sim, Fidelity::Full);
+            }
+            for (i, p) in game.players.iter().enumerate() {
+                assert_eq!(
+                    sim.states[i], p.state,
+                    "seed={seed} player={i}: sim diverged from Game::play"
+                );
+            }
+        }
+    }
 
     #[test]
     fn sim_turn_loop_matches_game_play() {
