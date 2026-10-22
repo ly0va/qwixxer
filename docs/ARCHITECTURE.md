@@ -602,10 +602,13 @@ distinct rolls (white pair unordered × four colour dice), checked against a
 brute force in the tests. On your roll each distinct turn is valued once
 per white pair (the opponent's predicted white mark depends on the white
 dice only). On theirs the move list's code runs per roll, with the net's
-values cached (`CachedNet`, a few thousand distinct boards). WASM
-(`node web/scripts/luck-bench.mjs`, 2026-10-22): your roll 0.1–0.3 s,
-theirs 0.7–1.1 s. `ExplorerController` asks right after `explore`, one call
-in flight, dropping replies for older positions. The line keeps a fixed
+values cached (`CachedNet`, a few thousand distinct boards).
+`Explorer::luck(position, first, count)` covers white pairs `first ..
+first + count`; `ExplorerController` asks right after `explore` in 7 chunks
+of 3 and adds the shares up, so an edit's `explore` waits at most one chunk;
+an edit starts over, and luck shows once every chunk is in. WASM (`node
+web/scripts/luck-bench.mjs`, 2026-10-22): your roll 0.1–0.3 s in all,
+theirs 0.75–1.1 s, the slowest chunk 185 ms. The line keeps a fixed
 height from the moment the dice are set ("Roll luck …" until it arrives),
 so the layout never moves.
 

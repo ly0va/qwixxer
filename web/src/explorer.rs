@@ -117,13 +117,17 @@ pub struct Analysis {
 }
 
 /// Spec "Engine" (`2026-10-22-explorer-roll-luck-design.md`): the move
-/// list's top P(win) for this roll, and its average over all rolls. Luck
-/// is the difference.
+/// list's top P(win) for this roll, and the share of its average over all
+/// rolls that a chunk of white pairs contributes. The chunks' shares add up
+/// to the average; luck is this roll minus it.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Luck {
     pub this_roll: f32,
-    pub average: f32,
+    pub average: f64,
 }
+
+/// The unordered white pairs, the unit luck is computed in.
+pub const WHITE_PAIRS: u32 = 21;
 
 /// The win net with its values remembered: the same values, bit for bit
 /// (each board is valued on its own, whatever the batch), each board once.
@@ -192,15 +196,22 @@ impl Bot for CachedNet<'_> {
 /// Every distinct roll with its probability: the white dice unordered (21
 /// pairs, 1/36 or 2/36), times the four colour dice (1,296 outcomes).
 fn rolls() -> impl Iterator<Item = ([u8; 6], f64)> {
-    (1..=6u8).flat_map(|a| {
-        (a..=6u8).flat_map(move |b| {
+    rolls_of(0..WHITE_PAIRS as usize)
+}
+
+/// [`rolls`] for the white pairs `pairs` (numbered in `rolls`' order).
+fn rolls_of(pairs: std::ops::Range<usize>) -> impl Iterator<Item = ([u8; 6], f64)> {
+    (1..=6u8)
+        .flat_map(|a| (a..=6u8).map(move |b| (a, b)))
+        .enumerate()
+        .filter(move |(i, _)| pairs.contains(i))
+        .flat_map(|(_, (a, b))| {
             let w = if a == b { 1.0 } else { 2.0 } / 46_656.0;
             (0..1296u32).map(move |c| {
                 let f = |k: u32| (c / 6u32.pow(k) % 6) as u8 + 1;
                 ([a, b, f(0), f(1), f(2), f(3)], w)
             })
         })
-    })
 }
 
 /// Turns a play-out plays before the net values it. Phase 28: at 4 the
@@ -644,10 +655,14 @@ impl Explorer {
     }
 
     /// Spec "Engine" (`2026-10-22-explorer-roll-luck-design.md`): the move
-    /// list's top P(win) for the position's roll, and its average over
-    /// every roll.
-    pub fn luck(&self, pos: &Position) -> Result<Luck, String> {
+    /// list's top P(win) for the position's roll, and the white pairs
+    /// `first .. first + count`'s share of its average over every roll.
+    pub fn luck(&self, pos: &Position, first: u32, count: u32) -> Result<Luck, String> {
         pos.validate()?;
+        if first + count > WHITE_PAIRS {
+            return Err(format!("white pairs {first}..{} past {WHITE_PAIRS}", first + count));
+        }
+        let pairs = first as usize..(first + count) as usize;
         let dice = pos.dice.ok_or("no dice")?;
         let (you, opp, locked) = states(pos);
         if you.strikes >= 4 || opp.strikes >= 4 || n_locked(locked) >= 2 {
@@ -655,24 +670,24 @@ impl Explorer {
         }
         Ok(Luck {
             this_roll: self.top(&you, &opp, dice, pos.roller),
-            average: self.average_top(&you, &opp, pos.roller) as f32,
+            average: self.average_top(&you, &opp, pos.roller, pairs),
         })
     }
 
     /// E[f]: the move list's top P(win) averaged over every roll.
-    fn average_top(&self, you: &State, opp: &State, roller: Roller) -> f64 {
+    fn average_top(&self, you: &State, opp: &State, roller: Roller, pairs: std::ops::Range<usize>) -> f64 {
         match roller {
-            Roller::You => self.average_top_yours(you, opp),
-            Roller::Opponent => self.average_top_theirs(you, opp),
+            Roller::You => self.average_top_yours(you, opp, pairs),
+            Roller::Opponent => self.average_top_theirs(you, opp, pairs),
         }
     }
 
     /// E[f] on their roll: the move list's valuation run on every roll, its
     /// net calls cached ([`CachedNet`]): rolls share most of the boards the
     /// opponent's predicted turn values.
-    fn average_top_theirs(&self, you: &State, opp: &State) -> f64 {
+    fn average_top_theirs(&self, you: &State, opp: &State, pairs: std::ops::Range<usize>) -> f64 {
         let net = CachedNet::new(&self.net);
-        rolls()
+        rolls_of(pairs)
             .map(|(d, w)| {
                 let marks: Vec<Option<Mark>> = legal_turns(you, opp, d, Roller::Opponent, None)
                     .iter()
@@ -690,9 +705,9 @@ impl Explorer {
     /// mark is fixed and a turn's value depends on your sheet after it, so
     /// each distinct turn is valued once; each colour outcome takes the
     /// best of the turns it makes legal.
-    fn average_top_yours(&self, you: &State, opp: &State) -> f64 {
+    fn average_top_yours(&self, you: &State, opp: &State, pairs: std::ops::Range<usize>) -> f64 {
         let mut total = 0.0;
-        let mut outcomes = rolls().peekable();
+        let mut outcomes = rolls_of(pairs).peekable();
         while let Some(&(first, w)) = outcomes.peek() {
             let opp_white = predict_opp_white(&self.net, you, opp, first);
             let mut keys = std::collections::HashMap::new();
@@ -1195,7 +1210,11 @@ mod tests {
     fn luck_this_roll_is_the_move_lists_top() {
         for p in luck_positions() {
             let top = Explorer::new().explore(&p).unwrap().moves.unwrap()[0].p_win;
-            assert_eq!(Explorer::new().luck(&p).unwrap().this_roll, top, "{p:?}");
+            assert_eq!(
+                Explorer::new().luck(&p, 0, WHITE_PAIRS).unwrap().this_roll,
+                top,
+                "{p:?}"
+            );
         }
     }
 
@@ -1205,9 +1224,27 @@ mod tests {
         for p in luck_positions() {
             let (you, opp, _) = states(&p);
             let want = ex.luck_reference(&you, &opp, p.roller);
-            let got = ex.luck(&p).unwrap().average as f64;
+            let got = ex.luck(&p, 0, WHITE_PAIRS).unwrap().average;
             assert!((got - want).abs() < 1e-5, "{p:?}: {got} vs {want}");
         }
+    }
+
+    /// Luck comes in chunks of white pairs so the move list never waits
+    /// long behind it; the chunks add up to the whole.
+    #[test]
+    fn luck_chunks_add_up() {
+        let ex = Explorer::new();
+        for p in [&luck_positions()[2], &luck_positions()[3]] {
+            let all = ex.luck(p, 0, WHITE_PAIRS).unwrap();
+            let parts: Vec<Luck> = [(0, 3), (3, 10), (13, 8)]
+                .iter()
+                .map(|&(a, n)| ex.luck(p, a, n).unwrap())
+                .collect();
+            assert!(parts.iter().all(|l| l.this_roll == all.this_roll));
+            let sum: f64 = parts.iter().map(|l| l.average).sum();
+            assert!((sum - all.average).abs() < 1e-9, "{sum} vs {}", all.average);
+        }
+        assert!(ex.luck(&luck_positions()[0], 20, 2).is_err());
     }
 
     #[test]
@@ -1220,13 +1257,13 @@ mod tests {
     #[test]
     fn luck_refuses_no_dice_and_a_finished_game() {
         let ex = Explorer::new();
-        assert!(ex.luck(&pos(None, Roller::You)).is_err());
+        assert!(ex.luck(&pos(None, Roller::You), 0, WHITE_PAIRS).is_err());
         let mut p = pos(Some([1, 2, 3, 4, 5, 6]), Roller::You);
         p.opponent.strikes = 4;
-        assert!(ex.luck(&p).is_err());
+        assert!(ex.luck(&p, 0, WHITE_PAIRS).is_err());
         let mut p = pos(Some([1, 2, 3, 4, 5, 6]), Roller::You);
         p.locked = [true, true, false, false];
-        assert!(ex.luck(&p).is_err());
+        assert!(ex.luck(&p, 0, WHITE_PAIRS).is_err());
     }
 
     #[test]

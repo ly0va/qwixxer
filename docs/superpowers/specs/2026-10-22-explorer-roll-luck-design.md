@@ -2,7 +2,10 @@
 
 **Status:** implemented (branch `explorer-luck`). Opponent's roll: the move
 list's code per roll with a cached net, about 1 s in WASM (accepted in place
-of the 0.5 s target); the line reserves its height while computing. Builds on the state explorer
+of the 0.5 s target); the line reserves its height while computing. The
+engine call takes a chunk of white pairs, `luck(position, first, count)`,
+returning that chunk's share of the average; the controller asks in 7
+chunks of 3 so a move list waits at most one chunk (~185 ms) behind it. Builds on the state explorer
 (`2026-10-14-state-explorer-design.md`) and its analysis
 (`2026-10-15-explorer-analysis-design.md`).
 

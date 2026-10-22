@@ -70,7 +70,7 @@ export function serve(wasm: Wasm, post: (r: Reply) => void): (req: Request) => P
                 return JSON.parse(explorer.analyze(JSON.stringify(args[0]), args[1], args[2]));
             case 'luck':
                 explorer ??= new wasm.WasmExplorer();
-                return JSON.parse(explorer.luck(JSON.stringify(args[0])));
+                return JSON.parse(explorer.luck(JSON.stringify(args[0]), args[1], args[2]));
             default:
                 throw new Error(`unknown command ${cmd}`);
         }

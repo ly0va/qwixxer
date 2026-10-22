@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { Answer, Engine, Position } from '../engine/protocol';
 import type { Store } from './controller.svelte';
-import { BAD_LINK, ExplorerController, luckKey, MAX_BATCH, MAX_GAMES, MIN_BATCH } from './explorer.svelte';
+import { BAD_LINK, ExplorerController, LUCK_CHUNK, luckKey, MAX_BATCH, MAX_GAMES, MIN_BATCH } from './explorer.svelte';
 import { encode } from './link';
 import { analysisKey, emptyPosition, toggleSquare } from './position';
 
@@ -343,53 +343,86 @@ describe('ExplorerController analysis fixes', () => {
 });
 
 describe('ExplorerController luck', () => {
-    type Call = { kind: string; pos: Position; resolve: (v: any) => void };
-    function setupLuck() {
+    type Call = { kind: string; pos: Position; first?: number; count?: number; resolve: (v: any) => void };
+    function setupLuck(store = memStore()) {
         const calls: Call[] = [];
-        const push = (kind: string) => (pos: Position) => new Promise((resolve) => calls.push({ kind, pos: structuredClone(pos), resolve }));
+        const push = (kind: string) => (pos: Position, first?: number, count?: number) =>
+            new Promise((resolve) => calls.push({ kind, pos: JSON.parse(JSON.stringify(pos)), first, count, resolve }));
         const engine = { explore: vi.fn(push('explore')), analyze: vi.fn(push('analyze')), luck: vi.fn(push('luck')) } as unknown as Engine;
-        const x = new ExplorerController(engine, memStore());
+        const x = new ExplorerController(engine, store);
         x.init();
         const kinds = () => calls.map((c) => c.kind);
         const luck = () => calls.filter((c) => c.kind === 'luck');
-        return { x, calls, kinds, luck };
+        // Answers every chunk asked for until none is pending: each adds 0.05 to the average.
+        const finish = async (this_roll: number) => {
+            for (let c = luck().find((c) => !(c as any).done); c; c = luck().find((c) => !(c as any).done)) {
+                (c as any).done = true;
+                c.resolve({ this_roll, average: 0.05 * (c.count ?? 0) / 3 });
+                await flush();
+            }
+        };
+        return { x, calls, kinds, luck, finish };
     }
 
-    it('asks right after explore when all dice are set, before the next analysis batch', async () => {
-        const { x, kinds, luck } = setupLuck();
+    it('asks right after explore, in chunks of white pairs, and adds them up', async () => {
+        const { x, kinds, luck, finish } = setupLuck();
         x.setActive(true);
         x.random();
         expect(kinds().slice(-2)).toEqual(['explore', 'luck']);
+        expect(luck()[0]).toMatchObject({ first: 0, count: LUCK_CHUNK });
         expect(luck()[0].pos.dice).toHaveLength(6);
-        luck()[0].resolve({ this_roll: 0.55, average: 0.5 });
-        await flush();
-        expect(x.luck).toEqual({ key: luckKey(x.pos), value: { this_roll: 0.55, average: 0.5 } });
+        await finish(0.55);
+        expect(luck().map((c) => c.first)).toEqual([0, 3, 6, 9, 12, 15, 18]);
+        expect(x.luck?.key).toBe(luckKey(x.pos));
+        expect(x.luck?.value.this_roll).toBe(0.55);
+        expect(x.luck?.value.average).toBeCloseTo(0.35);
     });
 
-    it('a dice edit asks again and never lands an older reply', async () => {
+    it('nothing shows until the last chunk is in', async () => {
         const { x, luck } = setupLuck();
+        x.random();
+        luck()[0].resolve({ this_roll: 0.55, average: 0.05 });
+        await flush();
+        expect(x.luck).toBeNull();
+        expect(luck()).toHaveLength(2);
+    });
+
+    it('an edit between chunks gets its explore in before the next chunk, which starts over', async () => {
+        const { x, calls, kinds, luck, finish } = setupLuck();
         x.random();
         x.openPicker(0);
         x.pickFace(x.pos.dice[0] === 6 ? 1 : 6);
-        expect(luck()).toHaveLength(1); // one in flight: the edit waits for it
-        luck()[0].resolve({ this_roll: 0.1, average: 0.5 });
+        calls.find((c) => c.kind === 'explore')!.resolve(answer(0.5)); // its coalesced follow-up goes out
         await flush();
-        expect(x.luck).toBeNull(); // for the old dice: dropped
-        expect(luck()).toHaveLength(2);
-        luck()[1].resolve({ this_roll: 0.6, average: 0.5 });
+        expect(kinds().filter((k) => k === 'explore')).toHaveLength(2);
+        expect(kinds().at(-1)).toBe('explore'); // the luck chunk in flight doesn't hold it back
+        luck()[0].resolve({ this_roll: 0.1, average: 0.05 });
         await flush();
-        expect(x.luck).toEqual({ key: luckKey(x.pos), value: { this_roll: 0.6, average: 0.5 } });
+        expect(luck()[1]).toMatchObject({ first: 0 }); // the new dice, from the start
+        (luck()[0] as any).done = true;
+        await finish(0.6);
+        expect(x.luck?.key).toBe(luckKey(x.pos));
+        expect(x.luck?.value.this_roll).toBe(0.6);
+    });
+
+    it('entering the explorer asks for the move list first', () => {
+        const store = memStore();
+        const first = setupLuck(store);
+        first.x.random(); // saved with dice
+        const { x, kinds } = setupLuck(store);
+        x.refresh();
+        expect(kinds()).toEqual(['explore', 'luck']);
     });
 
     it('clearing the dice clears luck and asks nothing', async () => {
-        const { x, luck } = setupLuck();
+        const { x, luck, finish } = setupLuck();
         x.random();
-        luck()[0].resolve({ this_roll: 0.55, average: 0.5 });
-        await flush();
+        await finish(0.55);
+        const n = luck().length;
         x.clearDice();
         await flush();
         expect(x.luck).toBeNull();
-        expect(luck()).toHaveLength(1);
+        expect(luck()).toHaveLength(n);
     });
 
     it('a finished game asks nothing', () => {

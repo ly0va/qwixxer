@@ -13,8 +13,14 @@ const ex = new WasmExplorer();
 for (const [name, [you, opponent, locked]] of Object.entries(positions)) {
     for (const roller of ['you', 'opponent']) {
         const pos = JSON.stringify({ you, opponent, locked, dice: [3, 4, 2, 5, 6, 1], roller });
-        const t0 = performance.now();
-        const l = JSON.parse(ex.luck(pos));
-        console.log(`${name}, ${roller} roll: ${(performance.now() - t0).toFixed(0)} ms (this ${l.this_roll.toFixed(3)}, average ${l.average.toFixed(3)})`);
+        // As the explorer asks: 7 chunks of 3 white pairs.
+        let total = 0, slowest = 0, average = 0, l;
+        for (let first = 0; first < 21; first += 3) {
+            const t0 = performance.now();
+            l = JSON.parse(ex.luck(pos, first, 3));
+            const ms = performance.now() - t0;
+            total += ms; slowest = Math.max(slowest, ms); average += l.average;
+        }
+        console.log(`${name}, ${roller} roll: ${total.toFixed(0)} ms, slowest chunk ${slowest.toFixed(0)} ms (this ${l.this_roll.toFixed(3)}, average ${average.toFixed(3)})`);
     }
 }

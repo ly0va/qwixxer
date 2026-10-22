@@ -103,12 +103,12 @@ impl WasmExplorer {
         Ok(serde_json::to_string(&a).unwrap())
     }
 
-    /// The move list's top P(win) for the position's roll and its average
-    /// over all rolls (spec `2026-10-22-explorer-roll-luck-design.md`), as
-    /// JSON.
-    pub fn luck(&self, position: &str) -> Result<String, JsError> {
+    /// The move list's top P(win) for the position's roll and white pairs
+    /// `first .. first + count`'s share of its average over all rolls (spec
+    /// `2026-10-22-explorer-roll-luck-design.md`), as JSON.
+    pub fn luck(&self, position: &str, first: u32, count: u32) -> Result<String, JsError> {
         let pos: explorer::Position = serde_json::from_str(position).map_err(js)?;
-        let l = self.inner.luck(&pos).map_err(js)?;
+        let l = self.inner.luck(&pos, first, count).map_err(js)?;
         Ok(serde_json::to_string(&l).unwrap())
     }
 }

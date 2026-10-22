@@ -23,10 +23,10 @@ class FakeExplorer {
         if (p.over) throw new Error('the game is over');
         return JSON.stringify({ games: count, win_sum: start, win_sq_sum: 0, diff_sum: 0 });
     }
-    luck(json: string) {
+    luck(json: string, first: number, count: number) {
         const p = JSON.parse(json);
         if (!p.dice) throw new Error('no dice');
-        return JSON.stringify({ this_roll: 0.55, average: 0.5, echo: p.roller });
+        return JSON.stringify({ this_roll: 0.55, average: first + count / 10, echo: p.roller });
     }
     free() {}
 }
@@ -80,10 +80,10 @@ describe('engine worker handler', () => {
         const { send } = setup(0);
         await send(1, 'explore', [{ roller: 'you' }]);
         const made = FakeExplorer.made;
-        expect(await send(2, 'luck', [{ roller: 'opponent', dice: [1, 2, 3, 4, 5, 6] }]))
-            .toEqual({ id: 2, ok: true, result: { this_roll: 0.55, average: 0.5, echo: 'opponent' } });
+        expect(await send(2, 'luck', [{ roller: 'opponent', dice: [1, 2, 3, 4, 5, 6] }, 6, 3]))
+            .toEqual({ id: 2, ok: true, result: { this_roll: 0.55, average: 6.3, echo: 'opponent' } });
         expect(FakeExplorer.made).toBe(made);
-        expect(await send(3, 'luck', [{ roller: 'you' }])).toMatchObject({ id: 3, ok: false, error: 'no dice', kind: 'engine' });
+        expect(await send(3, 'luck', [{ roller: 'you' }, 0, 3])).toMatchObject({ id: 3, ok: false, error: 'no dice', kind: 'engine' });
     });
     it('analyze shares the explorer and passes the batch range', async () => {
         const { send } = setup(0);

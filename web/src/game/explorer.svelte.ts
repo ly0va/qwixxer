@@ -24,6 +24,10 @@ function precise(t: Analysis): boolean {
     return P.winChance(P.addAnalysis(t, { games: 4, win_sum: 2, win_sq_sum: 2, diff_sum: 0 })).pm < REST_BELOW;
 }
 
+/** Roll luck is asked for in chunks of this many white pairs (of 21): at most about 150 ms each, so a move list never waits long behind it. */
+export const LUCK_CHUNK = 3;
+const WHITE_PAIRS = 21;
+
 /** The whole position, dice and roller included: what roll luck belongs to. */
 export const luckKey = (p: ExPosition) => encode(p);
 
@@ -91,9 +95,10 @@ export class ExplorerController {
 
     /** Evaluate the position unless it has an answer or a call is already on it. */
     refresh() {
-        if (this.luck?.key !== luckKey(this.pos) && !this.luckInflight) void this.askLuck();
-        if (this.pending || (this.answer && !this.error)) return;
-        void this.evaluate();
+        const luck = this.luck?.key !== luckKey(this.pos) && !this.luckInflight;
+        // The move list first: the worker answers in order.
+        if (!this.pending && !(this.answer && !this.error)) void this.evaluate();
+        if (luck) void this.askLuck();
     }
 
     /** The Position card's numbers are current: analysed for this position, or a finished game (shown as a result). */
@@ -198,10 +203,11 @@ export class ExplorerController {
 
     /**
      * Spec "Worker and controller" (`2026-10-22-explorer-roll-luck-design.md`):
-     * sent right after `explore`, so the move list comes first and the next
-     * analysis batch after. One call in flight; edits meanwhile coalesce
-     * into one for the latest position; a reply for an older one is
-     * dropped. Without all six dice, or with the game over, there is none.
+     * sent right after `explore`, in chunks of LUCK_CHUNK white pairs whose
+     * shares of the average add up, so an edit's `explore` waits at most one
+     * chunk. One chunk in flight; an edit starts over for the latest
+     * position after it, and luck shows only once every chunk is in.
+     * Without all six dice, or with the game over, there is none.
      */
     private async askLuck() {
         if (this.luckInflight) {
@@ -218,9 +224,14 @@ export class ExplorerController {
                     break;
                 }
                 const key = luckKey(this.pos);
+                const value = { this_roll: 0, average: 0 };
                 try {
-                    const value = await this.engine.luck(pos);
-                    if (luckKey(this.pos) === key) this.luck = { key, value };
+                    for (let first = 0; first < WHITE_PAIRS && !this.luckDirty; first += LUCK_CHUNK) {
+                        const part = await this.engine.luck(pos, first, Math.min(LUCK_CHUNK, WHITE_PAIRS - first));
+                        value.this_roll = part.this_roll;
+                        value.average += part.average;
+                    }
+                    if (!this.luckDirty && luckKey(this.pos) === key) this.luck = { key, value };
                 } catch {
                     // The move list shows engine errors.
                 }

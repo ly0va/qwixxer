@@ -65,7 +65,7 @@ export class WorkerEngine implements Engine {
     submitActive(picks: Sq[], strike: boolean) { return this.call<Step>('submitActive', picks, strike); }
     explore(position: Position) { return this.call<Answer>('explore', position); }
     analyze(position: Position, start: number, count: number) { return this.call<Analysis>('analyze', position, start, count); }
-    luck(position: Position) { return this.call<Luck>('luck', position); }
+    luck(position: Position, first: number, count: number) { return this.call<Luck>('luck', position, first, count); }
 }
 
 export function createEngine(): Engine {
