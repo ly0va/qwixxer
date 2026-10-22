@@ -106,7 +106,7 @@ Move list:
   with one decimal** ("54.6%"); the bar shows the same. (Was a score out
   of 1000 while the pair net's P(win) was poorly calibrated; the win net's
   is not.)
-- Header: "*N* legal · win chance after each".
+- Header: "*N* legal".
 - Ranking, ties, bot tags and (i) notes are unchanged.
 
 The explorer spec's wording "your chance to win after each move" for the

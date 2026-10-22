@@ -39,7 +39,7 @@
 <section class="card" class:compact class:stale={x.pending} aria-label="Moves">
     <div class="top">
         <h2>Best moves</h2>
-        {#if moves}<span class="muted">{moves.length} legal · win chance after each</span>{/if}
+        {#if moves}<span class="muted">{moves.length} legal</span>{/if}
     </div>
     {#if noDice}
         <div class="empty">
