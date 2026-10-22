@@ -2,13 +2,13 @@ use itertools::Itertools;
 use std::cmp::Ordering;
 use std::fmt;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct State {
     pub strikes: u8,
     rows: [Row; 4],
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
 struct Row {
     ascending: bool,
     total: u8,

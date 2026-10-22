@@ -593,22 +593,25 @@ empty position; ± 1 point there takes about 0.4 s (25 s with full play-outs).
 
 **Explorer roll luck** (spec
 `docs/superpowers/specs/2026-10-22-explorer-roll-luck-design.md`). With all
-six dice set, the Roll card shows luck = the move list's top P(win) for this
-roll minus that top value averaged over every roll, from your side.
-`Explorer::luck` returns both. The valuation is the move list's own
-(`move_values`), so f and its average share the net's errors, which cancel,
-and luck averages to exactly 0. The average is exact over the 27,216
-distinct rolls (white pair unordered × four colour dice), checked against a
-brute force in the tests. On your roll each distinct turn is valued once
-per white pair (the opponent's predicted white mark depends on the white
-dice only). On theirs the move list's code runs per roll, with the net's
-values cached (`CachedNet`, a few thousand distinct boards).
+six dice set, the Roll card shows luck = f(this roll) minus f averaged over
+every roll, where f is your P(win) after the roller's best turn: on your
+roll the move list's top; on theirs one minus the top of their own move
+list (sheets swapped, so the opponent's best turn against your predicted
+white-sum mark). Whoever rolls gets their best turn and the other player
+the prediction, and their luck is exactly minus yours. `Explorer::luck`
+returns f and its average; they share the move list's valuation
+(`move_values`), so the net's errors cancel and luck averages to exactly
+0. The average is exact over the 27,216 distinct rolls (white pair
+unordered × four colour dice), checked against a brute force in the
+tests: per white pair the passive player's predicted white mark is fixed,
+so each of the roller's distinct turns is valued once and each colour
+outcome takes the best of the turns it allows.
 `Explorer::luck(position, first, count)` covers white pairs `first ..
 first + count`; `ExplorerController` asks right after `explore` in 7 chunks
 of 3 and adds the shares up, so an edit's `explore` waits at most one chunk;
 an edit starts over, and luck shows once every chunk is in. WASM (`node
-web/scripts/luck-bench.mjs`, 2026-10-22): your roll 0.1–0.3 s in all,
-theirs 0.75–1.1 s, the slowest chunk 185 ms. The line keeps a fixed
+web/scripts/luck-bench.mjs`, 2026-10-23): 0.1–0.25 s in all on either
+roll, the slowest chunk 55 ms. The line keeps a fixed
 height from the moment the dice are set ("Roll luck …" until it arrives),
 so the layout never moves.
 

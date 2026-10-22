@@ -47,7 +47,7 @@ export interface Answer {
     opponent_white: { mark: Sq | null } | null;
     opponent_turn: OpponentTurn | null;
 }
-/** Mirrors explorer.rs `Luck`: the move list's top P(win) for this roll, and a chunk of white pairs' share of its average over all rolls. */
+/** Mirrors explorer.rs `Luck`: your P(win) after the roller's best turn for this roll, and a chunk of white pairs' share of its average over all rolls. */
 export interface Luck { this_roll: number; average: number }
 /** Mirrors explorer.rs `Analysis`: play-out totals of one batch (or a running sum). */
 export interface Analysis { games: number; win_sum: number; win_sq_sum: number; diff_sum: number }

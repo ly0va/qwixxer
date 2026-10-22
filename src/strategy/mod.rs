@@ -32,7 +32,7 @@ pub trait Strategy: std::fmt::Debug {
 /// Who moves next after the positions being evaluated: the frame a value
 /// is asked in. A net that cannot tell (every net but a tempo win net)
 /// ignores it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Next {
     /// The opponent moves next (every active-player decision).
     Opp,

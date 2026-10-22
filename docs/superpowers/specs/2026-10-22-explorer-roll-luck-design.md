@@ -1,11 +1,14 @@
 # Web: explorer roll luck
 
-**Status:** implemented (branch `explorer-luck`). Opponent's roll: the move
-list's code per roll with a cached net, about 1 s in WASM (accepted in place
-of the 0.5 s target); the line reserves its height while computing. The
-engine call takes a chunk of white pairs, `luck(position, first, count)`,
-returning that chunk's share of the average; the controller asks in 7
-chunks of 3 so a move list waits at most one chunk (~185 ms) behind it. Builds on the state explorer
+**Status:** implemented (branch `explorer-luck`). Revised 2026-10-23: on
+the opponent's roll f is now measured from the roller's side (see
+Definition), which uses the your-roll tables with the sheets swapped:
+0.1–0.25 s in WASM on either roll (the first version ran the move list's
+code per roll with a cached net, about 1 s). The line reserves its height
+while computing. The engine call takes a chunk of white pairs,
+`luck(position, first, count)`, returning that chunk's share of the
+average; the controller asks in 7 chunks of 3 so a move list waits at most
+one chunk (~55 ms) behind it. Builds on the state explorer
 (`2026-10-14-state-explorer-design.md`) and its analysis
 (`2026-10-15-explorer-analysis-design.md`).
 
@@ -18,11 +21,15 @@ unlucky, and by how much".
 
 ## Definition
 
-- f(roll) = the **top P(win) in the move list** for that roll: the best of
-  your legal turns, valued exactly as `Explorer::moves` values them (on
-  your roll: after your turn, against the opponent's predicted white-sum
-  mark; on theirs: at the end of their predicted turn, Master's
-  lookahead). Always your P(win), whoever rolls.
+- f(roll) = your P(win) after the **roller's best turn**: on your roll
+  the top P(win) in the move list (your turn, against the opponent's
+  predicted white-sum mark); on theirs one minus the top of the opponent's
+  own move list (their turn, against your predicted white-sum mark: the
+  sheets swapped). Whoever rolls gets their best turn, the other player
+  the prediction, so the opponent's luck is exactly minus yours. (First
+  version, replaced: on their roll the top of your passive options after
+  Master's predicted turn. It mixed Master's play into luck and was ~5×
+  slower.)
 - **Luck = f(this roll) − E[f]**, the expectation over all 6⁶ rolls, each
   die uniform and independent. In percentage points of win chance, the
   move list's units. Positive is lucky for you; on the opponent's roll a
@@ -58,7 +65,8 @@ luck(position_json) -> { this_roll: f32, average: f32 }
 - Requires dice and a game that isn't over; otherwise an error (the
   caller never asks).
 - `this_roll` equals the top `p_win` of `explore`'s move list for the
-  same position, bit for bit. `average` is E[f] over all rolls; the dice
+  same position on your roll, and one minus it for the swapped position
+  on theirs, bit for bit. `average` is E[f] over all rolls; the dice
   in the position matter only for `this_roll`.
 - Distinct rolls: the two white dice unordered (21 outcomes, weights 1/36
   or 2/36) times the four colour dice (1,296). Every roll is equally
