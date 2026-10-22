@@ -353,8 +353,8 @@ describe('ExplorerController analysis throttle', () => {
         } as unknown as Engine;
         const x = new ExplorerController(engine, memStore(), undefined, (f, ms) => void timers.push({ f, ms }), () => t.now);
         x.init();
-        // 10,000 games at 50%: ± ≈ 0.98 points, below the 2-point threshold.
-        const precise = (games = 10000) => ({ games, win_sum: games / 2, win_sq_sum: games / 2, diff_sum: 0 });
+        // 5,000 games at 50%: ± ≈ 1.4 points, below the 2-point threshold.
+        const precise = (games = 5000) => ({ games, win_sum: games / 2, win_sq_sum: games / 2, diff_sum: 0 });
         return { x, an, timers, t, precise };
     }
 
@@ -379,7 +379,7 @@ describe('ExplorerController analysis throttle', () => {
         timers[0].f();
         await flush();
         expect(an).toHaveLength(2);
-        expect(an[1].start).toBe(10000);
+        expect(an[1].start).toBe(5000);
     });
 
     it('an edit during the rest restarts at once, from zero', async () => {

@@ -91,7 +91,7 @@ request and one reply per batch, like `explore`. No streaming messages.
   totals), so a small
   one-sided sample (plain ± = 0) never counts as precise. An edit or a pause
   ends a rest at once; a new position starts at full speed.
-- **Stop:** at 50,000 play-outs (`MAX_GAMES`, ± about 0.2 points) the
+- **Stop:** at 10,000 play-outs (`MAX_GAMES`, ± about 0.2–0.6 points) the
   loop stops for that position; the last batch asks only for the games
   left. Leaving and returning doesn't restart it; an edit other than the
   dice does.

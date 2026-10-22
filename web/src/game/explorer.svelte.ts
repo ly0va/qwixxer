@@ -12,8 +12,8 @@ export const MIN_BATCH = 8;
 export const MAX_BATCH = 512;
 /** Once ± is below this (2 points), rest as long as each batch took: half a core. */
 export const REST_BELOW = 0.02;
-/** A position's analysis stops here (± about 0.2 points). */
-export const MAX_GAMES = 50_000;
+/** A position's analysis stops here (± about 0.2–0.6 points, up to 0.9 late in the game). */
+export const MAX_GAMES = 10_000;
 
 /**
  * ± below REST_BELOW, judged with the plus-four estimate (two extra wins and

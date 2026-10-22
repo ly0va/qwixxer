@@ -580,7 +580,7 @@ the win values and the sum of the score differences. `ExplorerController` runs o
 `analyze` batch at a time while the explorer is on screen (route and tab
 visible), sizing batches toward 100 ms (8 to 512 games, back to 8 on a new
 position), back to back until ± < 2 points (plus-four estimate), then resting
-as long as each batch took (half a core), stopping at 50,000 play-outs,
+as long as each batch took (half a core), stopping at 10,000 play-outs,
 adding replies to
 totals keyed by the position without its dice (a dice edit keeps them; any
 other edit restarts them; a reply for an older position is dropped). The win
