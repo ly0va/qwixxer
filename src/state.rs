@@ -459,20 +459,9 @@ impl PartialOrd for Row {
 }
 
 fn partial_cmp_row_pair(this: (&Row, &Row), other: (&Row, &Row)) -> Option<Ordering> {
-    let (a, b) = this;
-    let (x, y) = other;
-
-    let domination = |a: &Row, b: &Row, x: &Row, y: &Row| {
-        let ax = a.partial_cmp(x);
-        let by = b.partial_cmp(y);
-        partial_cmp_two(ax, by)
-    };
-
-    // Try both assignments of same-direction rows. If one is None (incomparable),
-    // try the other. It's mathematically impossible for both to be Some and
-    // disagree: e.g. (a≥x, b≥y) strict + (a≤y, b≤x) strict implies
-    // y≥a≥x≥b≥y → all equal, contradicting both strict inequalities.
-    domination(a, b, x, y).or_else(|| domination(a, b, y, x))
+    // Row by row, never swapped: red and yellow (or green and blue) are not
+    // interchangeable, since the opponent's rows of the same colour differ.
+    partial_cmp_two(this.0.partial_cmp(other.0), this.1.partial_cmp(other.1))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1122,9 +1111,9 @@ mod tests {
     }
 
     #[test]
-    fn dominance_symmetric_rows_are_interchangeable() {
-        // Red=good Yellow=bad vs Red=bad Yellow=good.
-        // Same-direction rows are interchangeable, so these are equal.
+    fn dominance_does_not_swap_same_direction_rows() {
+        // Red=good Yellow=bad vs Red=bad Yellow=good. The opponent's red and
+        // yellow rows differ, so which of mine is ahead matters: incomparable.
         let a = make_state(
             [
                 (true, 3, Some(6)),
@@ -1143,9 +1132,9 @@ mod tests {
             ],
             0,
         );
-        assert!(!post_state_dominates(&a, &b)); // equal, not strictly greater
+        assert!(!post_state_dominates(&a, &b));
         assert!(!post_state_dominates(&b, &a));
-        assert_eq!(a.partial_cmp(&b), Some(std::cmp::Ordering::Equal));
+        assert_eq!(a.partial_cmp(&b), None);
     }
 
     #[test]
@@ -1186,13 +1175,11 @@ mod tests {
     }
 
     #[test]
-    fn dominance_symmetry_enables_pruning() {
-        // State A: Red(total=5,free=6) Yellow(total=0,free=2)
-        // State B: Red(total=3,free=6) Yellow(total=0,free=2)
-        // A > B because Red is better, Yellow is equal.
-        // Now swap: B': Red(total=0,free=2) Yellow(total=3,free=6)
-        // A still > B' because via assignment Red↔Yellow, Yellow↔Red:
-        // A.Yellow(0,2) vs B'.Red(0,2) = Equal, A.Red(5,6) vs B'.Yellow(3,6) = Greater
+    fn dominance_compares_rows_in_place() {
+        // A: Red(total=5,free=6) Yellow(total=0,free=2)
+        // B: Red(total=0,free=2) Yellow(total=3,free=6)
+        // A's red beats B's red but B's yellow beats A's: no row-by-row
+        // dominance, though A would dominate B with the rows swapped.
         let a = make_state(
             [
                 (true, 5, Some(6)),
@@ -1211,7 +1198,8 @@ mod tests {
             ],
             0,
         );
-        assert!(post_state_dominates(&a, &b_swapped));
+        assert!(!post_state_dominates(&a, &b_swapped));
+        assert!(!post_state_dominates(&b_swapped, &a));
     }
 
     // ---- helper methods ----
