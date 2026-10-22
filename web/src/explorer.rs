@@ -367,9 +367,16 @@ impl Explorer {
 
     /// Plays games `start .. start + count` from the position before the
     /// roll (its dice ignored), the roller first, both seats Master (the
-    /// win net with its passive lookahead, batched across games). Game k's dice depend only on the
-    /// position and k, so batches compose and replay exactly.
+    /// win net, batched across games) without its passive lookahead, which
+    /// barely moves the numbers and costs well over twice the time. Game
+    /// k's dice depend only on the position and k, so batches compose and
+    /// replay exactly.
     pub fn analyze(&self, pos: &Position, start: u32, count: u32) -> Result<Analysis, String> {
+        self.play_outs(pos, start, count, false)
+    }
+
+    /// [`Explorer::analyze`], with or without Master's passive lookahead.
+    fn play_outs(&self, pos: &Position, start: u32, count: u32, lookahead: bool) -> Result<Analysis, String> {
         pos.validate()?;
         let (you, opp, locked) = states(pos);
         if you.strikes >= 4 || opp.strikes >= 4 || n_locked(locked) >= 2 {
@@ -391,7 +398,7 @@ impl Explorer {
             })
             .collect();
         let mut driver = BatchedRollouts::new(&self.net, sims);
-        driver.passive_lookahead = true;
+        driver.passive_lookahead = lookahead;
         let mut turns = 0;
         while !driver.all_over() {
             driver.step_turn();
@@ -892,6 +899,17 @@ mod tests {
         let mut theirs = p.clone();
         theirs.roller = Roller::Opponent;
         assert_ne!(ex.analyze(&theirs, 0, 60).unwrap(), base);
+    }
+
+    /// Play-outs leave out Master's passive lookahead: it barely moves the
+    /// numbers and costs well over twice the time.
+    #[test]
+    fn analysis_plays_out_without_the_passive_lookahead() {
+        let ex = Explorer::new();
+        let p = pos(None, Roller::You);
+        let a = ex.analyze(&p, 0, 60).unwrap();
+        assert_eq!(a, ex.play_outs(&p, 0, 60, false).unwrap());
+        assert_ne!(a, ex.play_outs(&p, 0, 60, true).unwrap());
     }
 
     #[test]
