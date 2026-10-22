@@ -404,18 +404,16 @@ impl std::fmt::Display for SearchConfig {
         if self.stop != SEQ_STOP {
             write!(f, ",stop={}", self.stop)?;
         }
-        if self.gate != GATE_MARGIN {
-            write!(f, ",gate={}", self.gate)?;
-        }
-        // Always printed: Phase 26 logs show the same spec without it (2).
+        // Gate, cands and the two gate switches are always printed: their
+        // defaults differ between the bases a spec is parsed on (default
+        // and win), so a label must name them to read back on either.
+        write!(f, ",gate={}", self.gate)?;
         write!(f, ",cands={}", self.cands)?;
         if self.rollout_lookahead {
             write!(f, ",rlook")?;
         }
-        write!(f, "{}", if self.endgame_gate { "" } else { ",noendgame" })?;
-        if self.gap_shortlist {
-            write!(f, ",gapcands")?;
-        }
+        write!(f, "{}", if self.endgame_gate { ",endgame" } else { ",noendgame" })?;
+        write!(f, "{}", if self.gap_shortlist { ",gapcands" } else { ",nogapcands" })?;
         Ok(())
     }
 }
@@ -1848,6 +1846,13 @@ mod tests {
         let win = SearchConfig::win();
         assert!(SearchConfig::parse_on(win, "endgame").unwrap().endgame_gate);
         assert_eq!(SearchConfig::parse_on(win, &win.to_string()), Ok(win));
+        // A label reads back on either base: win-search-exp parses on win,
+        // the pair-search experiments on the default.
+        let exp = SearchConfig::parse_on(win, &format!("gate={GATE_MARGIN},endgame,nogapcands")).unwrap();
+        for base in [win, SearchConfig::default()] {
+            assert_eq!(SearchConfig::parse_on(base, &exp.to_string()), Ok(exp), "{exp}");
+            assert_eq!(SearchConfig::parse_on(base, &win.to_string()), Ok(win), "{win}");
+        }
     }
 
     #[test]
@@ -2098,11 +2103,11 @@ mod tests {
         // Production default (Phase 27) and the pre-Phase-21 legacy config.
         assert_eq!(
             SearchConfig::default().to_string(),
-            "k=512,passive,lock=256,blend=0.7,seq=32,cands=3"
+            "k=512,passive,lock=256,blend=0.7,seq=32,gate=0.15,cands=3,endgame,nogapcands"
         );
         assert_eq!(
             SearchConfig::legacy().to_string(),
-            "k=128,nopassive,nolock,noblend,noseq,cands=2"
+            "k=128,nopassive,nolock,noblend,noseq,gate=0.15,cands=2,endgame,nogapcands"
         );
         assert_eq!(
             SearchConfig::parse("k=128,nopassive,nolock,noblend,noseq,cands=2"),
