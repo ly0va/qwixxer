@@ -8,10 +8,11 @@
 use crate::dqn::pair::PairStrategy;
 use crate::dqn::win::{sigmoid, ManualWinNet, WinModel, WinModelConfig, WinStrategy, WIN_INPUTS};
 use crate::dqn::win_distill::diff_stats;
-use crate::dqn::win_train::{bench_vs_pair, outcome, rollout_round_by, train_epochs, Ad, CandCfg};
+use crate::dqn::win_train::{bench_vs_pair, rollout_round_by, train_epochs, Ad, CandCfg};
 use crate::dqn::MyBackend;
 use crate::game::{Game, Player};
-use crate::strategy::search::GATE_MARGIN;
+use crate::strategy::search::{splitmix64, GATE_MARGIN};
+use crate::strategy::sim::share;
 use crate::strategy::{Bot, Rules, Strategy};
 use burn::{module::AutodiffModule, prelude::*, record::CompactRecorder};
 use rand::{rngs::SmallRng, SeedableRng};
@@ -23,13 +24,6 @@ use std::path::Path;
 pub const POS: u64 = 1;
 pub const FIT: u64 = 2;
 pub const GATE: u64 = 3;
-
-pub fn splitmix64(mut x: u64) -> u64 {
-    x = x.wrapping_add(0x9E37_79B9_7F4A_7C15);
-    x = (x ^ (x >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-    x = (x ^ (x >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-    x ^ (x >> 31)
-}
 
 /// The seed for one purpose (positions, fit, gate) of one round, all
 /// derived from the run's `--seed`.
@@ -109,7 +103,7 @@ pub fn head_to_head<A: Bot + Clone + 'static, B: Bot + Clone + 'static>(
                     let mut game = Game::new(players);
                     game.play();
                     let s: Vec<isize> = game.players.iter().map(|p| p.state.count_points()).collect();
-                    total += outcome(s[rot], s[1 - rot]);
+                    total += share(s[rot], s[1 - rot]);
                 }
                 total / 2.0
             },

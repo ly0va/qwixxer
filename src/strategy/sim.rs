@@ -12,6 +12,15 @@ use crate::game::DiceSource;
 use crate::state::{Mark, State};
 use rand::rngs::SmallRng;
 
+/// A final score's share of the game: 1 for a win, 0 for a loss, ½ for a tie.
+pub fn share(me: isize, best_opp: isize) -> f32 {
+    match me.cmp(&best_opp) {
+        std::cmp::Ordering::Greater => 1.0,
+        std::cmp::Ordering::Equal => 0.5,
+        std::cmp::Ordering::Less => 0.0,
+    }
+}
+
 /// Decision fidelity inside simulations.
 #[derive(Clone, Copy, PartialEq)]
 pub enum Fidelity {
@@ -67,13 +76,8 @@ impl SimGame {
 
     /// Exact outcome for player 0: 1.0 win, 0.5 top tie, 0.0 loss.
     pub fn outcome(states: &[State]) -> f32 {
-        let our = states[0].count_points();
         let best_opp = states[1..].iter().map(|s| s.count_points()).max().unwrap();
-        match our.cmp(&best_opp) {
-            std::cmp::Ordering::Greater => 1.0,
-            std::cmp::Ordering::Equal => 0.5,
-            std::cmp::Ordering::Less => 0.0,
-        }
+        share(states[0].count_points(), best_opp)
     }
 }
 
@@ -331,6 +335,13 @@ mod tests {
 
     /// The win net looks ahead on passive decisions in play; full fidelity
     /// must too.
+    #[test]
+    fn share_counts_ties_as_half() {
+        assert_eq!(share(30, 20), 1.0);
+        assert_eq!(share(20, 30), 0.0);
+        assert_eq!(share(25, 25), 0.5);
+    }
+
     #[test]
     fn sim_turn_loop_matches_game_play_for_the_win_net() {
         let win = crate::dqn::win::WinStrategy::load("win_model");

@@ -7,13 +7,13 @@ use crate::dqn::pair::PairStrategy;
 use crate::dqn::win::WinModelConfig;
 use crate::dqn::win::{input_tensor, sigmoid, swap_input, win_input, ManualWinNet, WinModel, WinStrategy, WIN_INPUTS};
 use crate::dqn::win_distill::{
-    capture_active1, capture_active2, capture_passive, label_decision, CandDecision, CandGroup,
+    capture_active1, capture_active2, capture_passive, label_decision, sample_var, CandDecision, CandGroup,
 };
 use crate::dqn::{MyBackend, TRAIN_SEED};
 use crate::game::{Game, Player};
 use crate::state::{Mark, State};
 use crate::strategy::search::{phase2_entry, rollout_final_states, WinProb};
-use crate::strategy::sim::SimGame;
+use crate::strategy::sim::{share, SimGame};
 use crate::strategy::{active_phase1_impl, active_phase2_impl, passive_decide, Bot, Strategy};
 use burn::{
     backend::Autodiff,
@@ -40,17 +40,6 @@ pub const LAMBDA: f32 = 0.8;
 pub struct Chain {
     pub inputs: Vec<[f32; WIN_INPUTS]>,
     pub outcome: f32,
-}
-
-/// 1 for a win, 0 for a loss, ½ for a tie.
-pub fn outcome(me: isize, opp: isize) -> f32 {
-    if me > opp {
-        1.0
-    } else if me < opp {
-        0.0
-    } else {
-        0.5
-    }
 }
 
 /// λ-returns over one chain: `G_last = outcome`,
@@ -256,7 +245,7 @@ pub fn self_play_game(net: &Arc<ManualWinNet>, epsilon: f32, seed: u64) -> [Chai
     let scores = finals.map(|s| s.count_points());
     [0, 1].map(|i| Chain {
         inputs: snaps[i].iter().map(|(me, opp)| win_input(me, opp)).collect(),
-        outcome: outcome(scores[i], scores[1 - i]),
+        outcome: share(scores[i], scores[1 - i]),
     })
 }
 
@@ -289,7 +278,7 @@ pub fn bench_vs_pair(win: &WinStrategy, pair_dir: &str, games: usize) -> f64 {
                 let mut game = Game::new(players);
                 game.play();
                 let s: Vec<isize> = game.players.iter().map(|p| p.state.count_points()).collect();
-                outcome(s[rot], s[1 - rot]) as f64
+                share(s[rot], s[1 - rot]) as f64
             },
         )
         .sum();
@@ -583,14 +572,8 @@ pub fn rollout_label_stats(bot: &impl Bot, positions: &[(State, State)], k: usiz
         .iter()
         .map(|finals| {
             let outcomes: Vec<f32> = finals.iter().map(|f| SimGame::outcome(f)).collect();
-            let n = outcomes.len() as f32;
-            let mean = outcomes.iter().sum::<f32>() / n;
-            let var = if outcomes.len() < 2 {
-                0.0
-            } else {
-                outcomes.iter().map(|o| (o - mean) * (o - mean)).sum::<f32>() / (n - 1.0)
-            };
-            (mean, var)
+            let mean = outcomes.iter().sum::<f32>() / outcomes.len() as f32;
+            (mean, sample_var(&outcomes))
         })
         .collect()
 }
@@ -1058,13 +1041,6 @@ mod tests {
         for (a, b) in one.groups.iter().zip(&two.groups) {
             assert_eq!(a.samples, b.samples);
         }
-    }
-
-    #[test]
-    fn outcome_counts_ties_as_half() {
-        assert_eq!(outcome(30, 20), 1.0);
-        assert_eq!(outcome(20, 30), 0.0);
-        assert_eq!(outcome(25, 25), 0.5);
     }
 
     #[test]

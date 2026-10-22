@@ -5,10 +5,10 @@
 //! Design: docs/superpowers/specs/2026-10-19-win-thermo-aux-design.md
 
 use crate::dqn::win_distill::{sample_var, CandDecision};
-use crate::dqn::win_pi::splitmix64;
 use crate::dqn::win_train::TurnEnds;
 use crate::game::{Game, Player};
 use crate::state::State;
+use crate::strategy::search::splitmix64;
 use crate::strategy::search::{phase2_entry, rollout_final_states, GATE_MARGIN};
 use crate::strategy::sim::SimGame;
 use crate::strategy::Bot;
