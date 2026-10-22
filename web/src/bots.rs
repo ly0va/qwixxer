@@ -5,7 +5,7 @@ use qwixxer::bot::{self, DNA};
 use qwixxer::dqn::win::WinStrategy;
 use qwixxer::strategy::search::{SearchBot, SearchConfig};
 use qwixxer::strategy::{Conservative, Strategy};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 const CHAMPION: &[u8] = include_bytes!("../../champion.txt");
 
@@ -49,14 +49,19 @@ pub fn master_plus() -> SearchBot<WinStrategy> {
 }
 
 /// Master: the win net, as native `win` plays (passive lookahead, no
-/// forced safe locks).
+/// forced safe locks). Built from the embedded model once; each call is a
+/// cheap clone sharing it.
 pub fn win() -> WinStrategy {
-    WinStrategy::load_from_bytes(
-        include_bytes!("../../win_model/config.json"),
-        include_bytes!("../../win_model/model.mpk"),
-        Some(include_bytes!("../../win_model/aux.mpk")),
-        Some(include_bytes!("../../win_model/tempo.mpk")),
-    )
+    static NET: OnceLock<WinStrategy> = OnceLock::new();
+    NET.get_or_init(|| {
+        WinStrategy::load_from_bytes(
+            include_bytes!("../../win_model/config.json"),
+            include_bytes!("../../win_model/model.mpk"),
+            Some(include_bytes!("../../win_model/aux.mpk")),
+            Some(include_bytes!("../../win_model/tempo.mpk")),
+        )
+    })
+    .clone()
 }
 
 pub fn make_bot(kind: BotKind) -> Box<dyn Strategy> {
@@ -72,6 +77,13 @@ pub fn make_bot(kind: BotKind) -> Box<dyn Strategy> {
 mod tests {
     use super::*;
     use crate::session::{Phase, Session};
+
+    /// The embedded net is built once; every bot shares it.
+    #[test]
+    fn the_win_net_is_built_once() {
+        assert!(Arc::ptr_eq(&win().net, &win().net));
+        assert!(Arc::ptr_eq(&win().net, &master_plus().bot.net));
+    }
 
     #[test]
     fn every_bot_kind_parses_and_finishes_a_game() {
