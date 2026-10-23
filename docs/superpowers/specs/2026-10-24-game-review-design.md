@@ -1,6 +1,6 @@
 # Web: game review
 
-**Status:** design, agreed 2026-10-24. Mock-ups: the design canvas
+**Status:** implemented (branch `game-review`); timing measured 2026-10-24: a 27-roll game in 4.2 s in WASM, well under the 20–30 s estimated below. Design agreed 2026-10-24. Mock-ups: the design canvas
 (https://claude.ai/artifact/4eDmxXF5jEskvwxcFS26im), page "Review",
 boards R1 (desktop), R3 row B5 (pencil marks), R4–R5 (phone), R6–R7
 (dark), R8 (still analysing), R9 (opened from a shared link). Builds on the

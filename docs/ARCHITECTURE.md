@@ -617,6 +617,31 @@ hover), there from the moment the dice are set ("Luck …" until it
 arrives); Random and Clear sit at the row's end, so nothing moves. On
 phones the toggle reads "You / Them" to make room.
 
+**Game review** (spec `docs/superpowers/specs/2026-10-24-game-review-design.md`,
+route `#/review?g=<code>`). The game code (`gamecode.rs`) stores each roll's
+dice and choices, not the sheets: the version `1`, a header character (who
+rolls first, the bot level), then 4 base64url characters per roll
+(`dice × 225 + action`). `replay` rebuilds the game through the rules and
+rejects malformed, illegal or non-canonical codes (each game has exactly one
+code: the lowest action that replays to the same marks). The session records
+each resolved roll's value in `Snapshot.history` (`None` for games saved
+before, which have no code); `WasmGame::code` gives the finished game's code,
+and the game controller keeps it as `qwixxer.lastGame` for the Review tab and
+the "Analyse game" link. Per roll, `Explorer::review_roll` (`review.rs`)
+returns f (as for roll luck), the played move's 1-ply value (E[f] of the next
+roll from the real position, which is also the next roll's luck average, so
+it is computed once), and each player's cost: the roller's best 1-ply value
+among the static top 3 plus the played turn (valued against the other
+player's actual white-sum mark) minus the played one; the other player's
+white-sum mark as the explorer ranks it. `ReviewController` replays the code,
+then asks roll by roll while the page is on screen, dropping replies for a
+game no longer shown. The page (`ReviewDesktop` / `ReviewPhone`) shows the
+summary, the win-chance graph with the running luck under it (`EvalGraph`),
+the eval bar, both sheets at the selected point with this roll's marks in
+pencil and a Played / Best switch, and the log. WASM (`node
+web/scripts/review-bench.mjs <code>`, 2026-10-24): a 27-roll game in 4.2 s,
+mean 157 ms per roll, the first roll (which also computes the start) 687 ms.
+
 **Look.** Light/dark tokens in `styles/theme.css`, self-hosted Barlow and
 Barlow Condensed (`@fontsource/*`). Squares, strike boxes and actions are real
 `<button>`s with descriptive labels and `aria-pressed` / `aria-disabled`
