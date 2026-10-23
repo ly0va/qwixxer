@@ -11,4 +11,9 @@ describe('parseRoute', () => {
         expect(parseRoute('#/explore?x=1')).toEqual({ view: 'explore', code: null });
         expect(parseRoute('#/elsewhere')).toEqual({ view: 'play' });
     });
+    it('reads the review page with or without a game code', () => {
+        expect(parseRoute('#/review')).toEqual({ view: 'review', code: null });
+        expect(parseRoute('#/review?g=1BAAAA')).toEqual({ view: 'review', code: '1BAAAA' });
+        expect(parseRoute('#/review?x=1')).toEqual({ view: 'review', code: null });
+    });
 });

@@ -1,4 +1,5 @@
 import { EngineError, type BotKind, type Engine, type Sq, type Step, type View } from '../engine/protocol';
+import { LAST_GAME } from './review.svelte';
 import { clickable, confirmState, has, isTerminal, logEntry, NAME, sqKey, strikeOpen, type LogEntry } from './rules';
 
 /** Spec "Pacing": minimum durations in ms. */
@@ -35,6 +36,8 @@ export class GameController {
     nextBot = $state<BotKind>('master_plus');
     /** The header "⋯" menu is open (UI state: page-wide keys treat it as a modal). */
     menuOpen = $state(false);
+    /** The last finished game's code, for review (null: none, or a game saved before rolls were recorded). */
+    lastCode = $state<string | null>(null);
 
     // Plain fields assigned in the constructor: `.svelte.ts` files do not
     // support TypeScript parameter properties.
@@ -66,6 +69,7 @@ export class GameController {
     }
 
     async init() {
+        this.lastCode = this.store.get(LAST_GAME);
         const prefs = this.read<{ theme: 'light' | 'dark'; nextBot: BotKind }>(PREFS);
         if (prefs) {
             this.theme = prefs.theme ?? 'light';
@@ -304,6 +308,18 @@ export class GameController {
         this.fresh = fresh;
         this.log = [logEntry(this.rollNo, step.record), ...this.log];
         this.save();
+        if (step.view.phase === 'over') void this.keepCode();
+    }
+
+    /** Spec "Entry points": the finished game's code, kept for the review page. */
+    private async keepCode() {
+        try {
+            const code = await this.engine.gameCode();
+            this.lastCode = code;
+            this.store.set(LAST_GAME, code);
+        } catch {
+            this.lastCode = null;
+        }
     }
 
     /**

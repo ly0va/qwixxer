@@ -361,4 +361,38 @@ describe('GameController', () => {
         c.tapSquare({ row: 2, n: 8 });
         expect(c.tip).toContain('you may only mark the white sum (3)');
     });
+
+    it('stores the finished game’s code for review, once', async () => {
+        const over = v({ phase: 'over', over: 'locks' });
+        const e = fakeEngine({
+            restore: vi.fn(async () => v({ phase: 'active', dice: [1, 2, 3, 4, 5, 6], options: { selections: [[{ row: 0, n: 3 }]], strike: true, pass: false } })),
+            submitActive: vi.fn(async () => ({ view: over, record: rec() })),
+            gameCode: vi.fn(async () => '1BCODE'),
+        });
+        const store = memStore({ 'qwixxer.save.v1': JSON.stringify({ snapshot: '{}', log: [], rollNo: 3, bot: 'master', nextBot: 'master' }) });
+        const c = new GameController(e, store, instant, () => 1);
+        await c.init();
+        c.tapSquare({ row: 0, n: 3 });
+        await c.confirm();
+        await new Promise((r) => setTimeout(r, 0));
+        expect(e.gameCode).toHaveBeenCalledTimes(1);
+        expect(c.lastCode).toBe('1BCODE');
+        expect(store.data['qwixxer.lastGame']).toBe('1BCODE');
+    });
+
+    it('a game without a code (saved before rolls were recorded) offers no review', async () => {
+        const e = fakeEngine({
+            restore: vi.fn(async () => v({ phase: 'active', dice: [1, 2, 3, 4, 5, 6], options: { selections: [[{ row: 0, n: 3 }]], strike: true, pass: false } })),
+            submitActive: vi.fn(async () => ({ view: v({ phase: 'over', over: 'locks' }), record: rec() })),
+            gameCode: vi.fn(async () => { throw new EngineError('this game was saved before rolls were recorded', 'engine'); }),
+        });
+        const c = new GameController(e, memStore({ 'qwixxer.lastGame': '1OLD', 'qwixxer.save.v1': JSON.stringify({ snapshot: '{}', log: [], rollNo: 3, bot: 'master', nextBot: 'master' }) }), instant, () => 1);
+        await c.init();
+        expect(c.lastCode).toBe('1OLD');
+        c.tapSquare({ row: 0, n: 3 });
+        await c.confirm();
+        await new Promise((r) => setTimeout(r, 0));
+        expect(c.lastCode).toBeNull();
+        expect(c.error).toBe('');
+    });
 });

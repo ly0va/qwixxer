@@ -25,6 +25,17 @@ describe('keyAction', () => {
         expect(keyAction('Enter', field, 'active')).toBe(null);
         expect(keyAction(' ', field, 'you_to_roll')).toBe(null);
     });
+    it('steps through a review with the arrows, Home and End, and nothing else', () => {
+        const review = { ...mouse, review: true };
+        expect(keyAction('ArrowLeft', review, undefined)).toBe('prev');
+        expect(keyAction('ArrowRight', review, undefined)).toBe('next');
+        expect(keyAction('Home', review, undefined)).toBe('first');
+        expect(keyAction('End', review, undefined)).toBe('last');
+        expect(keyAction('Enter', review, 'you_to_roll')).toBe(null);
+        expect(keyAction(' ', review, 'you_to_roll')).toBe(null);
+        expect(keyAction('ArrowLeft', { ...field, review: true }, undefined)).toBe(null);
+        expect(keyAction('Escape', review, undefined)).toBe('close');
+    });
     it('ignores other keys', () => {
         expect(keyAction('a', mouse, 'active')).toBe(null);
     });

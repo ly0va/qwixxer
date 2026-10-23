@@ -1,11 +1,12 @@
 <script lang="ts">
-    // Desktop Play / Explore switch (spec "Navigation"); the phone uses the ⋯ menu.
-    let { current, onPlay, onExplore }: { current: 'play' | 'explore'; onPlay: () => void; onExplore: () => void } = $props();
+    // Desktop Play / Explore / Review switch (spec "Navigation"); the phone uses the ⋯ menu.
+    let { current, onPlay, onExplore, onReview }: { current: 'play' | 'explore' | 'review'; onPlay: () => void; onExplore: () => void; onReview: () => void } = $props();
 </script>
 
 <nav aria-label="Main" class="tabs">
     <a href="#/" aria-current={current === 'play' ? 'page' : undefined} onclick={(e) => { e.preventDefault(); onPlay(); }}>Play</a>
     <a href="#/explore" aria-current={current === 'explore' ? 'page' : undefined} onclick={(e) => { e.preventDefault(); onExplore(); }}>Explore</a>
+    <a href="#/review" aria-current={current === 'review' ? 'page' : undefined} onclick={(e) => { e.preventDefault(); onReview(); }}>Review</a>
 </nav>
 
 <style>

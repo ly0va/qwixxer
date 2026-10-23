@@ -3,6 +3,7 @@
     import { createEngine } from '../engine/client';
     import { GameController } from '../game/controller.svelte';
     import { ExplorerController } from '../game/explorer.svelte';
+    import { LAST_GAME, ReviewController } from '../game/review.svelte';
     import { keyAction } from '../game/keys';
     import { parseRoute, type Route } from '../game/route';
     import Desktop from './Desktop.svelte';
@@ -17,6 +18,7 @@
     const engine = createEngine();
     const c = new GameController(engine, store);
     const x = new ExplorerController(engine, store);
+    const rv = new ReviewController(engine, store);
     // Spec "Implementation notes · Window sizes": below ~1100 px wide or in portrait, the phone layout.
     const mq = window.matchMedia('(max-width: 1099px), (orientation: portrait)');
     let phone = $state(mq.matches);
@@ -36,6 +38,9 @@
             history.replaceState(null, '', '#/explore');
             route = { view: 'explore', code: null };
         } else route = r;
+        // A review keeps its ?g= code in the address: the code never changes, so a reload shows the same game.
+        // It is shared unless it is your own last game.
+        if (route.view === 'review') void rv.load(route.code, route.code !== null && route.code !== store.get(LAST_GAME));
         // The explorer evaluates when entered (loadCode already has).
         if (route.view === 'explore') x.refresh();
         c.menuOpen = false;
@@ -43,11 +48,16 @@
         activity();
     }
     // Spec "Controller · Pause": analysis runs only while the explorer is on screen.
-    const activity = () => x.setActive(route.view === 'explore' && document.visibilityState === 'visible');
+    const activity = () => {
+        const visible = document.visibilityState === 'visible';
+        x.setActive(route.view === 'explore' && visible);
+        rv.setActive(route.view === 'review' && visible);
+    };
     const nav: Nav = {
         get current() { return route.view; },
         play: () => { if (route.view === 'play') return; history.pushState(null, '', location.pathname + location.search); sync(); },
         explorer: () => { location.hash = '#/explore'; },
+        review: () => { location.hash = '#/review'; },
     };
 
     onMount(() => {
@@ -73,16 +83,22 @@
         const t = e.target instanceof Element ? e.target : null;
         const field = !!t?.closest('select, input, textarea');
         const keyboardFocus = !!t && t !== document.body && focusVisible(t);
-        const action = keyAction(e.key, { field, keyboardFocus, modal: (phone && drawer) || c.menuOpen, explore: route.view === 'explore' }, c.view?.phase);
+        const action = keyAction(e.key, { field, keyboardFocus, modal: (phone && drawer) || c.menuOpen, explore: route.view === 'explore', review: route.view === 'review' }, c.view?.phase);
         if (action && action !== 'clear' && action !== 'close') e.preventDefault();
         if (action === 'confirm') c.confirm();
         else if (action === 'roll') c.roll();
         else if (action === 'clear') c.clearSelection();
+        else if (action === 'prev') rv.step(-1);
+        else if (action === 'next') rv.step(1);
+        else if (action === 'first') rv.first();
+        else if (action === 'last') rv.last();
         else if (action === 'close') { if (c.menuOpen) c.menuOpen = false; else if (x.picker !== null) x.picker = null; else drawer = false; }
     }
 </script>
 
 <svelte:window onkeydown={onKey} />
-{#if route.view === 'explore'}
+{#if route.view === 'review'}
+    <p>Review</p>
+{:else if route.view === 'explore'}
     {#if phone}<ExplorerPhone {c} {x} {nav} />{:else}<ExplorerDesktop {c} {x} {nav} />{/if}
 {:else if phone}<Phone {c} {nav} bind:drawer />{:else}<Desktop {c} {nav} />{/if}

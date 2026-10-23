@@ -9,7 +9,7 @@
 </script>
 
 <header class="head">
-    <div class="left"><div class="word">Qwixxer</div><Tabs current="play" onPlay={nav.play} onExplore={nav.explorer} /></div>
+    <div class="left"><div class="word">Qwixxer</div><Tabs current="play" onPlay={nav.play} onExplore={nav.explorer} onReview={nav.review} /></div>
     <div class="pill"><span class="dot"></span>{pill}</div>
     <div class="right">
         <span>You <b>{c.view?.you.score ?? 0}</b></span>

@@ -1,6 +1,7 @@
 <script lang="ts">
     import type { GameController } from '../game/controller.svelte';
     import { confirmState, strikeOpen } from '../game/rules';
+    import { gameHref } from '../game/review';
     import MarkX from './MarkX.svelte';
     let { c }: { c: GameController } = $props();
     const v = $derived(c.view);
@@ -28,7 +29,8 @@
         {#if c.error}
             <div class="tip" role="alert">Something went wrong: {c.error}</div>
         {:else if result}
-            <div class="result" role="status"><b>{result.title}</b><span class="score">{v?.you.score} – {v?.bot.score}</span><span class="reason">{result.reason}</span></div>
+            <div class="result" role="status"><b>{result.title}</b><span class="score">{v?.you.score} – {v?.bot.score}</span><span class="reason">{result.reason}</span>
+                {#if c.lastCode}<a class="analyse" href={gameHref(c.lastCode)}>Analyse game</a>{/if}</div>
         {:else if c.tip}
             <div class="tip" role="alert">{c.tip}</div>
         {/if}
@@ -52,4 +54,5 @@
     /* Fixed width so the bar doesn't shift as the label changes (Mark 1, Strike, New game…). */
     .confirm { width: 136px; min-height: 48px; padding: 0; border: none; border-radius: 12px; font-weight: 700; font-size: 17px; cursor: not-allowed; background: var(--btn-muted-bg); color: var(--btn-muted-fg); }
     .confirm.primary { cursor: pointer; background: var(--ink); color: var(--ground); }
+    .analyse { margin-left: 10px; font-weight: 700; font-size: 15px; color: var(--ink); text-decoration: underline; text-underline-offset: 3px; }
 </style>

@@ -1,6 +1,8 @@
-/** Navigation between the game and the explorer (implemented by App). */
+/** Navigation between the game, the explorer and the game review (implemented by App). */
 export interface Nav {
-    current: 'play' | 'explore';
+    current: 'play' | 'explore' | 'review';
     play(): void;
     explorer(): void;
+    /** The review page with the last finished game. */
+    review(): void;
 }

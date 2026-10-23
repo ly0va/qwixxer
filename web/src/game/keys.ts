@@ -10,9 +10,13 @@ export interface KeyTarget {
     modal?: boolean;
     /** The explorer is showing: no game keys at all; Escape closes the menu or die picker. */
     explore?: boolean;
+    /** The game review is showing: the arrows, Home and End step through the game. */
+    review?: boolean;
 }
 
-export type KeyAction = 'confirm' | 'roll' | 'clear' | 'close' | 'swallow' | null;
+export type KeyAction = 'confirm' | 'roll' | 'clear' | 'close' | 'swallow' | 'prev' | 'next' | 'first' | 'last' | null;
+
+const STEPS: Record<string, KeyAction> = { ArrowLeft: 'prev', ArrowRight: 'next', Home: 'first', End: 'last' };
 
 /**
  * Spec "Implementation notes · Keyboard": Enter confirms, Space rolls, Escape
@@ -25,6 +29,7 @@ export type KeyAction = 'confirm' | 'roll' | 'clear' | 'close' | 'swallow' | nul
  */
 export function keyAction(key: string, t: KeyTarget, phase: Phase | undefined): KeyAction {
     if (t.explore) return key === 'Escape' ? 'close' : null;
+    if (t.review) return key === 'Escape' ? 'close' : t.field ? null : (STEPS[key] ?? null);
     if (t.modal) {
         if (key === 'Escape') return 'close';
         if (key !== 'Enter' && key !== ' ') return null;

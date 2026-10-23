@@ -21,7 +21,7 @@
 <div class="fit" style="width: {Math.floor(DESK_W * scale)}px; height: {Math.floor(DESK_H * scale)}px">
 <div class="desk" style="transform: scale({scale})">
     <header class="head">
-        <div class="left"><div class="word">Qwixxer</div><Tabs current="explore" onPlay={nav.play} onExplore={nav.explorer} /></div>
+        <div class="left"><div class="word">Qwixxer</div><Tabs current="explore" onPlay={nav.play} onExplore={nav.explorer} onReview={nav.review} /></div>
         <div class="right">
             {#if x.notice}<span class="notice" role="status">{x.notice}</span>{/if}
             <button type="button" class="btn" onclick={() => x.copyLink(base())}>

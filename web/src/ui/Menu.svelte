@@ -64,6 +64,7 @@
                     <span class="lab"><Icon name="plus" />{armed ? 'Abandon game?' : 'New game'}</span>
                 </button>
                 {#if !tabs}<button type="button" role="menuitem" class="item" onclick={() => { c.menuOpen = false; nav.explorer(); }}><span class="lab"><Icon name="search" />Explorer</span></button>{/if}
+                {#if !tabs && c.lastCode}<button type="button" role="menuitem" class="item" onclick={() => { c.menuOpen = false; nav.review(); }}><span class="lab"><Icon name="chart" />Review last game</span></button>{/if}
             {:else if !tabs}
                 <button type="button" role="menuitem" class="item" onclick={() => { c.menuOpen = false; nav.play(); }}><span class="lab"><Icon name="die" />Back to game</span></button>
             {/if}

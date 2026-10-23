@@ -1,5 +1,5 @@
 <script lang="ts" module>
-    export type IconName = 'plus' | 'search' | 'die' | 'moon' | 'book' | 'github';
+    export type IconName = 'plus' | 'search' | 'die' | 'moon' | 'book' | 'github' | 'chart' | 'link';
 </script>
 
 <script lang="ts">
@@ -14,6 +14,8 @@
         {#if name === 'plus'}<path d="M12 5v14M5 12h14"></path>
         {:else if name === 'search'}<circle cx="11" cy="11" r="6.5"></circle><path d="M20 20l-4.4-4.4"></path>
         {:else if name === 'die'}<rect x="4" y="4" width="16" height="16" rx="3.5"></rect><g fill="currentColor" stroke="none"><circle cx="8.6" cy="8.6" r="1.4"></circle><circle cx="12" cy="12" r="1.4"></circle><circle cx="15.4" cy="15.4" r="1.4"></circle></g>
+        {:else if name === 'chart'}<path d="M4 19h16M5 15l4-5 4 3 6-7"></path>
+        {:else if name === 'link'}<path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1"></path><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"></path>
         {:else if name === 'moon'}<path d="M20 12.8A8 8 0 1 1 11.2 4a6.2 6.2 0 0 0 8.8 8.8z"></path>
         {:else if name === 'book'}<path d="M5 4.5A1.5 1.5 0 0 1 6.5 3H19v15H6.5A1.5 1.5 0 0 0 5 19.5zM5 19.5A1.5 1.5 0 0 0 6.5 21H19v-3"></path>
         {/if}

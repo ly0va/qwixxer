@@ -1,4 +1,5 @@
 <script lang="ts">
+    import { gameHref } from '../game/review';
     import type { GameController } from '../game/controller.svelte';
     import { phoneLayout } from '../game/layout';
     import { chipsFor, confirmState, ROWS, sheetModel, strikeOpen, type Chip, type LogEntry } from '../game/rules';
@@ -63,7 +64,7 @@
     </header>
     {#if result}
         <div class="result" role="status">
-            <div class="headline"><b>{result.title}</b><span>{result.score}</span></div>
+            <div class="headline"><b>{result.title}</b><span>{result.score}</span>{#if c.lastCode}<a class="analyse" href={gameHref(c.lastCode)}>Analyse game</a>{/if}</div>
             <span class="reason">{result.reason}</span>
         </div>
     {:else}
@@ -145,4 +146,5 @@
     .drawer { position: fixed; z-index: 2; bottom: 0; left: 50%; transform: translateX(-50%); width: 100%; max-width: 430px; max-height: 75dvh; box-sizing: border-box; background: var(--paper); border-radius: 20px 20px 0 0; padding: 8px 14px 16px; display: flex; flex-direction: column; gap: 12px; overflow: hidden; }
     .handle { align-self: center; width: 40px; height: 5px; border-radius: 3px; background: var(--edge); }
     .close { align-self: flex-end; min-height: 44px; padding: 0 16px; border-radius: 12px; border: none; background: var(--ground); color: var(--ink); font-weight: 600; }
+    .analyse { margin-left: auto; font-weight: 700; font-size: 14px; color: var(--ink); text-decoration: underline; text-underline-offset: 3px; }
 </style>
