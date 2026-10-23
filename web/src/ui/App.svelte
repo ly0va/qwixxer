@@ -12,6 +12,7 @@
     import type { Nav } from './nav';
     import Phone from './Phone.svelte';
     import ReviewDesktop from './ReviewDesktop.svelte';
+    import ReviewPhone from './ReviewPhone.svelte';
 
     const store = { get: (k: string) => { try { return localStorage.getItem(k); } catch { return null; } },
         set: (k: string, v: string) => { try { localStorage.setItem(k, v); } catch { /* storage unavailable */ } } };
@@ -99,7 +100,7 @@
 
 <svelte:window onkeydown={onKey} />
 {#if route.view === 'review'}
-    {#if phone}<p>Review</p>{:else}<ReviewDesktop {c} r={rv} {nav} />{/if}
+    {#if phone}<ReviewPhone {c} r={rv} {nav} />{:else}<ReviewDesktop {c} r={rv} {nav} />{/if}
 {:else if route.view === 'explore'}
     {#if phone}<ExplorerPhone {c} {x} {nav} />{:else}<ExplorerDesktop {c} {x} {nav} />{/if}
 {:else if phone}<Phone {c} {nav} bind:drawer />{:else}<Desktop {c} {nav} />{/if}

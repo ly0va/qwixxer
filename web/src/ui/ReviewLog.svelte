@@ -8,8 +8,14 @@
     const entries = $derived(r.game ? reviewLog(r.game, r.an, names(r.shared)) : []);
     const k = $derived(r.sel === 0 ? -1 : Math.floor((r.sel - 1) / 2));
     let list = $state<HTMLOListElement>();
+    // Keep the selected entry in view by scrolling the list only (scrollIntoView
+    // would scroll the whole page on the phone).
     $effect(() => {
-        list?.querySelector(`[data-k="${k}"]`)?.scrollIntoView({ block: 'nearest' });
+        const el = list?.querySelector<HTMLElement>(`[data-k="${k}"]`);
+        if (!list || !el) return;
+        const top = el.offsetTop;
+        if (top < list.scrollTop) list.scrollTop = top;
+        else if (top + el.offsetHeight > list.scrollTop + list.clientHeight) list.scrollTop = top + el.offsetHeight - list.clientHeight;
     });
     const tone = (luck: string) => (luck.includes('…') || luck === 'luck 0.0' ? 'pending' : luck.includes('+') ? 'lucky' : 'unlucky');
 </script>
@@ -41,7 +47,7 @@
 <style>
     .log { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 6px; background: var(--paper); border-radius: 14px; padding: 12px 16px; box-shadow: 0 1px 0 var(--edge); }
     h2 { margin: 0; font-family: var(--cond); font-size: 18px; font-weight: 700; }
-    ol { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; overflow-y: auto; min-height: 0; scrollbar-width: thin; scrollbar-color: var(--faint) transparent; }
+    ol { position: relative; list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; overflow-y: auto; min-height: 0; scrollbar-width: thin; scrollbar-color: var(--faint) transparent; }
     button { width: 100%; display: flex; align-items: flex-start; gap: 8px; padding: 5px 10px; border-radius: 10px; border: none; background: var(--log-bg); color: var(--ink); cursor: pointer; text-align: left; font: inherit; }
     button.sel { background: var(--paper); box-shadow: inset 0 0 0 2px var(--ink); }
     .n { width: 22px; flex: none; font-family: var(--cond); font-weight: 700; font-size: 16px; color: var(--muted); padding-top: 2px; }
