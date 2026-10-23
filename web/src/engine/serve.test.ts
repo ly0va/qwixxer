@@ -3,6 +3,7 @@ import { serve, type Reply, type Wasm } from './serve';
 
 class FakeGame {
     view() { return '{"phase":"you_to_roll"}'; }
+    code() { return '1BAAAA'; }
     free() {}
     static restore(_bot: string, snap: string) {
         if (snap === 'bad') throw new Error('bad snapshot');
@@ -27,6 +28,13 @@ class FakeExplorer {
         const p = JSON.parse(json);
         if (!p.dice) throw new Error('no dice');
         return JSON.stringify({ this_roll: 0.55, average: first + count / 10, echo: p.roller });
+    }
+    review_game(code: string) {
+        if (code === 'bad') throw new Error('bad code');
+        return JSON.stringify({ bot: 'master', bot_first: true, rolls: [], over: null, echo: code });
+    }
+    review_roll(code: string, k: number) {
+        return JSON.stringify({ start: null, this_roll: k / 10, after_move: 0.5, you_cost: 0, bot_cost: 0, echo: code });
     }
     free() {}
 }
@@ -84,6 +92,21 @@ describe('engine worker handler', () => {
             .toEqual({ id: 2, ok: true, result: { this_roll: 0.55, average: 6.3, echo: 'opponent' } });
         expect(FakeExplorer.made).toBe(made);
         expect(await send(3, 'luck', [{ roller: 'you' }, 0, 3])).toMatchObject({ id: 3, ok: false, error: 'no dice', kind: 'engine' });
+    });
+    it('review calls share the explorer and pass the code', async () => {
+        const { send } = setup(0);
+        await send(1, 'explore', [{ roller: 'you' }]);
+        const made = FakeExplorer.made;
+        expect(await send(2, 'reviewGame', ['1BAAAA'])).toMatchObject({ ok: true, result: { bot: 'master', echo: '1BAAAA' } });
+        expect(await send(3, 'reviewRoll', ['1BAAAA', 3])).toMatchObject({ ok: true, result: { this_roll: 0.3, echo: '1BAAAA' } });
+        expect(FakeExplorer.made).toBe(made);
+        expect(await send(4, 'reviewGame', ['bad'])).toMatchObject({ ok: false, kind: 'engine', error: 'bad code' });
+    });
+    it('gameCode asks the game', async () => {
+        const { send } = setup(0);
+        expect(await send(1, 'gameCode', [])).toMatchObject({ ok: false, error: 'no game' });
+        await send(2, 'start', ['master', 1]);
+        expect(await send(3, 'gameCode', [])).toEqual({ id: 3, ok: true, result: '1BAAAA' });
     });
     it('analyze shares the explorer and passes the batch range', async () => {
         const { send } = setup(0);

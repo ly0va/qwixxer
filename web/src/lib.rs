@@ -122,4 +122,19 @@ impl WasmExplorer {
         let l = self.inner.luck(&pos, first, count).map_err(js)?;
         Ok(serde_json::to_string(&l).unwrap())
     }
+
+    /// The game a code describes, replayed (spec
+    /// `2026-10-24-game-review-design.md`), as JSON; an error for a code
+    /// that is malformed or breaks the rules.
+    pub fn review_game(&self, code: &str) -> Result<String, JsError> {
+        let g = gamecode::replay(code).map_err(js)?;
+        Ok(serde_json::to_string(&g).unwrap())
+    }
+
+    /// Roll `k`'s review analysis (luck, the 1-ply move costs), as JSON.
+    pub fn review_roll(&self, code: &str, k: u32) -> Result<String, JsError> {
+        let g = gamecode::replay(code).map_err(js)?;
+        let a = self.inner.review_roll(&g, k as usize).map_err(js)?;
+        Ok(serde_json::to_string(&a).unwrap())
+    }
 }

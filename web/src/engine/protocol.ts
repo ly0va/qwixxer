@@ -49,6 +49,14 @@ export interface Answer {
 }
 /** Mirrors explorer.rs `Luck`: your P(win) after the roller's best turn for this roll, and a chunk of white pairs' share of its average over all rolls. */
 export interface Luck { this_roll: number; average: number }
+/** Mirrors gamecode.rs `ReviewRoll`: the position before the roll's marks (with dice and roller), what happened, the position after. */
+export interface ReviewRoll { before: Position; record: RollRecord; after: Position }
+/** Mirrors gamecode.rs `ReviewGame`; `over` is null for an unfinished game. */
+export interface ReviewGame { bot: BotKind; bot_first: boolean; rolls: ReviewRoll[]; over: { you: number; opponent: number } | null }
+/** Mirrors review.rs `BestMove`: a move of yours and the position it leaves. */
+export interface BestMove { marks: Sq[]; strike: boolean; after: Position }
+/** Mirrors review.rs `RollAnalysis`: your P(win) values for one roll (spec `2026-10-24-game-review-design.md`, "The numbers"). */
+export interface RollAnalysis { start: number | null; this_roll: number; after_move: number; you_cost: number; you_best: BestMove; bot_cost: number }
 /** Mirrors explorer.rs `Analysis`: play-out totals of one batch (or a running sum). */
 export interface Analysis { games: number; win_sum: number; win_sq_sum: number; diff_sum: number }
 /**
@@ -79,5 +87,11 @@ export interface Engine {
     analyze(position: Position, start: number, count: number): Promise<Analysis>;
     /** Roll luck for a position with dice, white pairs `first .. first + count` of 21 (spec `2026-10-22-explorer-roll-luck-design.md`). */
     luck(position: Position, first: number, count: number): Promise<Luck>;
+    /** The finished game's code (rejects for a game saved before rolls were recorded). */
+    gameCode(): Promise<string>;
+    /** Replays a game code; rejects a malformed or illegal one. */
+    reviewGame(code: string): Promise<ReviewGame>;
+    /** Roll `k`'s review analysis. */
+    reviewRoll(code: string, k: number): Promise<RollAnalysis>;
 }
 export const BOT_NAMES: Record<BotKind, string> = { master_plus: 'Master+', master: 'Master', student: 'Student', newbie: 'Newbie' };

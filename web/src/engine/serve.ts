@@ -47,6 +47,8 @@ export function serve(wasm: Wasm, post: (r: Reply) => void): (req: Request) => P
                 return replace(wasm.WasmGame.restore(args[0], args[1], args[2]));
             case 'snapshot':
                 return need().snapshot();
+            case 'gameCode':
+                return need().code();
             case 'botRoll':
                 need().bot_roll();
                 return view();
@@ -71,6 +73,12 @@ export function serve(wasm: Wasm, post: (r: Reply) => void): (req: Request) => P
             case 'luck':
                 explorer ??= new wasm.WasmExplorer();
                 return JSON.parse(explorer.luck(JSON.stringify(args[0]), args[1], args[2]));
+            case 'reviewGame':
+                explorer ??= new wasm.WasmExplorer();
+                return JSON.parse(explorer.review_game(args[0]));
+            case 'reviewRoll':
+                explorer ??= new wasm.WasmExplorer();
+                return JSON.parse(explorer.review_roll(args[0], args[1]));
             default:
                 throw new Error(`unknown command ${cmd}`);
         }

@@ -33,6 +33,15 @@ describe('WorkerEngine', () => {
         expect(w.seen.map((m) => m.args)).toEqual([[[{ row: 0, n: 3 }], false], [{ row: 1, n: 7 }]]);
     });
 
+    it('sends the review calls', async () => {
+        const w = new FakeWorker(() => ({ ok: true, result: 'r' }));
+        const e = new WorkerEngine(() => asWorker(w));
+        await e.reviewRoll('1A', 3);
+        await e.reviewGame('1A');
+        await e.gameCode();
+        expect(w.seen.map((m) => [m.cmd, m.args])).toEqual([['reviewRoll', ['1A', 3]], ['reviewGame', ['1A']], ['gameCode', []]]);
+    });
+
     it('reports the error kind from the worker', async () => {
         const w = new FakeWorker((m) => ({ ok: false, error: `bad ${m.cmd}`, kind: m.cmd === 'restore' ? 'snapshot' : 'engine' }));
         const e = new WorkerEngine(() => asWorker(w));

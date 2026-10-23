@@ -1,4 +1,4 @@
-import { EngineError, type Analysis, type Answer, type BotKind, type Engine, type EngineErrorKind, type Luck, type Position, type Sq, type Step, type View } from './protocol';
+import { EngineError, type Analysis, type Answer, type BotKind, type Engine, type EngineErrorKind, type Luck, type Position, type ReviewGame, type RollAnalysis, type Sq, type Step, type View } from './protocol';
 
 type Pending = { resolve: (v: any) => void; reject: (e: Error) => void };
 type Reply = { id: number; ok: boolean; result?: any; error?: string; kind?: EngineErrorKind };
@@ -66,6 +66,9 @@ export class WorkerEngine implements Engine {
     explore(position: Position) { return this.call<Answer>('explore', position); }
     analyze(position: Position, start: number, count: number) { return this.call<Analysis>('analyze', position, start, count); }
     luck(position: Position, first: number, count: number) { return this.call<Luck>('luck', position, first, count); }
+    gameCode() { return this.call<string>('gameCode'); }
+    reviewGame(code: string) { return this.call<ReviewGame>('reviewGame', code); }
+    reviewRoll(code: string, k: number) { return this.call<RollAnalysis>('reviewRoll', code, k); }
 }
 
 export function createEngine(): Engine {
