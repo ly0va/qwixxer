@@ -6,6 +6,7 @@ pub mod bench;
 pub mod bots;
 pub mod explorer;
 pub mod gamecode;
+pub mod review;
 pub mod selection;
 pub mod session;
 

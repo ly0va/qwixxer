@@ -132,7 +132,7 @@ pub const WHITE_PAIRS: u32 = 21;
 /// Every distinct roll with its probability: the white dice unordered (21
 /// pairs, 1/36 or 2/36), times the four colour dice (1,296 outcomes).
 #[cfg(test)]
-fn rolls() -> impl Iterator<Item = ([u8; 6], f64)> {
+pub(crate) fn rolls() -> impl Iterator<Item = ([u8; 6], f64)> {
     rolls_of(0..WHITE_PAIRS as usize)
 }
 
@@ -361,7 +361,7 @@ fn finish_turn(
 
 pub struct Explorer {
     /// Master's net: values the position and ranks the moves.
-    net: WinStrategy,
+    pub(crate) net: WinStrategy,
     /// Master+ explains its own pick; the other bots are only tagged.
     plus: SearchBot<WinStrategy>,
     others: Vec<(BotKind, Box<dyn Strategy>)>,
@@ -535,7 +535,7 @@ impl Explorer {
     /// Your sheet after each of `turns` and the P(win) after it, as
     /// [`Explorer::valued_turns`] judges it. On your roll the values don't
     /// depend on the dice.
-    fn turn_values(
+    pub(crate) fn turn_values(
         &self,
         you: &State,
         opp: &State,
@@ -573,7 +573,7 @@ impl Explorer {
 
     /// Each legal turn and the P(win) the move list shows for it, the
     /// opponent's predicted white-sum mark included on your roll.
-    fn move_values(&self, you: &State, opp: &State, dice: [u8; 6], roller: Roller) -> (Vec<Turn>, Vec<f32>) {
+    pub(crate) fn move_values(&self, you: &State, opp: &State, dice: [u8; 6], roller: Roller) -> (Vec<Turn>, Vec<f32>) {
         let opp_white = match roller {
             Roller::You => predict_opp_white(&self.net, you, opp, dice),
             Roller::Opponent => None,
@@ -585,7 +585,7 @@ impl Explorer {
     /// f in spec `2026-10-22-explorer-roll-luck-design.md`: your P(win)
     /// after the roller's best turn. On your roll the move list's top; on
     /// theirs one minus the top of their own move list (sheets swapped).
-    fn top(&self, you: &State, opp: &State, dice: [u8; 6], roller: Roller) -> f32 {
+    pub(crate) fn top(&self, you: &State, opp: &State, dice: [u8; 6], roller: Roller) -> f32 {
         let best = |a, b| {
             self.move_values(a, b, dice, Roller::You)
                 .1
@@ -619,7 +619,7 @@ impl Explorer {
     }
 
     /// E[f]: the white pairs `pairs`' share of f's average over every roll.
-    fn average_top(&self, you: &State, opp: &State, roller: Roller, pairs: std::ops::Range<usize>) -> f64 {
+    pub(crate) fn average_top(&self, you: &State, opp: &State, roller: Roller, pairs: std::ops::Range<usize>) -> f64 {
         match roller {
             Roller::You => self.average_top_yours(you, opp, pairs),
             Roller::Opponent => {
