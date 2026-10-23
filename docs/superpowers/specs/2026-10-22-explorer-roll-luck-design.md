@@ -112,16 +112,17 @@ back rather than approximating.
 
 ## UI
 
-On the Roll card, under the dice (both layouts), once dice are set and
-the game isn't over. Wording and placement are my calls:
+On the Roll card, once dice are set and the game isn't over: a chip right
+after the "whose roll" toggle, on both layouts (revised 2026-10-23 from a
+line under the dice, after mockups; the user chose the chip and its
+place). On phones the toggle reads "You / Them" so the chip fits.
 
-- "Lucky roll **+3.2 pts**" / "Unlucky roll **−2.7 pts**" / "Average
-  roll" (|luck| < 0.05 pts), one decimal.
-- A small muted second part: "this roll 55.3% · average 52.1%".
+- "Lucky **+3.2**" / "Unlucky **−2.7**" / "Average" (|luck| < 0.05 pts),
+  one decimal, tinted green or red (`--lucky-ink`, `--unlucky-ink`).
+- "This roll 55.3% · average 52.1%" on hover (and for screen readers).
 - While computing, or when stale after an edit: the previous value
-  faded, or "…" with none, as the Position card does.
-- My call (not discussed): green/red tint for lucky/unlucky, using the
-  existing theme tokens.
+  faded, or "Luck …" with none. Random and Clear sit at the row's end, so
+  the chip appearing moves nothing.
 
 ## Testing
 

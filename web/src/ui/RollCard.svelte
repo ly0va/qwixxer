@@ -24,9 +24,10 @@
     const out = (i: number) => i >= 2 && closed[i - 2];
     const d = $derived(x.pos.dice);
     const white = $derived(d[0] !== null && d[1] !== null ? String(d[0] + d[1]) : '–');
-    // Spec "UI" (roll luck): the line holds its fixed height from the moment
-    // all six dice are set, so nothing moves when the number arrives.
-    const luckLine = $derived(d.every((v) => v !== null) && !isOver(x.pos));
+    // Spec "UI" (roll luck): a chip after the roll toggle, there from the
+    // moment all six dice are set. Random and Clear sit at the row's end, so
+    // nothing moves when the number arrives.
+    const luckShown = $derived(d.every((v) => v !== null) && !isOver(x.pos));
     const luck = $derived(x.luck ? luckText(x.luck.value) : null);
     const luckStale = $derived(!!x.luck && x.luck.key !== luckKey(x.pos));
     // A click outside the picker closes it; a die button toggles it itself.
@@ -42,9 +43,19 @@
     <div class="top">
         {#if !compact}<h2>Roll</h2>{/if}
         <div class="seg" role="radiogroup" aria-label="Whose roll">
-            <button type="button" role="radio" aria-checked={x.pos.roller === 'you'} onclick={() => x.setRoller('you')}>Your roll</button>
-            <button type="button" role="radio" aria-checked={x.pos.roller === 'opponent'} onclick={() => x.setRoller('opponent')}>Opponent’s roll</button>
+            <button type="button" role="radio" aria-checked={x.pos.roller === 'you'} aria-label="Your roll" onclick={() => x.setRoller('you')}>{compact ? 'You' : 'Your roll'}</button>
+            <button type="button" role="radio" aria-checked={x.pos.roller === 'opponent'} aria-label="Opponent’s roll" onclick={() => x.setRoller('opponent')}>{compact ? 'Them' : 'Opponent’s roll'}</button>
         </div>
+        {#if luckShown}
+            <span class="luck {luck?.tone ?? 'pending'}" class:stale={luckStale} aria-live="polite" title={luck?.detail}>
+                {#if luck}
+                    {luck.word}{#if luck.value}<b aria-label="{luck.value} points">{luck.value}</b>{/if}
+                    <span class="sr">{luck.detail}</span>
+                {:else}
+                    Luck …
+                {/if}
+            </span>
+        {/if}
         <button type="button" class="tool" aria-label="Random roll" onclick={() => x.random()}>
             <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="4"></rect><circle cx="8.5" cy="8.5" r="1.2" fill="currentColor"></circle><circle cx="15.5" cy="15.5" r="1.2" fill="currentColor"></circle><circle cx="15.5" cy="8.5" r="1.2" fill="currentColor"></circle><circle cx="8.5" cy="15.5" r="1.2" fill="currentColor"></circle></svg>
             {#if !compact}Random{/if}
@@ -74,17 +85,6 @@
         {/each}
         {#if !compact}<div class="wsum"><span>White sum</span><b>{white}</b></div>{/if}
     </div>
-    {#if luckLine}
-        <p class="luck" class:stale={luckStale} aria-live="polite">
-            {#if luck}
-                <span class="label">{luck.label}</span>
-                {#if luck.value}<b class={luck.tone}>{luck.value}</b>{/if}
-                <span class="detail">{luck.detail}</span>
-            {:else}
-                <span class="label muted">Roll luck …</span>
-            {/if}
-        </p>
-    {/if}
     <!-- Spec "Moves": on your roll the ranking assumes the opponent's predicted white-sum mark. -->
     {#if x.pos.roller === 'you' && x.answer?.opponent_white}
         {@const ow = x.answer.opponent_white}
@@ -102,17 +102,16 @@
 </section>
 
 <style>
-    .luck { margin: 0; height: 24px; display: flex; align-items: baseline; gap: 8px; white-space: nowrap; overflow: hidden; font-size: 15px; transition: opacity 0.15s; }
-    .compact .luck { height: 42px; flex-wrap: wrap; align-content: flex-start; row-gap: 2px; font-size: 14px; }
-    .compact .luck .detail { flex-basis: 100%; }
-    .luck .label { font-weight: 600; }
-    .luck .label.muted { color: var(--muted); }
-    .luck b { font-family: var(--cond); font-weight: 800; font-size: 20px; line-height: 1; }
-    .luck .lucky { color: var(--green-ink); }
-    .luck .unlucky { color: var(--red-ink); }
-    .luck .detail { font-size: 13px; color: var(--muted); }
-    .compact .luck .detail { font-size: 12px; }
+    .luck { flex: none; height: 28px; padding: 0 11px; border-radius: 14px; display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; font-weight: 700; font-size: 14px; transition: opacity 0.15s; }
+    .luck b { font-family: var(--cond); font-weight: 800; font-size: 18px; }
+    .luck.lucky { color: var(--lucky-ink); background: color-mix(in srgb, var(--lucky-ink) 14%, var(--paper)); }
+    .luck.unlucky { color: var(--unlucky-ink); background: color-mix(in srgb, var(--unlucky-ink) 14%, var(--paper)); }
+    .luck.average { color: var(--ink); background: var(--btn-muted-bg); }
+    .luck.pending { color: var(--muted); font-weight: 600; background: var(--btn-muted-bg); }
     .luck.stale { opacity: 0.6; }
+    .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+    .compact .luck { height: 26px; padding: 0 9px; font-size: 13px; gap: 5px; }
+    .compact .luck b { font-size: 17px; }
     .opp { margin: 0; display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--soft); min-height: 22px; }
     .opp.stale { opacity: 0.6; }
     .opp .after { color: var(--muted); }

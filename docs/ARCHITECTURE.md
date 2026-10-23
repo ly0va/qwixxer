@@ -611,9 +611,11 @@ first + count`; `ExplorerController` asks right after `explore` in 7 chunks
 of 3 and adds the shares up, so an edit's `explore` waits at most one chunk;
 an edit starts over, and luck shows once every chunk is in. WASM (`node
 web/scripts/luck-bench.mjs`, 2026-10-23): 0.1–0.25 s in all on either
-roll, the slowest chunk 55 ms. The line keeps a fixed
-height from the moment the dice are set ("Roll luck …" until it arrives),
-so the layout never moves.
+roll, the slowest chunk 55 ms. It shows as a chip after
+the roll toggle ("Lucky +3.2", tinted green or red; the two percentages on
+hover), there from the moment the dice are set ("Luck …" until it
+arrives); Random and Clear sit at the row's end, so nothing moves. On
+phones the toggle reads "You / Them" to make room.
 
 **Look.** Light/dark tokens in `styles/theme.css`, self-hosted Barlow and
 Barlow Condensed (`@fontsource/*`). Squares, strike boxes and actions are real

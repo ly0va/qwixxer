@@ -18,6 +18,7 @@
     --yellow-band: #E9B824; --yellow-dark: #C99A12; --yellow-ink: #9A7400;
     --green-band: #2F8F4E; --green-dark: #23703C; --green-ink: #2F8F4E;
     --blue-band: #2C5FAF; --blue-dark: #214B8C; --blue-ink: #2C5FAF;
+    --lucky-ink: #23703C; --unlucky-ink: #9E2530;
     --cond: 'Barlow Condensed', sans-serif; --text: 'Barlow', sans-serif;
 }
 
@@ -32,6 +33,7 @@
     --yellow-band: #C49A22; --yellow-dark: #977414; --yellow-ink: #F0CD62;
     --green-band: #2D7E4A; --green-dark: #215E37; --green-ink: #74C994;
     --blue-band: #2F5E9F; --blue-dark: #234776; --blue-ink: #8DB0EE;
+    --lucky-ink: #74C994; --unlucky-ink: #F08A8F;
 }
 
 html, body { margin: 0; background: var(--ground); color: var(--ink); font-family: var(--text); }
