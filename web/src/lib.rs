@@ -16,6 +16,7 @@ use wasm_bindgen::prelude::*;
 #[wasm_bindgen]
 pub struct WasmGame {
     session: Session,
+    bot: BotKind,
 }
 
 fn js(e: impl std::fmt::Display) -> JsError {
@@ -29,6 +30,7 @@ impl WasmGame {
         let kind = BotKind::parse(bot).map_err(js)?;
         Ok(WasmGame {
             session: Session::new(make_bot(kind), seed as u64),
+            bot: kind,
         })
     }
 
@@ -37,6 +39,7 @@ impl WasmGame {
         let snap: Snapshot = serde_json::from_str(snapshot).map_err(js)?;
         Ok(WasmGame {
             session: Session::restore(snap, make_bot(kind), seed as u64).map_err(js)?,
+            bot: kind,
         })
     }
 
@@ -46,6 +49,12 @@ impl WasmGame {
 
     pub fn snapshot(&self) -> String {
         serde_json::to_string(&self.session.snapshot()).unwrap()
+    }
+
+    /// The game code (spec `2026-10-24-game-review-design.md`); an error
+    /// for a game saved before rolls were recorded.
+    pub fn code(&self) -> Result<String, JsError> {
+        self.session.code(self.bot).map_err(js)
     }
 
     pub fn bot_roll(&mut self) -> Result<(), JsError> {

@@ -4,6 +4,9 @@
 //! active player's phase 2. The human is player 0, the bot player 1; the bot
 //! starts. Display marks are the source of truth; `State` is derived.
 
+use crate::bots::BotKind;
+use crate::explorer::Turn;
+use crate::gamecode::{self, Header};
 use crate::selection::{active_options, n_locked, passive_options, ActiveOptions};
 use qwixxer::state::{Mark, State};
 use qwixxer::strategy::Strategy;
@@ -131,6 +134,11 @@ pub struct Snapshot {
     /// The bot's phase-1 mark for the current roll (hidden on its own turn).
     pub bot_white: Option<Sq>,
     pub over: Option<OverReason>,
+    /// Each resolved roll as its game-code value (`gamecode::pack`), in
+    /// order. `None` for games saved before rolls were recorded: they have
+    /// no code.
+    #[serde(default)]
+    pub history: Option<Vec<u32>>,
 }
 
 impl Snapshot {
@@ -212,6 +220,7 @@ impl Session {
             dice: None,
             bot_white: None,
             over: None,
+            history: Some(vec![]),
         };
         Session {
             g,
@@ -233,6 +242,57 @@ impl Session {
 
     pub fn snapshot(&self) -> Snapshot {
         self.g.clone()
+    }
+
+    /// The game code (spec "The game code"); `Err` for a game saved before
+    /// rolls were recorded. Every game starts with the bot's roll.
+    pub fn code(&self, bot: BotKind) -> Result<String, String> {
+        let h = self
+            .g
+            .history
+            .as_ref()
+            .ok_or("this game was saved before rolls were recorded")?;
+        Ok(gamecode::encode(&Header { bot_first: true, bot }, h))
+    }
+
+    /// Appends a resolved roll to the history, from the sheets before it.
+    fn record(&mut self, pre: (State, State), dice: [u8; 6], rec: &RollRecord) {
+        let (you, bot) = pre;
+        let (r, o, turn, other) = match rec.roller {
+            Who::You => (
+                you,
+                bot,
+                Turn {
+                    marks: rec.you.iter().map(|&q| q.into()).collect(),
+                    strike: rec.you_strike,
+                },
+                rec.bot_white.map(Mark::from),
+            ),
+            Who::Bot => (
+                bot,
+                you,
+                Turn {
+                    marks: rec
+                        .bot_white
+                        .iter()
+                        .chain(rec.bot_colour.iter())
+                        .map(|&q| q.into())
+                        .collect(),
+                    strike: rec.bot_strike,
+                },
+                rec.you.first().map(|&q| q.into()),
+            ),
+        };
+        match gamecode::canonical_action(&r, &o, dice, &turn, other) {
+            Some(a) => {
+                if let Some(h) = self.g.history.as_mut() {
+                    h.push(gamecode::pack(dice, a));
+                }
+            }
+            // Can't happen for a legal roll; a code missing a roll would be
+            // wrong, so the game gets none.
+            None => self.g.history = None,
+        }
     }
 
     fn states(&self) -> (State, State) {
@@ -341,7 +401,8 @@ impl Session {
     pub fn submit_passive(&mut self, pick: Option<Sq>) -> Result<RollRecord, String> {
         self.expect(Phase::Passive)?;
         let dice = self.g.dice.ok_or("no dice")?;
-        let (you, _) = self.states();
+        let pre = self.states();
+        let (you, _) = pre;
         if let Some(p) = pick {
             if !passive_options(&you, dice).contains(&Mark::from(p)) {
                 return Err(format!("{p:?} is not a legal white-sum mark"));
@@ -364,6 +425,7 @@ impl Session {
             locked: self.settle_locks(),
         };
         if self.check_over() {
+            self.record(pre, dice, &rec);
             return Ok(rec);
         }
         let (you, bot) = self.states();
@@ -382,6 +444,7 @@ impl Session {
         if !self.check_over() {
             self.g.phase = Phase::YouToRoll;
         }
+        self.record(pre, dice, &rec);
         Ok(rec)
     }
 
@@ -400,6 +463,8 @@ impl Session {
     pub fn submit_active(&mut self, picks: &[Sq], strike: bool) -> Result<RollRecord, String> {
         self.expect(Phase::Active)?;
         let opts = self.active_opts().ok_or("no options")?;
+        let pre = self.states();
+        let dice = self.g.dice.ok_or("no dice")?;
         let chosen: Vec<Mark> = if strike {
             if !picks.is_empty() || !opts.strike {
                 return Err("a strike is not allowed here".into());
@@ -440,6 +505,7 @@ impl Session {
         if !self.check_over() {
             self.g.phase = Phase::BotToRoll;
         }
+        self.record(pre, dice, &rec);
         Ok(rec)
     }
 }
@@ -503,6 +569,7 @@ mod tests {
             dice: Some(dice),
             bot_white,
             over: None,
+            history: None,
         }
     }
 
@@ -800,5 +867,93 @@ mod tests {
         let json = serde_json::to_string(&ok).unwrap().replace("\"n\":2", "\"n\":200");
         let snap: Snapshot = serde_json::from_str(&json).unwrap();
         assert!(Session::restore(snap, make_bot(BotKind::Student), 1).is_err());
+    }
+
+    /// Plays a game to the end with random legal choices of yours.
+    fn play_out(s: &mut Session, rng: &mut SmallRng) {
+        use rand::seq::SliceRandom;
+        loop {
+            match s.view().phase {
+                Phase::BotToRoll => s.bot_roll().unwrap(),
+                Phase::YouToRoll => s.you_roll().unwrap(),
+                Phase::Passive => {
+                    let pick = s.view().passive.choose(rng).copied();
+                    s.submit_passive(pick).unwrap();
+                }
+                Phase::Active => {
+                    let o = s.view().options.unwrap();
+                    match o.selections.choose(rng) {
+                        Some(sel) => s.submit_active(&sel.clone(), false).unwrap(),
+                        None => s.submit_active(&[], o.strike).unwrap(),
+                    };
+                }
+                Phase::Over => return,
+            }
+        }
+    }
+
+    #[test]
+    fn history_replays_to_the_same_game() {
+        for seed in 0..10 {
+            let mut rng = SmallRng::seed_from_u64(seed);
+            let mut s = Session::new(make_bot(BotKind::Master), seed);
+            play_out(&mut s, &mut rng);
+            let g = crate::gamecode::replay(&s.code(BotKind::Master).unwrap()).unwrap();
+            assert_eq!(g.bot, "master");
+            assert!(g.bot_first);
+            assert_eq!(g.rolls.len(), s.snapshot().history.unwrap().len());
+            let last = &g.rolls.last().unwrap().after;
+            assert_eq!(
+                (last.you, last.opponent),
+                (s.snapshot().you, s.snapshot().bot),
+                "seed {seed}"
+            );
+            assert!(g.over.is_some());
+        }
+    }
+
+    #[test]
+    fn old_snapshots_have_no_code() {
+        let mut s = Session::new(make_bot(BotKind::Master), 1);
+        s.bot_roll().unwrap();
+        let mut json: serde_json::Value = serde_json::to_value(s.snapshot()).unwrap();
+        json.as_object_mut().unwrap().remove("history");
+        let old: Snapshot = serde_json::from_value(json).unwrap();
+        assert_eq!(old.history, None);
+        let mut r = Session::restore(old, make_bot(BotKind::Master), 1).unwrap();
+        play_out(&mut r, &mut SmallRng::seed_from_u64(1));
+        assert!(r.code(BotKind::Master).is_err());
+    }
+
+    #[test]
+    fn history_survives_a_snapshot_round_trip() {
+        let mut rng = SmallRng::seed_from_u64(4);
+        let mut s = Session::new(make_bot(BotKind::Master), 4);
+        for _ in 0..9 {
+            match s.view().phase {
+                Phase::BotToRoll => s.bot_roll().unwrap(),
+                Phase::YouToRoll => s.you_roll().unwrap(),
+                Phase::Passive => drop(s.submit_passive(None).unwrap()),
+                Phase::Active => {
+                    let o = s.view().options.unwrap();
+                    drop(s.submit_active(&[], o.strike).unwrap())
+                }
+                Phase::Over => break,
+            }
+        }
+        let json = serde_json::to_string(&s.snapshot()).unwrap();
+        let mut r = Session::restore(serde_json::from_str(&json).unwrap(), make_bot(BotKind::Master), 4).unwrap();
+        play_out(&mut r, &mut rng);
+        let g = crate::gamecode::replay(&r.code(BotKind::Master).unwrap()).unwrap();
+        assert_eq!(g.rolls.last().unwrap().after.you, r.snapshot().you);
+    }
+
+    /// A seeded finished game's code, for screenshots of the review page.
+    #[test]
+    #[ignore]
+    fn sample_code() {
+        let mut s = Session::new(make_bot(BotKind::MasterPlus), 23);
+        play_out(&mut s, &mut SmallRng::seed_from_u64(23));
+        println!("{}", s.code(BotKind::MasterPlus).unwrap());
     }
 }
