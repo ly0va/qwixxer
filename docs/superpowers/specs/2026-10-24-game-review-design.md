@@ -101,38 +101,53 @@ explorer's `force_lock` is a bot habit, not a game rule).
 ## The numbers
 
 All values are "your" (the player's) P(win) from the win net, in points
-(percentage points of win chance), valued exactly as the explorer values
-them.
+(percentage points of win chance). Luck is valued exactly as the explorer
+values it; move costs look one roll further (1-ply, below).
 
 - **Points on the graph: two per roll.**
   - *After the roll:* f(roll) as defined for roll luck: your P(win) after
     the roller's best turn.
-  - *After the move:* the win net's value of the real position after the
-    roll (both players' actual marks applied), with the next roller. After
-    the last roll it is exactly 0% or 100%.
-  - Plus a start point before roll 1: the net's value of the empty
-    position with the first roller.
+  - *After the move:* the played move's 1-ply value: E[f] of the next
+    roll, from the real position after this roll (both players' actual
+    marks applied). It is the same number as the next roll's luck average,
+    computed once and used for both. After the last roll it is exactly 0%
+    or 100%.
+  - Plus a start point before roll 1: E[f] of roll 1 (the empty position,
+    the first roller).
 - **Luck** of a roll: f(this roll) − E[f], exactly as in the explorer
   (exact expectation, not "the previous point"). Agreed after measuring:
   using the previous point instead is close (mean gap 0.44 pts vs a mean
   |luck| of 4.5 over 307 rolls) but would disagree with the explorer's
   chip.
+- **1-ply value** of a turn: E[f] of the next roll from the position the
+  turn leaves (the average, over every next roll, of the next roller's
+  best turn, valued statically: the luck machinery). A turn that ends the
+  game takes its exact 0% or 100%; turns leaving identical sheets share
+  one average.
 - **Mistake** of a choice, from the chooser's side, ≥ 0:
-  - The roller's turn: the best turn's value minus the played turn's
-    value, both valued as the explorer's move list does (on the bot's roll
-    with the sheets swapped, as for luck) **but against the other player's
-    actual white-sum mark** instead of the explorer's prediction (the
-    user's choice, option A: the roller sees that mark before the colour
-    decision, and bots other than Master often mark differently).
+  - The roller's turn: the best 1-ply value minus the played turn's 1-ply
+    value. The candidates are the static top 3 of the explorer's move list
+    plus the played turn; "Best" is the highest of them by 1-ply. Agreed
+    after a probe (16 self-play games, 380 rolls, 2026-10-24): 1-ply
+    changed the best move on 29 rolls, and on 18 of those Master+'s search
+    picked the 1-ply move (7 the static one); costs moved 0.64 pts on
+    average, 3.7% of them by more than 2 pts. Exact, so no sampling noise.
+  - Turns are valued **against the other player's actual white-sum mark**
+    (the user's choice, option A: the roller sees that mark before the
+    colour decision, and bots other than Master often mark differently).
+    On the bot's roll, with the sheets swapped, as for luck. This is what
+    makes the played turn's 1-ply value equal the next roll's luck average.
   - The other player's white-sum mark: the top of their passive options
     minus the one they chose (the explorer's opponent-roll list for your
     mark; sheets swapped for the bot's). *My call:* valued as the explorer
     does, against the roller's predicted turn, since that mark is made
     before the roller's colour decision.
   - Your mistakes count against you; the bot's count for you.
-- **The gap is ignored.** Steps on the graph won't add up exactly to luck
-  plus mistakes: the net isn't perfectly consistent from one turn to the
-  next. The user decided to ignore it and not show it.
+- **The gap is ignored.** Each luck step on the graph is exact (after the
+  move → after the next roll is f − E[f]), but the step from "after the
+  roll" (static) to "after the move" (1-ply) is the mistake plus the
+  difference between the static and 1-ply values of the best move. The
+  user decided to ignore such gaps and not show them.
 - **Totals:** the sum of luck over all rolls; the sum of your mistakes;
   the sum of the bot's mistakes.
 - **Verdict** (*my call*): compare |luck total| with |bot's mistakes −
@@ -210,9 +225,11 @@ pill "Shared game · Player vs Master" (the bot level from the code).
 
 - The page appears at once: replaying the code gives the sheets, the log
   and the result without any analysis.
-- Analysis runs in the worker roll by roll from the start, about 0.3 s per
-  roll in WASM (a move list plus the luck average), so 10–15 s for a
-  typical game on a laptop, more on a phone. The user accepted the wait.
+- Analysis runs in the worker roll by roll from the start: a move list,
+  the luck average (shared with the played move's 1-ply value), and one
+  average per other candidate (usually 2, at most 3), about 0.5–0.8 s per
+  roll in WASM, so 20–30 s for a typical game on a laptop, more on a
+  phone. The user accepted the wait.
 - The graph and luck line grow left to right; the rest of the graph is
   hatched with "Analysing… 14 of 36 rolls". Tiles show totals "so far";
   the verdict reads "Analysing… 14 of 36". Rolls not yet analysed show
@@ -232,9 +249,13 @@ pill "Shared game · Player vs Master" (the bot level from the code).
   rejected; a code cut at any roll boundary decodes.
 - Numbers: on a recorded game, each roll's luck, and the passive-mark
   mistakes, equal what the explorer returns for that position (same
-  position, same dice, bit for bit); the roller's mistakes equal the
-  explorer's whenever the actual white-sum mark matches its prediction,
-  and otherwise match a brute-force valuation against the actual mark.
+  position, same dice, bit for bit); the static values that pick the
+  roller's top 3 candidates equal the explorer's move list whenever the
+  actual white-sum mark matches its prediction.
+- 1-ply: the played turn's 1-ply value equals the next roll's luck average
+  bit for bit; a candidate's 1-ply value equals the brute-force mean of
+  the next roller's best turn over all 27,216 rolls; game-ending
+  candidates take 0% or 100%.
 - Luck is zero-sum: the bot's luck is minus yours (as in the explorer).
 - UI: stepping order; the switch shows played vs best on the sheets;
   pending states while analysing; "Player" naming on a shared link.
