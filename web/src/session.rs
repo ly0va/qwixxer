@@ -967,7 +967,15 @@ mod tests {
                     s.submit_passive(t.marks.first().map(|&m| m.into())).unwrap();
                 }
                 Phase::Active => {
-                    let (t, _) = bot_turn(you.as_mut(), &y, &b, g.bot_white.map(Into::into), g.dice.unwrap(), Roller::You, false);
+                    let (t, _) = bot_turn(
+                        you.as_mut(),
+                        &y,
+                        &b,
+                        g.bot_white.map(Into::into),
+                        g.dice.unwrap(),
+                        Roller::You,
+                        false,
+                    );
                     let picks: Vec<Sq> = t.marks.iter().map(|&m| m.into()).collect();
                     s.submit_active(&picks, t.strike).unwrap();
                 }
