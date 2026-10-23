@@ -109,6 +109,24 @@ export function reviewLog(game: ReviewGame, an: Analyses, nm: Names): ReviewEntr
     });
 }
 
+/** Your mistakes from this many points of win chance get a dot on the graph. */
+export const DOT_COST = 0.02;
+
+/** The graph's data: win chance per point, running luck per point (null: not yet), and points with a dot. */
+export function graphSeries(game: ReviewGame, an: Analyses): { values: (number | null)[]; luck: (number | null)[]; dots: number[] } {
+    const n = game.rolls.length;
+    const values = Array.from({ length: 2 * n + 1 }, (_, j) => pointValue(an, j));
+    const luck: (number | null)[] = [an[0] ? 0 : null];
+    let sum: number | null = 0;
+    for (let k = 0; k < n; k++) {
+        const l = rollLuck(an, k);
+        sum = sum !== null && l !== null ? sum + l : null;
+        luck.push(sum, sum);
+    }
+    const dots = game.rolls.flatMap((_, k) => ((an[k]?.you_cost ?? 0) >= DOT_COST ? [2 * k + 2] : []));
+    return { values, luck, dots };
+}
+
 export function stepLabel(j: number, n: number): { title: string; sub: string } {
     if (j === 0) return { title: 'Start', sub: 'before the first roll' };
     return { title: `Roll ${Math.floor((j - 1) / 2) + 1} of ${n}`, sub: j % 2 === 1 ? 'after the roll' : 'after the move' };

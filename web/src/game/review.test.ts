@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { Position, ReviewGame, RollAnalysis, RollRecord, SheetSnap } from '../engine/protocol';
 import { decode } from './link';
 import {
-    explorerHref, gameHref, names, pointValue, positionAt, reviewLog, reviewSheet, rollLuck, stepLabel, totals, verdict,
+    explorerHref, gameHref, graphSeries, names, pointValue, positionAt, reviewLog, reviewSheet, rollLuck, stepLabel, totals, verdict,
 } from './review';
 
 const sheet = (marked: [number, number][] = [], strikes = 0): SheetSnap => {
@@ -115,5 +115,18 @@ describe('review links', () => {
         expect(p.roller).toBe('you');
         expect(p.opponent.marks[0][5]).toBe(true);
         expect(gameHref('1BAAAA')).toBe('#/review?g=1BAAAA');
+    });
+});
+
+describe('graph series', () => {
+    it('values per point, running luck per point, and dots on your costly moves', () => {
+        const g = graphSeries(game, an);
+        expect(g.values).toEqual([0.48, 0.45, 0.44, 0.5, 0.46, null, null]);
+        expect(g.luck[0]).toBe(0);
+        expect(g.luck[1]).toBeCloseTo(-0.03);
+        expect(g.luck[2]).toBeCloseTo(-0.03);
+        expect(g.luck[3]).toBeCloseTo(0.03);
+        expect(g.luck[5]).toBeNull();
+        expect(g.dots).toEqual([4]); // roll 2 cost you 4.6 points (≥ 2)
     });
 });

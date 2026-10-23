@@ -948,12 +948,32 @@ mod tests {
         assert_eq!(g.rolls.last().unwrap().after.you, r.snapshot().you);
     }
 
-    /// A seeded finished game's code, for screenshots of the review page.
+    /// A seeded finished game's code, for screenshots of the review page:
+    /// Student plays your side, so the game has a few real mistakes.
     #[test]
     #[ignore]
     fn sample_code() {
+        use crate::explorer::{bot_turn, Roller};
         let mut s = Session::new(make_bot(BotKind::MasterPlus), 23);
-        play_out(&mut s, &mut SmallRng::seed_from_u64(23));
+        let mut you = make_bot(BotKind::Student);
+        loop {
+            let g = s.snapshot();
+            let (y, b) = (g.you.state(g.locked), g.bot.state(g.locked));
+            match g.phase {
+                Phase::BotToRoll => s.bot_roll().unwrap(),
+                Phase::YouToRoll => s.you_roll().unwrap(),
+                Phase::Passive => {
+                    let (t, _) = bot_turn(you.as_mut(), &y, &b, None, g.dice.unwrap(), Roller::Opponent, false);
+                    s.submit_passive(t.marks.first().map(|&m| m.into())).unwrap();
+                }
+                Phase::Active => {
+                    let (t, _) = bot_turn(you.as_mut(), &y, &b, g.bot_white.map(Into::into), g.dice.unwrap(), Roller::You, false);
+                    let picks: Vec<Sq> = t.marks.iter().map(|&m| m.into()).collect();
+                    s.submit_active(&picks, t.strike).unwrap();
+                }
+                Phase::Over => break,
+            }
+        }
         println!("{}", s.code(BotKind::MasterPlus).unwrap());
     }
 }

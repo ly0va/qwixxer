@@ -2,7 +2,7 @@
     import type { CellModel, RowModel } from '../game/rules';
     import Cell from './Cell.svelte';
     import LockCell from './LockCell.svelte';
-    let { rows, size = 48, onTap, onLock, compact = false }: { rows: RowModel[]; size?: number; onTap: (c: CellModel) => void; onLock?: (row: number) => void; compact?: boolean } = $props();
+    let { rows, size = 48, onTap, onLock, compact = false }: { rows: RowModel[]; size?: number; onTap?: (c: CellModel) => void; onLock?: (row: number) => void; compact?: boolean } = $props();
 </script>
 
 <div class="cols" class:compact>

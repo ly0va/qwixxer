@@ -1,0 +1,117 @@
+<script lang="ts">
+    import { luckText } from '../game/position';
+    import { explorerHref, names, rollLuck, signed, type Side } from '../game/review';
+    import type { ReviewController } from '../game/review.svelte';
+    import { chipsFor } from '../game/rules';
+    import ChipView from './Chip.svelte';
+    import Die from './Die.svelte';
+    // Spec "The page": the selected roll — its luck, dice, and your choice
+    // against the best one. The Played / Best rows pick which outcome the
+    // sheets show; desktop adds the step buttons.
+    let { r, compact = false }: { r: ReviewController; compact?: boolean } = $props();
+    const FACES = [['var(--die-face)', 'var(--die-pip)', 'White'], ['var(--die-face)', 'var(--die-pip)', 'White'],
+        ['var(--red-band)', 'var(--on-band)', 'Red'], ['var(--yellow-band)', 'var(--on-yellow)', 'Yellow'],
+        ['var(--green-band)', 'var(--on-band)', 'Green'], ['var(--blue-band)', 'var(--on-band)', 'Blue']];
+    const nm = $derived(names(r.shared));
+    const k = $derived(r.sel === 0 ? -1 : Math.floor((r.sel - 1) / 2));
+    const roll = $derived(k >= 0 ? r.game?.rolls[k] : undefined);
+    const a = $derived(k >= 0 ? r.an[k] : undefined);
+    const luck = $derived.by(() => {
+        const l = k >= 0 ? rollLuck(r.an, k) : null;
+        return a && l !== null ? luckText({ this_roll: a.this_roll, average: a.this_roll - l }) : null;
+    });
+    const played = $derived(roll ? chipsFor(roll.record.you, roll.record.roller === 'you' && roll.record.you_strike) : []);
+    const best = $derived(a ? chipsFor(a.you_best.marks, a.you_best.strike) : null);
+    const cost = $derived(!a ? '' : a.you_cost >= 0.005 ? `${signed(-a.you_cost)} pts` : 'Best move');
+    const side = $derived(r.sel % 2 === 0 ? r.side : null);
+    // The switch shows an outcome after the move: from the dice point it moves there first.
+    function pick(s: Side) {
+        if (r.sel % 2 === 1) r.select(r.sel + 1);
+        r.setSide(s);
+    }
+    const STEPS = [
+        { label: 'First', d: 'M6 5v14M18 6l-7 6 7 6', go: () => r.first() }, { label: 'Previous', d: 'M15 6l-6 6 6 6', go: () => r.step(-1) },
+        { label: 'Next', d: 'M9 6l6 6-6 6', go: () => r.step(1) }, { label: 'Last', d: 'M18 5v14M6 6l7 6-7 6', go: () => r.last() },
+    ];
+</script>
+
+<section class="strip" class:compact aria-label="Selected roll">
+    <div class="roll">
+        <div class="title">
+            {#if roll}
+                <b>Roll {k + 1}</b>
+                <span class="whose">{roll.record.roller === 'you' ? `${nm.your} roll` : 'bot’s roll'}</span>
+                <span class="luck {luck?.tone ?? 'pending'}" title={luck?.detail}>
+                    {#if luck}{luck.word}{#if luck.value}<b>{luck.value}</b>{/if}{:else}Luck …{/if}
+                </span>
+            {:else}
+                <b>Start</b><span class="whose">before the first roll</span>
+            {/if}
+        </div>
+        {#if roll?.before.dice}
+            <div class="dice">
+                {#each FACES as f, i}<Die value={roll.before.dice[i]} face={f[0]} pip={f[1]} size={compact ? 38 : 34} label="{f[2]} die, {roll.before.dice[i]}" />{/each}
+            </div>
+        {/if}
+    </div>
+    {#if roll}
+        <div class="switch" role="radiogroup" aria-label="Show on the sheets">
+            <button type="button" role="radio" aria-checked={side === 'played'} class:on={side === 'played'} onclick={() => pick('played')}>
+                <span class="lab">Played</span>
+                {#each played as ch}<ChipView chip={ch} size={24} />{/each}
+                {#if played.length === 0}<span class="none">nothing</span>{/if}
+                <b class="cost" class:best={a && a.you_cost < 0.005}>{cost}</b>
+            </button>
+            <button type="button" role="radio" aria-checked={side === 'best'} class:on={side === 'best'} onclick={() => pick('best')}>
+                <span class="lab">Best</span>
+                {#if best}
+                    {#each best as ch}<ChipView chip={ch} size={24} />{/each}
+                    {#if best.length === 0}<span class="none">nothing</span>{/if}
+                {:else}<span class="none">working it out…</span>{/if}
+                {#if compact && r.game}<a class="explore" href={explorerHref(r.game, k)} onclick={(e) => e.stopPropagation()}>Explore</a>{/if}
+            </button>
+        </div>
+    {/if}
+    {#if !compact}
+        <div class="nav">
+            <div class="steps" role="group" aria-label="Step through the game">
+                {#each STEPS as s}
+                    <button type="button" aria-label={s.label} onclick={s.go}>
+                        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d={s.d}></path></svg>
+                    </button>
+                {/each}
+            </div>
+            {#if roll && r.game}<a class="explore" href={explorerHref(r.game, k)}>Open in explorer</a>{/if}
+        </div>
+    {/if}
+</section>
+
+<style>
+    .strip { display: flex; align-items: center; gap: 14px; background: var(--paper); border-radius: 14px; padding: 10px 14px; box-shadow: 0 1px 0 var(--edge); }
+    .strip.compact { flex-direction: column; align-items: stretch; gap: 8px; padding: 10px 12px; }
+    .roll { display: flex; flex-direction: column; gap: 6px; }
+    .title { display: flex; align-items: center; gap: 8px; min-height: 26px; }
+    .title b { font-family: var(--cond); font-weight: 700; font-size: 19px; }
+    .whose { font-size: 13px; color: var(--muted); }
+    .dice { display: flex; gap: 5px; }
+    .compact .dice { gap: 6px; }
+    .luck { height: 24px; padding: 0 9px; border-radius: 12px; display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; font-weight: 700; font-size: 13px; }
+    .luck b { font-family: var(--cond); font-weight: 800; font-size: 16px; }
+    .luck.lucky { color: var(--lucky-ink); background: color-mix(in srgb, var(--lucky-ink) 14%, var(--paper)); }
+    .luck.unlucky { color: var(--unlucky-ink); background: color-mix(in srgb, var(--unlucky-ink) 14%, var(--paper)); }
+    .luck.average { color: var(--ink); background: var(--btn-muted-bg); }
+    .luck.pending { color: var(--muted); font-weight: 600; background: var(--btn-muted-bg); }
+    .switch { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; padding-left: 14px; border-left: 1px solid var(--edge); }
+    .compact .switch { padding-left: 0; border-left: none; }
+    .switch button { display: flex; align-items: center; gap: 6px; height: 34px; padding: 0 10px; border-radius: 9px; border: none; background: var(--log-bg); color: var(--ink); cursor: pointer; text-align: left; }
+    .switch button.on { background: var(--paper); box-shadow: inset 0 0 0 2px var(--ink); }
+    .lab { width: 52px; flex: none; font-size: 13px; font-weight: 600; color: var(--muted); }
+    .on .lab { font-weight: 700; color: var(--ink); }
+    .none { font-size: 13px; color: var(--muted); }
+    .cost { margin-left: auto; font-family: var(--cond); font-weight: 800; font-size: 18px; color: var(--unlucky-ink); }
+    .cost.best { color: var(--lucky-ink); font-size: 15px; }
+    .nav { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
+    .steps { display: flex; gap: 4px; }
+    .steps button { width: 38px; height: 38px; border-radius: 9px; border: none; background: var(--ground); color: var(--ink); display: flex; align-items: center; justify-content: center; cursor: pointer; padding: 0; }
+    .explore { margin-left: auto; font-size: 13px; font-weight: 600; color: var(--soft); text-underline-offset: 3px; }
+</style>
