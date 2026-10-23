@@ -179,7 +179,7 @@ pub struct Turn {
 }
 
 impl Turn {
-    fn key(&self) -> (Vec<(usize, u8)>, bool) {
+    pub(crate) fn key(&self) -> (Vec<(usize, u8)>, bool) {
         let mut k: Vec<(usize, u8)> = self.marks.iter().map(|m| (m.row, m.number)).collect();
         k.sort_unstable();
         (k, self.strike)

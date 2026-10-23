@@ -96,7 +96,7 @@ impl SheetSnap {
         }
     }
 
-    fn mark(&mut self, s: Sq) {
+    pub(crate) fn mark(&mut self, s: Sq) {
         self.marks[s.row][cell_index(s.row, s.n)] = true;
     }
 
