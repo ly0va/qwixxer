@@ -1,0 +1,119 @@
+import type { Position, ReviewGame, RollAnalysis } from '../engine/protocol';
+import { encode } from './link';
+import { closesRow, exploreSheet, type ExPosition, type Who } from './position';
+import { chipsFor, type Chip, type RowModel } from './rules';
+
+/**
+ * Spec `2026-10-24-game-review-design.md`, "The page": the review page's
+ * numbers and pictures from a replayed game and its per-roll analyses.
+ * Points: j = 0 is the start, 2k+1 after roll k's dice, 2k+2 after its move
+ * (k from 0); a game of n rolls has 2n+1 points.
+ */
+export type Side = 'played' | 'best';
+export type Analyses = (RollAnalysis | undefined)[];
+
+/** What the human is called: "You" in your own game, "Player" in a shared one. */
+export interface Names { you: string; You: string; your: string; Your: string }
+export const names = (shared: boolean): Names =>
+    shared ? { you: 'Player', You: 'Player', your: 'Player’s', Your: 'Player’s' } : { you: 'you', You: 'You', your: 'your', Your: 'Your' };
+
+/** Signed points of win chance with one decimal: "+3.2", "−4.6" (U+2212). */
+export const signed = (v: number) => `${v > 0 ? '+' : v < 0 ? '−' : ''}${Math.abs(v * 100).toFixed(1)}`;
+
+export function pointValue(an: Analyses, j: number): number | null {
+    if (j === 0) return an[0]?.start ?? null;
+    const a = an[Math.floor((j - 1) / 2)];
+    if (!a) return null;
+    return j % 2 === 1 ? a.this_roll : a.after_move;
+}
+
+/** f(this roll) − E[f]; E[f] is the previous roll's after-move value (roll 1: the start). */
+export function rollLuck(an: Analyses, k: number): number | null {
+    const a = an[k];
+    const prev = k === 0 ? an[0]?.start : an[k - 1]?.after_move;
+    return a && prev != null ? a.this_roll - prev : null;
+}
+
+export function totals(an: Analyses, n: number): { luck: number; you: number; bot: number; done: number } {
+    const t = { luck: 0, you: 0, bot: 0, done: 0 };
+    for (let k = 0; k < n; k++) {
+        const a = an[k];
+        if (!a) continue;
+        t.done++;
+        t.luck += rollLuck(an, k) ?? 0;
+        t.you += a.you_cost;
+        t.bot += a.bot_cost;
+    }
+    return t;
+}
+
+/** Spec "Verdict": luck against the net of both players' mistakes. */
+export function verdict(t: ReturnType<typeof totals>, n: number, youWon: boolean | null, nm: Names): string {
+    if (t.done < n) return `Analysing… ${t.done} of ${n}`;
+    const skill = t.bot - t.you;
+    if (Math.abs(t.luck) > Math.abs(skill)) return 'Mostly the dice';
+    return (youWon ?? skill > 0) ? `Mostly ${nm.your} play` : `Mostly ${nm.your} mistakes`;
+}
+
+export const fromEngine = (p: Position): ExPosition => ({
+    you: p.you, opponent: p.opponent, locked: [...p.locked],
+    dice: p.dice ? [...p.dice] : Array(6).fill(null), roller: p.roller,
+});
+
+/**
+ * The sheets at point j: after a move, the played or the best outcome; `prev`
+ * is the position before the roll's marks, so the difference is this roll's
+ * marks (drawn in pencil).
+ */
+export function positionAt(game: ReviewGame, an: Analyses, j: number, side: Side): { pos: ExPosition; prev: ExPosition } {
+    if (j === 0 || game.rolls.length === 0) {
+        const empty = () => ({ marks: [0, 1, 2, 3].map(() => Array(11).fill(false)), strikes: 0 });
+        const p: Position = { you: empty(), opponent: empty(), locked: [false, false, false, false], dice: null, roller: game.bot_first ? 'opponent' : 'you' };
+        return { pos: fromEngine(p), prev: fromEngine(p) };
+    }
+    const k = Math.floor((j - 1) / 2);
+    const roll = game.rolls[k];
+    if (j % 2 === 1) return { pos: fromEngine(roll.before), prev: fromEngine(roll.before) };
+    const best = side === 'best' ? an[k]?.you_best.after : undefined;
+    return { pos: fromEngine(best ?? roll.after), prev: fromEngine({ ...roll.before, dice: null }) };
+}
+
+/** A read-only sheet; squares marked since `prev` are pencil marks. */
+export function reviewSheet(prev: ExPosition, pos: ExPosition, who: Who): RowModel[] {
+    return exploreSheet(pos, who).map((row) => ({
+        ...row,
+        cells: row.cells.map((c, i) => ({
+            ...c,
+            clickable: false,
+            mark: c.mark === 'ink' && !prev[who].marks[row.row][i] ? 'pencil' : c.mark,
+        })),
+        lock: closesRow(pos[who], row.row) && !closesRow(prev[who], row.row) ? 'pencil' : row.lock,
+    }));
+}
+
+export interface ReviewLine { who: string; you: boolean; chips: Chip[]; empty: string; cost: string | null }
+export interface ReviewEntry { k: number; n: number; lines: ReviewLine[]; luck: string }
+
+const cost = (c: number | undefined) => (c !== undefined && c >= 0.005 ? signed(-c) : null);
+
+/** The game log, roller first, with each roll's luck and each choice's cost. */
+export function reviewLog(game: ReviewGame, an: Analyses, nm: Names): ReviewEntry[] {
+    return game.rolls.map((roll, k) => {
+        const r = roll.record;
+        const a = an[k];
+        const you: ReviewLine = { who: nm.You, you: true, chips: chipsFor(r.you, r.you_strike), empty: '–', cost: cost(a?.you_cost) };
+        const botMarks = [r.bot_white, r.bot_colour].filter((x) => x !== null);
+        const bot: ReviewLine = { who: 'Bot', you: false, chips: chipsFor(botMarks, r.bot_strike), empty: '–', cost: cost(a?.bot_cost) };
+        const l = rollLuck(an, k);
+        return { k, n: k + 1, lines: r.roller === 'you' ? [you, bot] : [bot, you], luck: l === null ? 'luck …' : `luck ${signed(l)}` };
+    });
+}
+
+export function stepLabel(j: number, n: number): { title: string; sub: string } {
+    if (j === 0) return { title: 'Start', sub: 'before the first roll' };
+    return { title: `Roll ${Math.floor((j - 1) / 2) + 1} of ${n}`, sub: j % 2 === 1 ? 'after the roll' : 'after the move' };
+}
+
+/** Roll k in the explorer: the position before its marks, with the dice and the roller. */
+export const explorerHref = (game: ReviewGame, k: number) => '#/explore?p=' + encode(fromEngine(game.rolls[k].before));
+export const gameHref = (code: string) => '#/review?g=' + code;

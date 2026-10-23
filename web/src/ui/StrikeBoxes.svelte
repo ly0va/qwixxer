@@ -1,13 +1,14 @@
 <script lang="ts">
     import MarkX from './MarkX.svelte';
     // Spec "Editing · Strike boxes": tap box k → k+1 strikes, or k if it was the last taken.
-    let { count, size = 32, label, onTap }: { count: number; size?: number; label: string; onTap: (k: number) => void } = $props();
+    // Without onTap the boxes are read-only (game review); box `pencil` is drawn in pencil.
+    let { count, size = 32, label, onTap, pencil = -1 }: { count: number; size?: number; label: string; onTap?: (k: number) => void; pencil?: number } = $props();
 </script>
 
 <div class="boxes" role="group" aria-label="{label} strikes">
     {#each [0, 1, 2, 3] as k}
-        <button type="button" class="box" class:faded={k >= count} style="--s: {size}px" aria-label="{label}, strike {k + 1}{k < count ? ', taken' : ''}" aria-pressed={k < count} onclick={() => onTap(k)}>
-            {#if k < count}<MarkX />{/if}
+        <button type="button" class="box" class:faded={k >= count} style="--s: {size}px" aria-label="{label}, strike {k + 1}{k < count ? ', taken' : ''}" aria-pressed={k < count} disabled={!onTap} onclick={() => onTap?.(k)}>
+            {#if k < count}<MarkX pencil={k === pencil} />{/if}
         </button>
     {/each}
 </div>
