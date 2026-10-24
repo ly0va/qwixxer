@@ -56,7 +56,7 @@ export interface ReviewGame { bot: BotKind; bot_first: boolean; rolls: ReviewRol
 /** Mirrors review.rs `BestMove`: a move of yours and the position it leaves. */
 export interface BestMove { marks: Sq[]; strike: boolean; after: Position }
 /** Mirrors review.rs `RollAnalysis`: your P(win) values for one roll (spec `2026-10-24-game-review-design.md`, "The numbers"). */
-export interface RollAnalysis { start: number | null; this_roll: number; after_move: number; you_cost: number; you_best: BestMove; bot_cost: number }
+export interface RollAnalysis { start: number | null; start_var: number | null; this_roll: number; after_move: number; after_var: number; you_cost: number; you_best: BestMove; bot_cost: number }
 /** Mirrors explorer.rs `Analysis`: play-out totals of one batch (or a running sum). */
 export interface Analysis { games: number; win_sum: number; win_sq_sum: number; diff_sum: number }
 /**

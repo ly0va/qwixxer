@@ -11,7 +11,7 @@ const empty = { marks: [0, 1, 2, 3].map(() => Array(11).fill(false)), strikes: 0
 const pos = { you: empty, opponent: empty, locked: [false, false, false, false], dice: [1, 2, 3, 4, 5, 6], roller: 'opponent' as const };
 const rec = { roller: 'bot' as const, you: [], you_strike: false, bot_white: null, bot_colour: null, bot_strike: true, locked: [] };
 const gameOf = (n: number): ReviewGame => ({ bot: 'master', bot_first: true, over: null, rolls: Array.from({ length: n }, () => ({ before: pos, record: rec, after: pos })) });
-const analysis = (k: number): RollAnalysis => ({ start: k === 0 ? 0.5 : null, this_roll: 0.5, after_move: 0.5, you_cost: 0, you_best: { marks: [], strike: false, after: pos }, bot_cost: 0 });
+const analysis = (k: number): RollAnalysis => ({ start: k === 0 ? 0.5 : null, start_var: k === 0 ? 0.002 : null, this_roll: 0.5, after_move: 0.5, after_var: 0.002, you_cost: 0, you_best: { marks: [], strike: false, after: pos }, bot_cost: 0 });
 
 /** reviewRoll resolves (or rejects) only when the test says so. */
 function engine(games: Record<string, number>) {

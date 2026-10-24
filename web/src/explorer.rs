@@ -620,22 +620,36 @@ impl Explorer {
 
     /// E[f]: the white pairs `pairs`' share of f's average over every roll.
     pub(crate) fn average_top(&self, you: &State, opp: &State, roller: Roller, pairs: std::ops::Range<usize>) -> f64 {
+        self.top_sums(you, opp, roller, pairs).0
+    }
+
+    /// The white pairs `pairs`' shares of E[f] and E[f²] (f² for the
+    /// variance of a roll's luck).
+    pub(crate) fn top_sums(
+        &self,
+        you: &State,
+        opp: &State,
+        roller: Roller,
+        pairs: std::ops::Range<usize>,
+    ) -> (f64, f64) {
         match roller {
-            Roller::You => self.average_top_yours(you, opp, pairs),
+            Roller::You => self.top_sums_yours(you, opp, pairs),
             Roller::Opponent => {
                 let weight: f64 = rolls_of(pairs.clone()).map(|r| r.1).sum();
-                weight - self.average_top_yours(opp, you, pairs)
+                let (g1, g2) = self.top_sums_yours(opp, you, pairs);
+                (weight - g1, weight - 2.0 * g1 + g2)
             }
         }
     }
 
-    /// E[f] on your roll (on theirs with the sheets swapped). Per white
-    /// pair the opponent's predicted white-sum mark is fixed and a turn's
-    /// value depends on your sheet after it, so each distinct turn is
-    /// valued once; each colour outcome takes the best of the turns it
-    /// makes legal.
-    fn average_top_yours(&self, you: &State, opp: &State, pairs: std::ops::Range<usize>) -> f64 {
+    /// [`Explorer::top_sums`] on your roll (on theirs with the sheets
+    /// swapped). Per white pair the opponent's predicted white-sum mark is
+    /// fixed and a turn's value depends on your sheet after it, so each
+    /// distinct turn is valued once; each colour outcome takes the best of
+    /// the turns it makes legal.
+    fn top_sums_yours(&self, you: &State, opp: &State, pairs: std::ops::Range<usize>) -> (f64, f64) {
         let mut total = 0.0;
+        let mut total2 = 0.0;
         let mut outcomes = rolls_of(pairs).peekable();
         while let Some(&(first, w)) = outcomes.peek() {
             let opp_white = predict_opp_white(&self.net, you, opp, first);
@@ -660,10 +674,12 @@ impl Explorer {
             }
             let values = self.turn_values(you, opp, &distinct, Roller::You, opp_white, first).1;
             for ix in &legal {
-                total += w * ix.iter().map(|&i| values[i]).fold(f32::MIN, f32::max) as f64;
+                let f = ix.iter().map(|&i| values[i]).fold(f32::MIN, f32::max) as f64;
+                total += w * f;
+                total2 += w * f * f;
             }
         }
-        total
+        (total, total2)
     }
 
     /// [`Explorer::average_top`] by brute force over every distinct roll.

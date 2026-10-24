@@ -243,6 +243,25 @@ pill "Shared game · Player vs Master" (the bot level from the code).
   dropped when a different game is opened. It must not disturb the
   explorer's own state if both share the engine worker.
 
+## Luck score
+
+The Dice luck tile's note (once analysed) is the game's luck score:
+z = total luck / √(Σ each roll's luck variance), and its band (z as shown,
+one decimal): ≤ −1.5 *Very unlucky*, ≤ −0.5 *Unlucky*, under 0.5
+*Average*, under 1.5 *Lucky*, else *Very lucky*; e.g. "Lucky · z +1.1".
+A roll's luck variance is Var[f] over the 1,296 dice outcomes, computed
+with its average (roll 1: `start_var`; roll k: roll k−1's `after_var`).
+
+- Why z: it scales luck by how much the dice could swing this game (close
+  games swing more), so games compare. Every roll's luck averages exactly
+  zero whatever you play, so z is 0 for neutral dice at any skill.
+- No percentile. In 720 self-play games (Master bot against Master,
+  Student, Newbie on your side) z's spread is wider than a normal one (sd
+  1.27; |z| > 2 in 8.8% vs 4.6%: games the dice decide early leave a small
+  variance), and its shape depends on your play: a typical win's z is +1.16
+  for Master, +1.56 for Newbie. A percentile would say "compared with
+  players like X".
+
 ## Explorer
 
 So the explorer and the review pick the same best move, the explorer's

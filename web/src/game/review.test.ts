@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { Position, ReviewGame, RollAnalysis, RollRecord, SheetSnap } from '../engine/protocol';
 import { decode } from './link';
 import {
-    bestShown, explorerHref, gameHref, graphSeries, names, pointValue, positionAt, reviewLog, reviewSheet, rollLuck, stepLabel, totals, verdict,
+    bestShown, explorerHref, gameHref, graphSeries, names, pointValue, positionAt, reviewLog, reviewSheet, luckScore, rollLuck, stepLabel, totals, verdict,
 } from './review';
 
 const sheet = (marked: [number, number][] = [], strikes = 0): SheetSnap => {
@@ -31,8 +31,8 @@ const game: ReviewGame = {
 };
 const best = (after: Position) => ({ marks: [{ row: 0, n: 9 }], strike: false, after });
 const an: RollAnalysis[] = [
-    { start: 0.48, this_roll: 0.45, after_move: 0.44, you_cost: 0, you_best: best(s1), bot_cost: 0.01 },
-    { start: null, this_roll: 0.5, after_move: 0.46, you_cost: 0.046, you_best: best(pos(sheet([[0, 7]]), sheet([[0, 5]]), 'opponent')), bot_cost: 0 },
+    { start: 0.48, start_var: 0.002, this_roll: 0.45, after_move: 0.44, after_var: 0.003, you_cost: 0, you_best: best(s1), bot_cost: 0.01 },
+    { start: null, start_var: null, this_roll: 0.5, after_move: 0.46, after_var: 0.004, you_cost: 0.046, you_best: best(pos(sheet([[0, 7]]), sheet([[0, 5]]), 'opponent')), bot_cost: 0 },
 ];
 
 describe('review points', () => {
@@ -50,6 +50,17 @@ describe('review points', () => {
         expect(t.luck).toBeCloseTo(-0.03 + 0.06);
         expect(t.you).toBeCloseTo(0.046);
         expect(t.bot).toBeCloseTo(0.01);
+        expect(t.var).toBeCloseTo(0.002 + 0.003); // roll 1: the start's; roll 2: roll 1's after-move
+    });
+    it('luck score: total luck over its standard deviation, with a word', () => {
+        expect(luckScore(0.03, 0.005)).toEqual({ z: 0.03 / Math.sqrt(0.005), word: 'Average', text: 'Average · z +0.4' });
+        expect(luckScore(-0.06, 0.004).word).toBe('Unlucky'); // z −0.95
+        expect(luckScore(0.04, 0.0016).word).toBe('Lucky'); // z +1.0
+        expect(luckScore(0.2, 0.01)).toMatchObject({ word: 'Very lucky', text: 'Very lucky · z +2.0' });
+        expect(luckScore(-0.2, 0.01)).toMatchObject({ word: 'Very unlucky', text: 'Very unlucky · z −2.0' });
+        expect(luckScore(0.05, 0.01).word).toBe('Lucky'); // z +0.5: the band starts there
+        expect(luckScore(-0.15, 0.01).word).toBe('Very unlucky'); // z −1.5
+        expect(luckScore(0.1, 0)).toMatchObject({ z: 0, word: 'Average' }); // the dice could change nothing
     });
     it('verdicts', () => {
         const own = names(false);

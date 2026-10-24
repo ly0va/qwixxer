@@ -34,21 +34,40 @@ export function rollLuck(an: Analyses, k: number): number | null {
     return a && prev != null ? a.this_roll - prev : null;
 }
 
-export function totals(an: Analyses, n: number): { luck: number; you: number; bot: number; done: number } {
-    const t = { luck: 0, you: 0, bot: 0, done: 0 };
+/** The variance of roll k's luck: from the start (roll 1) or the previous roll's after-move. */
+export function rollVar(an: Analyses, k: number): number | null {
+    return (k === 0 ? an[0]?.start_var : an[k - 1]?.after_var) ?? null;
+}
+
+export function totals(an: Analyses, n: number): { luck: number; var: number; you: number; bot: number; done: number } {
+    const t = { luck: 0, var: 0, you: 0, bot: 0, done: 0 };
     for (let k = 0; k < n; k++) {
         const a = an[k];
         if (!a) continue;
         t.done++;
         t.luck += rollLuck(an, k) ?? 0;
+        t.var += rollVar(an, k) ?? 0;
         t.you += a.you_cost;
         t.bot += a.bot_cost;
     }
     return t;
 }
 
+/**
+ * Spec "Luck score": the game's luck over its standard deviation (z), so
+ * games compare whatever the dice could swing; the word is z's band
+ * (rounded as shown). No percentile: its spread depends on how well you play.
+ */
+export function luckScore(luck: number, variance: number): { z: number; word: string; text: string } {
+    const z = variance > 0 ? luck / Math.sqrt(variance) : 0;
+    const r = Math.round(z * 10) / 10;
+    const word = r <= -1.5 ? 'Very unlucky' : r <= -0.5 ? 'Unlucky' : r < 0.5 ? 'Average' : r < 1.5 ? 'Lucky' : 'Very lucky';
+    const sign = r > 0 ? '+' : r < 0 ? '−' : '';
+    return { z, word, text: `${word} · z ${sign}${Math.abs(r).toFixed(1)}` };
+}
+
 /** Spec "Verdict": luck against the net of both players' mistakes. */
-export function verdict(t: ReturnType<typeof totals>, n: number, youWon: boolean | null, nm: Names): string {
+export function verdict(t: { luck: number; you: number; bot: number; done: number }, n: number, youWon: boolean | null, nm: Names): string {
     if (t.done < n) return `Analysing… ${t.done} of ${n}`;
     const skill = t.bot - t.you;
     if (Math.abs(t.luck) > Math.abs(skill)) return 'Mostly the dice';

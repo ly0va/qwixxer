@@ -22,10 +22,14 @@ pub struct BestMove {
 pub struct RollAnalysis {
     /// Roll 1 only: E[f] of the first roll, the graph's start point.
     pub start: Option<f32>,
+    /// Roll 1 only: the variance of the first roll's f (of its luck).
+    pub start_var: Option<f32>,
     /// f(this roll): your P(win) after the roller's best turn (the luck chip's "this roll").
     pub this_roll: f32,
     /// The played move's 1-ply value: the next roll's luck average (or 0, ½, 1 at the end).
     pub after_move: f32,
+    /// The variance of the next roll's f (of its luck), 0 at the end.
+    pub after_var: f32,
     /// What your choice this roll cost you (your turn, or your white-sum mark on the bot's roll).
     pub you_cost: f32,
     pub you_best: BestMove,
@@ -61,18 +65,25 @@ impl Explorer {
     /// E[f] of the next roll from `after`, your P(win); a finished game is
     /// worth 1, 0 or ½ by points.
     pub(crate) fn one_ply(&self, after: &Position) -> f32 {
+        self.one_ply_moments(after).0
+    }
+
+    /// [`Explorer::one_ply`] and the variance of the next roll's f (0 at the end).
+    pub(crate) fn one_ply_moments(&self, after: &Position) -> (f32, f32) {
         let (you, opp, locked) = states(after);
         if you.strikes >= 4 || opp.strikes >= 4 || n_locked(locked) >= 2 {
             let (a, b) = (you.count_points(), opp.count_points());
-            return if a > b {
+            let v = if a > b {
                 1.0
             } else if a < b {
                 0.0
             } else {
                 0.5
             };
+            return (v, 0.0);
         }
-        self.average_top(&you, &opp, after.roller, 0..WHITE_PAIRS as usize) as f32
+        let (m1, m2) = self.top_sums(&you, &opp, after.roller, 0..WHITE_PAIRS as usize);
+        (m1 as f32, (m2 - m1 * m1).max(0.0) as f32)
     }
 
     /// The explorer's 1-ply value of your move on your roll: [`Explorer::one_ply`]
@@ -108,13 +119,14 @@ impl Explorer {
         let before = &roll.before;
         let dice = before.dice.ok_or("no dice")?;
         let rec = &roll.record;
-        let (this_roll, start) = if k == 0 {
-            let l = self.luck(before, 0, WHITE_PAIRS)?;
-            (l.this_roll, Some(l.average as f32))
+        let this_roll = self.luck(before, 0, 0)?.this_roll;
+        let (start, start_var) = if k == 0 {
+            let (m, v) = self.one_ply_moments(before);
+            (Some(m), Some(v))
         } else {
-            (self.luck(before, 0, 0)?.this_roll, None)
+            (None, None)
         };
-        let after_move = self.one_ply(&roll.after);
+        let (after_move, after_var) = self.one_ply_moments(&roll.after);
 
         let (you, bot, _) = states(before);
         let you_roll = rec.roller == Who::You;
@@ -224,8 +236,10 @@ impl Explorer {
         };
         Ok(RollAnalysis {
             start,
+            start_var,
             this_roll,
             after_move,
+            after_var,
             you_cost,
             you_best,
             bot_cost,
@@ -308,17 +322,35 @@ mod tests {
     }
 
     #[test]
-    fn one_ply_matches_brute_force() {
+    fn one_ply_and_the_luck_variance_match_brute_force() {
         let ex = Explorer::new();
         let (_, g) = game(4);
         let pos = &g.rolls[6].after;
         let (you, opp, _) = states(pos);
-        let brute: f64 = rolls().map(|(d, w)| w * ex.top(&you, &opp, d, pos.roller) as f64).sum();
+        let fs: Vec<(f64, f64)> = rolls()
+            .map(|(d, w)| (w, ex.top(&you, &opp, d, pos.roller) as f64))
+            .collect();
+        let mean: f64 = fs.iter().map(|(w, f)| w * f).sum();
+        let var: f64 = fs.iter().map(|(w, f)| w * (f - mean) * (f - mean)).sum();
         assert!(
-            (ex.one_ply(pos) as f64 - brute).abs() < 1e-5,
-            "{} vs {brute}",
+            (ex.one_ply(pos) as f64 - mean).abs() < 1e-5,
+            "{} vs {mean}",
             ex.one_ply(pos)
         );
+        let a = ex.review_roll(&g, 6).unwrap();
+        assert!((a.after_var as f64 - var).abs() < 1e-5, "{} vs {var}", a.after_var);
+        assert!(var > 0.0);
+    }
+
+    #[test]
+    fn roll_one_has_the_start_variance_and_the_last_roll_none_after() {
+        let ex = Explorer::new();
+        let (_, g) = game(12);
+        let a0 = ex.review_roll(&g, 0).unwrap();
+        let v0 = a0.start_var.unwrap();
+        assert!(v0 > 0.0 && v0 < 0.25, "{v0}");
+        assert_eq!(ex.review_roll(&g, 1).unwrap().start_var, None);
+        assert_eq!(ex.review_roll(&g, g.rolls.len() - 1).unwrap().after_var, 0.0);
     }
 
     #[test]
