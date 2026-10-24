@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { Answer, Engine, Position } from '../engine/protocol';
+import type { Answer, Engine, MoveOut, Position } from '../engine/protocol';
 import type { Store } from './controller.svelte';
 import { BAD_LINK, ExplorerController, LUCK_CHUNK, luckKey, MAX_BATCH, MAX_GAMES, MIN_BATCH } from './explorer.svelte';
 import { encode } from './link';
@@ -528,5 +528,88 @@ describe('ExplorerController analysis throttle', () => {
         timers[0].f();
         await flush();
         expect(an).toHaveLength(1);
+    });
+});
+
+describe('ExplorerController 1-ply', () => {
+    type Call = { kind: string; args: any[]; resolve: (v: any) => void; reject: (e: Error) => void };
+    const mv = (n: number, p_win: number): MoveOut => ({ marks: [{ row: 0, n }], strike: false, pass: false, p_win, bots: [], note: null });
+    const withMoves = (moves: MoveOut[]): Answer => ({ ...answer(0.5), moves });
+    function setup() {
+        const calls: Call[] = [];
+        const push = (kind: string) => (...args: any[]) =>
+            new Promise((resolve, reject) => calls.push({ kind, args: JSON.parse(JSON.stringify(args)), resolve, reject }));
+        const engine = { explore: vi.fn(push('explore')), luck: vi.fn(push('luck')), onePly: vi.fn(push('onePly')) } as unknown as Engine;
+        const x = new ExplorerController(engine, memStore());
+        x.init();
+        const of = (kind: string) => calls.filter((c) => c.kind === kind);
+        return { x, of };
+    }
+    const list = [mv(2, 0.452), mv(3, 0.441), mv(4, 0.43), mv(5, 0.42)];
+
+    it('values your top 3 one at a time, then re-ranks them once', async () => {
+        const { x, of } = setup();
+        x.random();
+        of('explore')[0].resolve(withMoves(list));
+        await flush();
+        expect(x.refining).toBe(true);
+        expect(x.ranked.map((m) => m.marks[0].n)).toEqual([2, 3, 4, 5]);
+        expect(of('onePly')).toHaveLength(1);
+        expect(of('onePly')[0].args[0].roller).toBe('you');
+        expect(of('onePly')[0].args.slice(1)).toEqual([[{ row: 0, n: 2 }], false]);
+        of('onePly')[0].resolve(0.4396);
+        await flush();
+        of('onePly')[1].resolve(0.4398);
+        await flush();
+        expect(x.ranked.every((m) => !m.refined)).toBe(true); // nothing moves until all three are in
+        expect(of('onePly')[2].args[1]).toEqual([{ row: 0, n: 4 }]);
+        of('onePly')[2].resolve(0.40);
+        await flush();
+        expect(of('onePly')).toHaveLength(3);
+        expect(x.refining).toBe(false);
+        expect(x.ranked.map((m) => [m.marks[0].n, m.p_win, m.refined])).toEqual(
+            [[3, 0.4398, true], [2, 0.4396, true], [4, 0.40, true], [5, 0.42, false]]);
+    });
+
+    it("the opponent's roll stays static and asks nothing", async () => {
+        const { x, of } = setup();
+        x.setRoller('opponent');
+        x.random();
+        of('explore')[0].resolve(answer(0.5)); // outdated by the dice
+        await flush();
+        of('explore')[1].resolve(withMoves(list));
+        await flush();
+        expect(of('onePly')).toHaveLength(0);
+        expect(x.refining).toBe(false);
+        expect(x.ranked.map((m) => m.p_win)).toEqual([0.452, 0.441, 0.43, 0.42]);
+    });
+
+    it('an edit drops the old values and refines the new list', async () => {
+        const { x, of } = setup();
+        x.random();
+        of('explore')[0].resolve(withMoves(list));
+        await flush();
+        x.tapSquare('you', 0, 0);
+        of('onePly')[0].resolve(0.1);
+        await flush();
+        expect(of('onePly')).toHaveLength(1); // the old list's next move isn't asked
+        of('explore')[1].resolve(withMoves([mv(9, 0.6)]));
+        await flush();
+        expect(of('onePly')).toHaveLength(2);
+        expect(of('onePly')[1].args[1]).toEqual([{ row: 0, n: 9 }]);
+        of('onePly')[1].resolve(0.61);
+        await flush();
+        expect(x.ranked.map((m) => [m.marks[0].n, m.p_win])).toEqual([[9, 0.61]]);
+    });
+
+    it('an engine error leaves the static list', async () => {
+        const { x, of } = setup();
+        x.random();
+        of('explore')[0].resolve(withMoves(list));
+        await flush();
+        of('onePly')[0].reject(new Error('engine was reset'));
+        await flush();
+        expect(x.refining).toBe(false);
+        expect(x.ranked.map((m) => m.refined)).toEqual([false, false, false, false]);
     });
 });

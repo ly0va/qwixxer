@@ -87,6 +87,8 @@ export interface Engine {
     analyze(position: Position, start: number, count: number): Promise<Analysis>;
     /** Roll luck for a position with dice, white pairs `first .. first + count` of 21 (spec `2026-10-22-explorer-roll-luck-design.md`). */
     luck(position: Position, first: number, count: number): Promise<Luck>;
+    /** Your move's 1-ply value on your roll: the next roll's luck average after it. */
+    onePly(position: Position, marks: Sq[], strike: boolean): Promise<number>;
     /** The finished game's code (rejects for a game saved before rolls were recorded). */
     gameCode(): Promise<string>;
     /** Replays a game code; rejects a malformed or illegal one. */

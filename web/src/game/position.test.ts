@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import type { View } from '../engine/protocol';
+import type { MoveOut, View } from '../engine/protocol';
 import {
     clearSheet, closedRows, emptyPosition, exploreSheet, fromView, marginText, nextUnsetDie, overText, percent, randomDice,
     setDie, sheetTotal, swapSides, tapStrike, toEngine, toggleLock, toggleSquare,
-    addAnalysis, analysisKey, analysisMargin, chanceText, gamesText, isOver, luckText, moveChance, winChance, ZERO_ANALYSIS,
+    addAnalysis, analysisKey, analysisMargin, chanceText, gamesText, isOver, luckText, moveChance, rankMoves, winChance, ZERO_ANALYSIS,
 } from './position';
 
 const markRed = (idx: number[]) => idx.reduce((p, i) => toggleSquare(p, 'you', 0, i), emptyPosition());
@@ -161,5 +161,37 @@ describe('analysis numbers', () => {
         expect(moveChance(0.5464)).toBe('54.6%');
         expect(moveChance(0)).toBe('0.0%');
         expect(moveChance(1)).toBe('100.0%');
+    });
+});
+
+describe('rankMoves', () => {
+    const mv = (n: number, p_win: number, extra: Partial<MoveOut> = {}): MoveOut =>
+        ({ marks: [{ row: 0, n }], strike: false, pass: false, p_win, bots: [], note: null, ...extra });
+    const list = [mv(2, 0.452, { bots: ['master_plus', 'master'] }), mv(3, 0.441, { note: 'rule', bots: ['student'] }), mv(4, 0.43), mv(5, 0.42), mv(6, 0.41)];
+
+    it('without 1-ply values is the static list', () => {
+        expect(rankMoves(list, null).map((m) => [m.marks[0].n, m.p_win, m.refined])).toEqual(
+            [[2, 0.452, false], [3, 0.441, false], [4, 0.43, false], [5, 0.42, false], [6, 0.41, false]]);
+    });
+
+    it('re-sorts the top 3 by their 1-ply values and keeps the rest below, static', () => {
+        const r = rankMoves(list, [0.4396, 0.4398, 0.40]);
+        expect(r.map((m) => [m.marks[0].n, m.p_win, m.refined])).toEqual(
+            [[3, 0.4398, true], [2, 0.4396, true], [4, 0.40, true], [5, 0.42, false], [6, 0.41, false]]);
+    });
+
+    it('keeps the bot tags, drops the note on the new first row, and breaks ties by the static order', () => {
+        const r = rankMoves(list, [0.43, 0.43, 0.43]);
+        expect(r.map((m) => m.marks[0].n)).toEqual([2, 3, 4, 5, 6]);
+        const s = rankMoves(list, [0.40, 0.45, 0.41]);
+        expect(s[0].marks[0].n).toBe(3);
+        expect(s[0].note).toBeNull();
+        expect(s[0].bots).toEqual(['student']);
+        expect(s.map((m) => m.marks[0].n)).toEqual([3, 4, 2, 5, 6]);
+        expect(s[2].bots).toEqual(['master_plus', 'master']);
+    });
+
+    it('handles fewer than 3 moves', () => {
+        expect(rankMoves([mv(2, 0.5)], [0.6]).map((m) => [m.p_win, m.refined])).toEqual([[0.6, true]]);
     });
 });

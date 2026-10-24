@@ -3,7 +3,7 @@
 //! measures it, the played move's 1-ply value, and what each player's
 //! choice cost. Every value is your (the player's) P(win).
 
-use crate::explorer::{legal_turns, states, Explorer, Position, Roller, Turn, WHITE_PAIRS};
+use crate::explorer::{legal_turns, predict_opp_white, states, Explorer, Position, Roller, Turn, WHITE_PAIRS};
 use crate::gamecode::ReviewGame;
 use crate::selection::n_locked;
 use crate::session::{SheetSnap, Sq, Who};
@@ -73,6 +73,33 @@ impl Explorer {
             };
         }
         self.average_top(&you, &opp, after.roller, 0..WHITE_PAIRS as usize) as f32
+    }
+
+    /// The explorer's 1-ply value of your move on your roll: [`Explorer::one_ply`]
+    /// after it and the opponent's predicted white-sum mark. With the bot's
+    /// actual mark as predicted it is the review's value of that move.
+    pub fn move_one_ply(&self, pos: &Position, marks: &[Sq], strike: bool) -> Result<f32, String> {
+        pos.validate()?;
+        if pos.roller != Roller::You {
+            return Err("1-ply values are for your roll".into());
+        }
+        let dice = pos.dice.ok_or("no dice")?;
+        let (you, opp, locked) = states(pos);
+        if you.strikes >= 4 || opp.strikes >= 4 || n_locked(locked) >= 2 {
+            return Err("the game is over".into());
+        }
+        let opp_white = predict_opp_white(&self.net, &you, &opp, dice);
+        let turn = Turn {
+            marks: marks.iter().map(|&q| q.into()).collect(),
+            strike,
+        };
+        if !legal_turns(&you, &opp, dice, Roller::You, opp_white)
+            .iter()
+            .any(|t| t.key() == turn.key())
+        {
+            return Err("not a legal move".into());
+        }
+        Ok(self.one_ply(&applied(pos, &turn, opp_white)))
     }
 
     /// Spec "The numbers" for roll `k` of `game`.
@@ -339,6 +366,82 @@ mod tests {
         let (_, g) = game(7);
         let a = ex.review_roll(&g, g.rolls.len() - 1).unwrap();
         assert!([0.0, 0.5, 1.0].contains(&a.after_move), "{}", a.after_move);
+    }
+
+    /// On your roll, the static top 3 and the best of their explorer 1-ply values.
+    fn explorer_best(ex: &Explorer, pos: &Position) -> (Vec<Sq>, bool, f32) {
+        let (you, bot, _) = states(pos);
+        let (turns, vals) = ex.move_values(&you, &bot, pos.dice.unwrap(), Roller::You);
+        let mut ix: Vec<usize> = (0..turns.len()).collect();
+        ix.sort_by(|&a, &b| vals[b].total_cmp(&vals[a]));
+        ix.iter()
+            .take(3)
+            .map(|&i| {
+                let marks: Vec<Sq> = turns[i].marks.iter().map(|&m| Sq::from(m)).collect();
+                let v = ex.move_one_ply(pos, &marks, turns[i].strike).unwrap();
+                (marks, turns[i].strike, v)
+            })
+            .fold(None::<(Vec<Sq>, bool, f32)>, |acc, c| match acc {
+                Some(a) if a.2 >= c.2 => Some(a),
+                _ => Some(c),
+            })
+            .unwrap()
+    }
+
+    #[test]
+    fn explorer_one_ply_agrees_with_the_review_when_the_prediction_held() {
+        let ex = Explorer::new();
+        let mut checked = 0;
+        for seed in [9, 10] {
+            let (_, g) = game(seed);
+            for (k, roll) in g.rolls.iter().enumerate() {
+                let pos = &roll.before;
+                if pos.roller != Roller::You {
+                    continue;
+                }
+                let (you, bot, _) = states(pos);
+                let predicted = crate::explorer::predict_opp_white(&ex.net, &you, &bot, pos.dice.unwrap());
+                if predicted != roll.record.bot_white.map(Into::into) {
+                    continue;
+                }
+                let a = ex.review_roll(&g, k).unwrap();
+                let (marks, strike, v) = explorer_best(&ex, pos);
+                assert_eq!(v, a.after_move + a.you_cost, "seed {seed} roll {k}");
+                if a.you_cost > 0.0 {
+                    assert_eq!(
+                        (marks, strike),
+                        (a.you_best.marks.clone(), a.you_best.strike),
+                        "seed {seed} roll {k}"
+                    );
+                }
+                checked += 1;
+            }
+        }
+        assert!(checked >= 10, "only {checked} rolls checked");
+    }
+
+    #[test]
+    fn explorer_one_ply_picks_the_reviews_best_on_the_reported_roll() {
+        // The user's game: on roll 8 the static top (B7+R5, played) and the
+        // 1-ply best (B7+Y6) differ.
+        let ex = Explorer::new();
+        let g = replay("1BD6DXn-KjBvbXBFuDA4zZShp6WEFNQ8nZNdrYgHXVkOwcA3vvXyvSWrebDhIDYUjtC9MNlc1gD2Udm8w_").unwrap();
+        let a = ex.review_roll(&g, 7).unwrap();
+        let (marks, strike, v) = explorer_best(&ex, &g.rolls[7].before);
+        assert_eq!((marks, strike), (a.you_best.marks.clone(), a.you_best.strike));
+        assert_eq!(v, a.after_move + a.you_cost);
+    }
+
+    #[test]
+    fn move_one_ply_is_for_a_legal_move_on_your_roll() {
+        let ex = Explorer::new();
+        let (_, g) = game(11);
+        let theirs = g.rolls.iter().find(|r| r.before.roller == Roller::Opponent).unwrap();
+        assert!(ex.move_one_ply(&theirs.before, &[], false).is_err());
+        let mine = g.rolls.iter().find(|r| r.before.roller == Roller::You).unwrap();
+        let bogus = [Sq { row: 0, n: 2 }, Sq { row: 0, n: 3 }, Sq { row: 0, n: 4 }];
+        assert!(ex.move_one_ply(&mine.before, &bogus, false).is_err());
+        assert!(ex.move_one_ply(&mine.before, &[], true).is_ok());
     }
 
     #[test]

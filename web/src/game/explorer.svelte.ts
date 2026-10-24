@@ -1,8 +1,8 @@
-import type { Analysis, Answer, Engine, Luck, Roller, View } from '../engine/protocol';
+import type { Analysis, Answer, Engine, Luck, Position, Roller, View } from '../engine/protocol';
 import type { Store } from './controller.svelte';
 import { decode, encode } from './link';
 import * as P from './position';
-import type { ExPosition, Who } from './position';
+import type { ExPosition, RankedMove, Who } from './position';
 
 const SAVE = 'qwixxer.explorer.v1';
 export const BAD_LINK = "That link doesn't hold a valid position.";
@@ -46,6 +46,10 @@ export class ExplorerController {
     analysing = $state(false);
     /** Roll luck and the position (dice included) it belongs to. */
     luck = $state<{ key: string; value: Luck } | null>(null);
+    /** The current answer and the position it was asked for (null once an edit outdates it): what 1-ply values belong to. */
+    private answered = $state.raw<{ seq: number; pos: Position } | null>(null);
+    /** 1-ply values of an answer's top REFINE_TOP moves, in static order (null: the engine failed). */
+    private onePly = $state.raw<{ seq: number; values: number[] | null } | null>(null);
 
     private engine: Engine;
     private store: Store;
@@ -55,6 +59,9 @@ export class ExplorerController {
     private dirty = false;
     private luckInflight = false;
     private luckDirty = false;
+    private seq = 0;
+    private refineInflight = false;
+    private refineDirty = false;
     private noticeId = 0;
     private now: () => number;
     private active = false;
@@ -99,6 +106,20 @@ export class ExplorerController {
         // The move list first: the worker answers in order.
         if (!this.pending && !(this.answer && !this.error)) void this.evaluate();
         if (luck) void this.askLuck();
+    }
+
+    /** The move list as shown: on your roll the top REFINE_TOP re-ranked by 1-ply once their values are in. */
+    get ranked(): RankedMove[] {
+        const moves = this.answer?.moves;
+        if (!moves) return [];
+        const a = this.answered;
+        return P.rankMoves(moves, a && this.onePly?.seq === a.seq ? this.onePly.values : null);
+    }
+
+    /** The current answer's top moves are still being valued 1-ply. */
+    get refining() {
+        const a = this.answered;
+        return !!a && a.pos.roller === 'you' && !!this.answer?.moves && this.onePly?.seq !== a.seq;
     }
 
     /** The Position card's numbers are current: analysed for this position, or a finished game (shown as a result). */
@@ -162,6 +183,8 @@ export class ExplorerController {
     private set(p: ExPosition) {
         this.pos = p;
         this.showAll = false;
+        this.answered = null;
+        if (this.refineInflight) this.refineDirty = true;
         try { this.store.set(SAVE, encode(p)); } catch { /* storage unavailable */ }
         void this.evaluate();
         void this.askLuck();
@@ -185,10 +208,13 @@ export class ExplorerController {
             do {
                 this.dirty = false;
                 try {
-                    const a = await this.engine.explore(P.toEngine(this.pos));
+                    const pos = P.toEngine(this.pos);
+                    const a = await this.engine.explore(pos);
                     if (!this.dirty) {
                         this.answer = a;
                         this.error = '';
+                        this.answered = { seq: ++this.seq, pos };
+                        void this.refine();
                     }
                 } catch (err) {
                     // Keep the last answer: the error shows under it.
@@ -238,6 +264,40 @@ export class ExplorerController {
             } while (this.luckDirty);
         } finally {
             this.luckInflight = false;
+        }
+    }
+
+    /**
+     * Spec "Explorer" (`2026-10-24-game-review-design.md`): on your roll,
+     * the answer's top REFINE_TOP moves' 1-ply values, asked one at a time
+     * so an edit's `explore` waits at most one. They show only once all
+     * are in; an edit drops them and the next answer starts over.
+     */
+    private async refine() {
+        if (this.refineInflight) {
+            this.refineDirty = true;
+            return;
+        }
+        this.refineInflight = true;
+        try {
+            do {
+                this.refineDirty = false;
+                const at = this.answered;
+                const moves = this.answer?.moves;
+                if (!at || !moves || this.answer?.over || at.pos.roller !== 'you') break;
+                let values: number[] | null = [];
+                try {
+                    for (const m of moves.slice(0, P.REFINE_TOP)) {
+                        if (this.refineDirty) break;
+                        values.push(await this.engine.onePly(at.pos, m.marks, m.strike));
+                    }
+                } catch {
+                    values = null; // the static list stays; the move list shows engine errors
+                }
+                if (!this.refineDirty) this.onePly = { seq: at.seq, values };
+            } while (this.refineDirty);
+        } finally {
+            this.refineInflight = false;
         }
     }
 

@@ -241,6 +241,22 @@ pill "Shared game · Player vs Master" (the bot level from the code).
   dropped when a different game is opened. It must not disturb the
   explorer's own state if both share the engine worker.
 
+## Explorer
+
+So the explorer and the review pick the same best move, the explorer's
+move list on your roll uses the review's 1-ply values for its static top 3:
+
+- After the move list arrives, each of the top 3 is valued 1-ply
+  (`one_ply` after the move and the opponent's *predicted* white-sum mark),
+  one engine call per move so an edit never waits long.
+- Once all three are in, those rows show their 1-ply value and re-sort
+  among themselves (a tie keeps the static order); the header says
+  "refining…" until then. Rows 4 and below keep their static value, dimmed,
+  and stay below. The new first row drops its bot note.
+- The opponent's roll and the luck chip stay static, as in the review.
+- The two pages agree when the bot's actual white-sum mark matched the
+  prediction (the review prices against the actual one).
+
 ## Testing
 
 - Code: encode → decode round trip on recorded games; every field's edge

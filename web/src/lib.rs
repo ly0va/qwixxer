@@ -123,6 +123,14 @@ impl WasmExplorer {
         Ok(serde_json::to_string(&l).unwrap())
     }
 
+    /// Your move's 1-ply value on your roll (spec
+    /// `2026-10-24-game-review-design.md`, "Explorer"): `marks` as JSON.
+    pub fn move_one_ply(&self, position: &str, marks: &str, strike: bool) -> Result<f32, JsError> {
+        let pos: explorer::Position = serde_json::from_str(position).map_err(js)?;
+        let marks: Vec<Sq> = serde_json::from_str(marks).map_err(js)?;
+        self.inner.move_one_ply(&pos, &marks, strike).map_err(js)
+    }
+
     /// The game a code describes, replayed (spec
     /// `2026-10-24-game-review-design.md`), as JSON; an error for a code
     /// that is malformed or breaks the rules.

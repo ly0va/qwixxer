@@ -5,7 +5,9 @@
     import { chipsFor } from '../game/rules';
     import ChipView from './Chip.svelte';
     let { x, compact = false }: { x: ExplorerController; compact?: boolean } = $props();
-    const moves = $derived(x.answer?.moves ?? null);
+    const moves = $derived(x.answer?.moves ? x.ranked : null);
+    // Once the top rows have 1-ply values, the static rest is dimmed.
+    const refined = $derived(!!moves?.[0]?.refined);
     const shown = $derived(moves ? (x.showAll ? moves : moves.slice(0, 6)) : []);
     const noDice = $derived(x.pos.dice.some((d) => d === null));
     // Why a bot plays a move ranked below the top (spec "Moves"), behind an (i).
@@ -39,7 +41,7 @@
 <section class="card" class:compact class:stale={x.pending} aria-label="Moves">
     <div class="top">
         <h2>Best moves</h2>
-        {#if moves}<span class="muted">{moves.length} legal</span>{/if}
+        {#if moves}<span class="muted">{moves.length} legal{#if x.refining} · refining…{/if}</span>{/if}
     </div>
     {#if noDice}
         <div class="empty">
@@ -49,7 +51,7 @@
     {:else if moves}
         <ol>
             {#each shown as m, i}
-                <li>
+                <li class:static={refined && !m.refined}>
                     <span class="rank">{i + 1}</span>
                     <div class="what">
                         <div class="chips">
@@ -84,6 +86,7 @@
     .empty b { color: var(--soft); font-size: 16px; }
     ol { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
     li { position: relative; display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-radius: 10px; background: var(--log-bg); }
+    li.static .pct, li.static .rank { opacity: 0.55; }
     .rank { width: 18px; font-family: var(--cond); font-weight: 700; font-size: 17px; color: var(--muted); }
     .what { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 5px; }
     .chips, .tags { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }

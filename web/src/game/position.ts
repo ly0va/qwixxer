@@ -1,4 +1,4 @@
-import type { Analysis, Luck, Position, Roller, SheetSnap, View } from '../engine/protocol';
+import type { Analysis, Luck, MoveOut, Position, Roller, SheetSnap, View } from '../engine/protocol';
 import { NAME, numbers, ROWS, type CellLook, type CellModel, type LockLook, type RowModel } from './rules';
 
 /** The explorer's two sides (spec "The position"). */
@@ -198,3 +198,21 @@ export function luckText(l: Luck): { word: string; value: string; tone: 'lucky' 
 
 /** The move list's number: the net's P(win) as a percentage, one decimal. */
 export const moveChance = (p: number) => percent(p, 1);
+
+/** Your top this many moves get a 1-ply value (spec `2026-10-24-game-review-design.md`, "Explorer"). */
+export const REFINE_TOP = 3;
+export type RankedMove = MoveOut & { refined: boolean };
+
+/**
+ * The move list as shown: with `onePly` (the 1-ply values of the static top
+ * REFINE_TOP, in static order) those rows take them and re-sort among
+ * themselves, a tie keeping the static order; the rest stay below, static.
+ * The new first row drops its note: a note explains a move that isn't first.
+ */
+export function rankMoves(moves: MoveOut[], onePly: number[] | null): RankedMove[] {
+    if (!onePly) return moves.map((m) => ({ ...m, refined: false }));
+    const top = moves.slice(0, REFINE_TOP).map((m, i) => ({ ...m, p_win: onePly[i], refined: true }));
+    top.sort((a, b) => b.p_win - a.p_win);
+    if (top.length) top[0] = { ...top[0], note: null };
+    return [...top, ...moves.slice(REFINE_TOP).map((m) => ({ ...m, refined: false }))];
+}

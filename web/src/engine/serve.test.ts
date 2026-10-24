@@ -29,6 +29,10 @@ class FakeExplorer {
         if (!p.dice) throw new Error('no dice');
         return JSON.stringify({ this_roll: 0.55, average: first + count / 10, echo: p.roller });
     }
+    move_one_ply(json: string, marks: string, strike: boolean) {
+        if (JSON.parse(json).roller !== 'you') throw new Error('1-ply values are for your roll');
+        return JSON.parse(marks).length / 10 + (strike ? 0.5 : 0);
+    }
     review_game(code: string) {
         if (code === 'bad') throw new Error('bad code');
         return JSON.stringify({ bot: 'master', bot_first: true, rolls: [], over: null, echo: code });
@@ -101,6 +105,11 @@ describe('engine worker handler', () => {
         expect(await send(3, 'reviewRoll', ['1BAAAA', 3])).toMatchObject({ ok: true, result: { this_roll: 0.3, echo: '1BAAAA' } });
         expect(FakeExplorer.made).toBe(made);
         expect(await send(4, 'reviewGame', ['bad'])).toMatchObject({ ok: false, kind: 'engine', error: 'bad code' });
+    });
+    it('onePly passes the position, the marks and the strike to the explorer', async () => {
+        const { send } = setup(0);
+        expect(await send(1, 'onePly', [{ roller: 'you' }, [{ row: 0, n: 2 }, { row: 1, n: 3 }], true])).toEqual({ id: 1, ok: true, result: 0.7 });
+        expect(await send(2, 'onePly', [{ roller: 'opponent' }, [], false])).toMatchObject({ ok: false, error: '1-ply values are for your roll' });
     });
     it('gameCode asks the game', async () => {
         const { send } = setup(0);
