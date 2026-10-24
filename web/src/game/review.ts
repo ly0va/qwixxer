@@ -18,7 +18,10 @@ export const names = (shared: boolean): Names =>
     shared ? { you: 'Player', You: 'Player', your: 'Player’s', Your: 'Player’s' } : { you: 'you', You: 'You', your: 'your', Your: 'Your' };
 
 /** Signed points of win chance with one decimal: "+3.2", "−4.6" (U+2212). */
-export const signed = (v: number) => `${v > 0 ? '+' : v < 0 ? '−' : ''}${Math.abs(v * 100).toFixed(1)}`;
+export const signed = (v: number) => {
+    const r = Math.round(v * 1000) / 10; // the sign of what is shown: −0.04 points is "0.0"
+    return `${r > 0 ? '+' : r < 0 ? '−' : ''}${Math.abs(r).toFixed(1)}`;
+};
 
 export function pointValue(an: Analyses, j: number): number | null {
     if (j === 0) return an[0]?.start ?? null;

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { Position, ReviewGame, RollAnalysis, RollRecord, SheetSnap } from '../engine/protocol';
 import { decode } from './link';
 import {
-    bestShown, explorerHref, gameHref, graphSeries, names, pointValue, positionAt, reviewLog, reviewSheet, luckScore, rollLuck, stepLabel, totals, verdict,
+    bestShown, explorerHref, gameHref, graphSeries, names, pointValue, positionAt, reviewLog, reviewSheet, luckScore, rollLuck, signed, stepLabel, totals, verdict,
 } from './review';
 
 const sheet = (marked: [number, number][] = [], strikes = 0): SheetSnap => {
@@ -70,6 +70,13 @@ describe('review points', () => {
         expect(verdict({ luck: 0, you: 0, bot: 0, done: 1 }, 3, null, own)).toBe('Analysing… 1 of 3');
         expect(names(true).Your).toBe('Player’s');
         expect(verdict({ luck: 0.05, you: 0.2, bot: 0, done: 3 }, 3, false, names(true))).toBe('Mostly Player’s mistakes');
+    });
+    it('a value that rounds to 0.0 has no sign', () => {
+        expect(signed(-0.0004)).toBe('0.0');
+        expect(signed(0.0004)).toBe('0.0');
+        expect(signed(-0.0006)).toBe('−0.1');
+        const tiny = [{ ...an[0], this_roll: an[0].start! - 0.0003 }];
+        expect(reviewLog(game, tiny, names(false))[0].luck).toBe('luck 0.0');
     });
     it('steps are labelled by roll and phase', () => {
         expect(stepLabel(46, 36)).toEqual({ title: 'Roll 23 of 36', sub: 'after the move' });
