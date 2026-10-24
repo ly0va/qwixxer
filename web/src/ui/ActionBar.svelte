@@ -8,8 +8,7 @@
     const conf = $derived(v ? confirmState(v, c.sel, c.strikeSel) : { label: 'Mark', ok: false });
     const open = $derived(v ? strikeOpen(v, c.sel) : false);
     const strikes = $derived(v?.you.strikes ?? 0);
-    const result = $derived(v?.over ? { title: v.you.score > v.bot.score ? 'You win' : v.you.score < v.bot.score ? 'Bot wins' : 'Draw',
-        reason: v.over === 'locks' ? 'Two rows are locked.' : v.over === 'you_strikes' ? 'You took a fourth strike.' : 'The bot took a fourth strike.' } : null);
+    const result = $derived(v?.over ? { title: v.you.score > v.bot.score ? 'You win' : v.you.score < v.bot.score ? 'Bot wins' : 'Draw' } : null);
 </script>
 
 <section aria-label="Your move" class="bar">
@@ -29,8 +28,8 @@
         {#if c.error}
             <div class="tip" role="alert">Something went wrong: {c.error}</div>
         {:else if result}
-            <div class="result" role="status"><b>{result.title}</b><span class="score">{v?.you.score} – {v?.bot.score}</span><span class="reason">{result.reason}</span>
-                {#if c.lastCode}<a class="analyse" href={gameHref(c.lastCode)}>Analyse game</a>{/if}</div>
+            <div class="result" role="status"><b>{result.title}</b><span class="score">{v?.you.score} – {v?.bot.score}</span>
+                {#if c.lastCode}{@const code = c.lastCode}<button type="button" class="analyze" onclick={() => (location.hash = gameHref(code))}>Analyze</button>{/if}</div>
         {:else if c.tip}
             <div class="tip" role="alert">{c.tip}</div>
         {/if}
@@ -47,12 +46,11 @@
     .box.faded { opacity: 0.35; cursor: default; }
     .msg { flex: 1; display: flex; justify-content: flex-end; }
     .tip { display: flex; align-items: center; gap: 8px; background: var(--paper); border-radius: 10px; padding: 6px 12px; font-size: 13px; line-height: 1.3; max-height: 64px; overflow: hidden; box-shadow: inset 0 0 0 2px var(--ink); max-width: 460px; }
-    .result { display: flex; align-items: baseline; gap: 12px; }
+    .result { display: flex; align-items: center; gap: 12px; }
     .result b { font-family: var(--cond); font-weight: 800; font-size: 28px; }
     .score { font-family: var(--cond); font-weight: 700; font-size: 22px; }
-    .reason { font-size: 14px; color: var(--muted); }
     /* Fixed width so the bar doesn't shift as the label changes (Mark 1, Strike, New game…). */
     .confirm { width: 136px; min-height: 48px; padding: 0; border: none; border-radius: 12px; font-weight: 700; font-size: 17px; cursor: not-allowed; background: var(--btn-muted-bg); color: var(--btn-muted-fg); }
     .confirm.primary { cursor: pointer; background: var(--ink); color: var(--ground); }
-    .analyse { margin-left: 10px; font-weight: 700; font-size: 15px; color: var(--ink); text-decoration: underline; text-underline-offset: 3px; }
+    .analyze { margin-left: 6px; height: 40px; padding: 0 16px; border: none; border-radius: 10px; background: var(--paper); box-shadow: 0 1px 0 var(--edge), inset 0 0 0 2px var(--ink); color: var(--ink); font-weight: 700; font-size: 15px; cursor: pointer; }
 </style>

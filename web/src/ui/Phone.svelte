@@ -38,12 +38,11 @@
     // the desktop's "Your turn" pill (none once the game is over).
     const yourTurn = $derived(v?.phase === 'you_to_roll' || v?.phase === 'active');
     const botTurn = $derived(v?.phase === 'bot_to_roll' || v?.phase === 'passive');
-    // Spec "Game over": the result with its reason. On the phone it replaces
+    // Spec "Game over": the result, and Analyze for the review. On the phone it replaces
     // the dice row (the dice no longer matter), so it reads as a headline.
     const result = $derived(v?.over ? {
         title: v.you.score > v.bot.score ? 'You win' : v.you.score < v.bot.score ? 'Bot wins' : 'Draw',
         score: `${v.you.score} – ${v.bot.score}`,
-        reason: v.over === 'locks' ? 'Two rows are locked.' : v.over === 'you_strikes' ? 'You took a fourth strike.' : 'The bot took a fourth strike.',
     } : null);
 </script>
 
@@ -64,8 +63,8 @@
     </header>
     {#if result}
         <div class="result" role="status">
-            <div class="headline"><b>{result.title}</b><span>{result.score}</span>{#if c.lastCode}<a class="analyse" href={gameHref(c.lastCode)}>Analyse game</a>{/if}</div>
-            <span class="reason">{result.reason}</span>
+            <div class="headline"><b>{result.title}</b><span>{result.score}</span></div>
+            {#if c.lastCode}{@const code = c.lastCode}<button type="button" class="analyze" onclick={() => (location.hash = gameHref(code))}>Analyze</button>{/if}
         </div>
     {:else}
         <DiceTray {c} size={L.die} compact />
@@ -136,15 +135,14 @@
     .box.faded { opacity: 0.35; }
     .confirm { margin-top: auto; min-height: 64px; border: none; border-radius: 14px; font-weight: 700; font-size: 18px; background: var(--btn-muted-bg); color: var(--btn-muted-fg); }
     .confirm.primary { background: var(--ink); color: var(--ground); }
-    .result { height: 48px; box-sizing: border-box; padding: 0 12px; border-radius: 12px; background: var(--paper); box-shadow: 0 1px 0 var(--edge); display: flex; flex-direction: column; justify-content: center; flex-shrink: 0; }
+    .result { height: 48px; box-sizing: border-box; padding: 0 12px; border-radius: 12px; background: var(--paper); box-shadow: 0 1px 0 var(--edge); display: flex; align-items: center; justify-content: space-between; flex-shrink: 0; }
     .headline { display: flex; align-items: baseline; gap: 10px; line-height: 1; }
     .headline b { font-family: var(--cond); font-weight: 800; font-size: 26px; }
     .headline span { font-family: var(--cond); font-weight: 700; font-size: 22px; }
-    .reason { font-size: 12px; color: var(--muted); line-height: 1.2; margin-top: 2px; }
     .msg { font-size: 13px; line-height: 1.3; color: var(--soft); min-height: 34px; }
     .scrim { position: fixed; inset: 0; z-index: 1; border: none; background: var(--scrim); }
     .drawer { position: fixed; z-index: 2; bottom: 0; left: 50%; transform: translateX(-50%); width: 100%; max-width: 430px; max-height: 75dvh; box-sizing: border-box; background: var(--paper); border-radius: 20px 20px 0 0; padding: 8px 14px 16px; display: flex; flex-direction: column; gap: 12px; overflow: hidden; }
     .handle { align-self: center; width: 40px; height: 5px; border-radius: 3px; background: var(--edge); }
     .close { align-self: flex-end; min-height: 44px; padding: 0 16px; border-radius: 12px; border: none; background: var(--ground); color: var(--ink); font-weight: 600; }
-    .analyse { margin-left: auto; font-weight: 700; font-size: 14px; color: var(--ink); text-decoration: underline; text-underline-offset: 3px; }
+    .analyze { height: 34px; padding: 0 14px; border: none; border-radius: 9px; background: var(--paper); box-shadow: inset 0 0 0 2px var(--ink); color: var(--ink); font-weight: 700; font-size: 14px; cursor: pointer; }
 </style>
