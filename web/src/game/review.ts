@@ -1,4 +1,4 @@
-import type { Position, ReviewGame, RollAnalysis } from '../engine/protocol';
+import type { Position, ReviewGame, RollAnalysis, Sq } from '../engine/protocol';
 import { encode } from './link';
 import { closesRow, exploreSheet, type ExPosition, type Who } from './position';
 import { chipsFor, type Chip, type RowModel } from './rules';
@@ -60,6 +60,22 @@ export const fromEngine = (p: Position): ExPosition => ({
     dice: p.dice ? [...p.dice] : Array(6).fill(null), roller: p.roller,
 });
 
+/** Below this a cost rounds to 0.0 points: your move counts as the best (a tie). */
+export const TIE = 0.0005;
+
+/**
+ * Your choice's best alternative on roll k as the page shows it: a cost that
+ * rounds to 0.0 points is a tie, so your own move is shown (the label never
+ * says "Best move" next to a different move). null: not analysed yet.
+ */
+export function bestShown(game: ReviewGame, an: Analyses, k: number): { marks: Sq[]; strike: boolean; after: Position; tie: boolean } | null {
+    const a = an[k];
+    if (!a) return null;
+    if (a.you_cost >= TIE) return { ...a.you_best, tie: false };
+    const r = game.rolls[k];
+    return { marks: r.record.you, strike: r.record.roller === 'you' && r.record.you_strike, after: r.after, tie: true };
+}
+
 /**
  * The sheets at point j: after a move, the played or the best outcome; `prev`
  * is the position before the roll's marks, so the difference is this roll's
@@ -74,7 +90,7 @@ export function positionAt(game: ReviewGame, an: Analyses, j: number, side: Side
     const k = Math.floor((j - 1) / 2);
     const roll = game.rolls[k];
     if (j % 2 === 1) return { pos: fromEngine(roll.before), prev: fromEngine(roll.before) };
-    const best = side === 'best' ? an[k]?.you_best.after : undefined;
+    const best = side === 'best' ? bestShown(game, an, k)?.after : undefined;
     return { pos: fromEngine(best ?? roll.after), prev: fromEngine({ ...roll.before, dice: null }) };
 }
 
@@ -94,7 +110,7 @@ export function reviewSheet(prev: ExPosition, pos: ExPosition, who: Who): RowMod
 export interface ReviewLine { who: string; you: boolean; chips: Chip[]; empty: string; cost: string | null }
 export interface ReviewEntry { k: number; n: number; lines: ReviewLine[]; luck: string }
 
-const cost = (c: number | undefined) => (c !== undefined && c >= 0.005 ? signed(-c) : null);
+const cost = (c: number | undefined) => (c !== undefined && c >= TIE ? signed(-c) : null);
 
 /** The game log, roller first, with each roll's luck and each choice's cost. */
 export function reviewLog(game: ReviewGame, an: Analyses, nm: Names): ReviewEntry[] {

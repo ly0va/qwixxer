@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { Position, ReviewGame, RollAnalysis, RollRecord, SheetSnap } from '../engine/protocol';
 import { decode } from './link';
 import {
-    explorerHref, gameHref, graphSeries, names, pointValue, positionAt, reviewLog, reviewSheet, rollLuck, stepLabel, totals, verdict,
+    bestShown, explorerHref, gameHref, graphSeries, names, pointValue, positionAt, reviewLog, reviewSheet, rollLuck, stepLabel, totals, verdict,
 } from './review';
 
 const sheet = (marked: [number, number][] = [], strikes = 0): SheetSnap => {
@@ -128,5 +128,22 @@ describe('graph series', () => {
         expect(g.luck[3]).toBeCloseTo(0.03);
         expect(g.luck[5]).toBeNull();
         expect(g.dots).toEqual([4]); // roll 2 cost you 4.6 points (≥ 2)
+    });
+});
+
+describe('the best move shown', () => {
+    it('a cost that rounds to 0.0 points is a tie: your move is shown as the best', () => {
+        const tie = [an[0], { ...an[1], you_cost: 0.0001 }];
+        const b = bestShown(game, tie, 1)!;
+        expect(b.tie).toBe(true);
+        expect(b.marks).toEqual([{ row: 1, n: 9 }]);
+        expect(b.after).toEqual(game.rolls[1].after);
+        expect(positionAt(game, tie, 4, 'best').pos.you.marks[1][7]).toBe(true);
+    });
+    it('any larger cost shows the better move', () => {
+        const b = bestShown(game, an, 1)!;
+        expect(b.tie).toBe(false);
+        expect(b.marks).toEqual([{ row: 0, n: 9 }]);
+        expect(bestShown(game, an, 2)).toBeNull(); // not analysed yet
     });
 });
