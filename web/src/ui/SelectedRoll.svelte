@@ -88,8 +88,8 @@
                     </button>
                 {/each}
             </div>
-            {#if roll && r.game}<a class="explore" href={explorerHref(r.game, k)}>Open in explorer</a>
-            {:else}<span class="explore ghost" aria-hidden="true">Open in explorer</span>{/if}
+            {#if roll && r.game}<a class="open" href={explorerHref(r.game, k)}>Open in explorer</a>
+            {:else}<span class="open ghost" aria-hidden="true">Open in explorer</span>{/if}
         </div>
     {/if}
 </section>
@@ -122,5 +122,8 @@
     .nav { margin-left: auto; display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
     .steps { display: flex; gap: 4px; }
     .steps button { width: 38px; height: 38px; border-radius: 9px; border: none; background: var(--ground); color: var(--ink); display: flex; align-items: center; justify-content: center; cursor: pointer; padding: 0; }
+    .open { height: 32px; padding: 0 12px; border-radius: 9px; background: var(--ground); color: var(--ink); display: inline-flex; align-items: center; font-size: 13px; font-weight: 600; text-decoration: none; white-space: nowrap; }
+    .open:hover { background: color-mix(in srgb, var(--ink) 10%, var(--ground)); }
+    .open:focus-visible { outline: 2px solid var(--ink); outline-offset: 1px; }
     .explore { margin-left: auto; font-size: 13px; font-weight: 600; color: var(--soft); text-underline-offset: 3px; }
 </style>
