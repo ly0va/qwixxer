@@ -266,6 +266,9 @@ pub(crate) fn replay_roll(
 /// or breaks the rules, or a roll follows the end of the game.
 pub fn replay(code: &str) -> Result<ReviewGame, String> {
     let (h, values) = decode(code)?;
+    if values.is_empty() {
+        return Err("the code holds no rolls".into());
+    }
     let mut pos = Position::start(if h.bot_first { Roller::Opponent } else { Roller::You });
     let mut rolls = vec![];
     let mut over = None;
@@ -512,6 +515,12 @@ mod tests {
         let dice = [4, 4, 2, 5, 6, 1];
         assert!(replay_roll(&Position::start(Roller::Opponent), dice, (1 + 1) * 5).is_err());
         assert!(replay_roll(&Position::start(Roller::Opponent), dice, 1 * 5).is_ok());
+    }
+
+    #[test]
+    fn a_code_without_rolls_is_rejected() {
+        assert!(decode("1B").is_ok());
+        assert!(replay("1B").is_err());
     }
 
     #[test]

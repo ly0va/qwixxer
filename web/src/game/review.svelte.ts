@@ -45,6 +45,8 @@ export class ReviewController {
             this.gen++;
             this.code = null;
             this.game = null;
+            this.error = null;
+            this.shared = false;
             return;
         }
         if (c === this.code && (this.game || this.error)) return;
@@ -73,7 +75,14 @@ export class ReviewController {
         if (on) void this.analyse();
     }
 
+    /** After an error: reopen the game if it never opened (the engine may have failed to load), else resume the analysis. */
     retry() {
+        if (!this.game && this.code) {
+            const c = this.code;
+            this.code = null;
+            void this.load(c, this.shared);
+            return;
+        }
         this.error = null;
         void this.analyse();
     }

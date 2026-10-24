@@ -38,8 +38,8 @@
     {/if}
     {#if r.error}
         <div class="error" role="alert">
-            <span>{g ? `Analysis stopped: ${r.error}` : `That link doesn’t hold a game we can replay (${r.error}).`}</span>
-            {#if g}<button type="button" onclick={() => r.retry()}>Retry</button>{/if}
+            <span>{g ? `Analysis stopped: ${r.error}` : `Couldn’t open this game: ${r.error}`}</span>
+            <button type="button" onclick={() => r.retry()}>Retry</button>
         </div>
     {:else if !g && !r.code}
         <p class="empty">Finish a game or open a shared link to review it.</p>

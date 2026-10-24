@@ -132,4 +132,30 @@ describe('ReviewController', () => {
         await r.load('A', false); // same code: nothing changes
         expect(r.sel).toBe(0);
     });
+
+    it('clears an old error and the shared flag when there is nothing to show', async () => {
+        const { e } = engine({});
+        const r = new ReviewController(e, memStore());
+        await r.load('nope', true);
+        await r.load(null, false);
+        expect(r.error).toBeNull();
+        expect(r.shared).toBe(false);
+        expect(r.code).toBeNull();
+    });
+
+    it('retry reopens a game whose replay failed (the engine may have failed to load)', async () => {
+        let fail = true;
+        const e = {
+            reviewGame: vi.fn(async () => { if (fail) throw new Error('engine failed to load'); return gameOf(1); }),
+            reviewRoll: vi.fn(() => new Promise(() => {})),
+        } as unknown as Engine;
+        const r = new ReviewController(e, memStore());
+        await r.load('A', false);
+        expect(r.error).toBe('engine failed to load');
+        fail = false;
+        r.retry();
+        await flush();
+        expect(r.error).toBeNull();
+        expect(r.game?.rolls).toHaveLength(1);
+    });
 });
