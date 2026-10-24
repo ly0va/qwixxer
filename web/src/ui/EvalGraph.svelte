@@ -22,7 +22,12 @@
     const sv = $derived(m.values[selected] ?? null);
     const sx = $derived(X(selected));
     const sy = $derived(sv === null || selected > done ? height / 2 : curve.at(sx));
-    const tagLeft = $derived(sx + 9 + 64 > width ? sx - 9 - 64 : sx + 9);
+    const tagLeft = (x: number) => (x + 9 + 64 > width ? x - 9 - 64 : x + 9);
+    /** The point under the pointer (or keyboard focus): its value in a quieter bubble. */
+    let hover = $state<number | null>(null);
+    const hv = $derived(hover === null || hover === selected || hover > done ? null : m.values[hover] ?? null);
+    const hx = $derived(hover === null ? 0 : X(hover));
+    const hy = $derived(hv === null ? 0 : curve.at(hx));
     const n = $derived((m.values.length - 1) / 2);
     const label = (j: number) => {
         const s = stepLabel(j, n);
@@ -51,10 +56,17 @@
     <span class="sel" style="left: {sx - 1}px"></span>
     {#each m.dots as d}<span class="dot {d.tone}" style="left: {X(d.j) - 4}px; top: {curve.at(X(d.j)) - 4}px"></span>{/each}
     <span class="ring" style="left: {sx - 6}px; top: {sy - 6}px"></span>
-    <span class="tag" style="left: {tagLeft}px; top: {Math.max(2, Math.min(height - 24, sy - 30))}px">{sv === null || selected > done ? '…' : m.tag(sv)}</span>
+    {#if hv !== null}
+        <span class="hsel" style="left: {hx - 0.5}px"></span>
+        <span class="hring" style="left: {hx - 4}px; top: {hy - 4}px"></span>
+        <span class="tag hov" style="left: {tagLeft(hx)}px; top: {Math.max(2, Math.min(height - 24, hy - 30))}px">{m.tag(hv)}</span>
+    {/if}
+    <span class="tag" style="left: {tagLeft(sx)}px; top: {Math.max(2, Math.min(height - 24, sy - 30))}px">{sv === null || selected > done ? '…' : m.tag(sv)}</span>
     {#each m.values as _, j}
         <button type="button" class="hit" aria-label={label(j)} aria-current={j === selected ? 'step' : undefined}
-            style="left: {X(j) - width / (2 * last)}px; width: {width / last}px" onclick={() => onSelect(j)}></button>
+            style="left: {X(j) - width / (2 * last)}px; width: {width / last}px" onclick={() => onSelect(j)}
+            onpointerenter={() => (hover = j)} onpointerleave={() => hover === j && (hover = null)}
+            onfocus={() => (hover = j)} onblur={() => hover === j && (hover = null)}></button>
     {/each}
 </div>
 
@@ -79,6 +91,9 @@
     .dot.bot { background: var(--soft); }
     .ring { position: absolute; width: 12px; height: 12px; border-radius: 50%; background: var(--paper); box-shadow: 0 0 0 3px var(--lucky-ink); pointer-events: none; }
     .tag { position: absolute; padding: 1px 6px; border-radius: 6px; background: var(--paper); color: var(--ink); font-family: var(--cond); font-weight: 800; font-size: 15px; white-space: nowrap; box-shadow: 0 1px 4px var(--shadow); pointer-events: none; }
+    .hsel { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--faint); pointer-events: none; }
+    .hring { position: absolute; width: 8px; height: 8px; border-radius: 50%; background: var(--paper); box-shadow: 0 0 0 2px var(--soft); pointer-events: none; }
+    .tag.hov { color: var(--soft); font-size: 13px; font-weight: 700; }
     .hit { position: absolute; top: 0; bottom: 0; border: none; padding: 0; background: transparent; cursor: pointer; border-radius: 3px; }
     .hit:hover { background: color-mix(in srgb, var(--ink) 8%, transparent); }
     .hit:focus-visible { outline: 2px solid var(--ink); }

@@ -209,7 +209,9 @@ shared link.
   - **The graph** (board R10): one card, a switch on top with four
     views, Win chance first (the default) and Skill second. The selected
     point (a vertical line and a ring with its value in a bubble) is the
-    same in every view, and every point is clickable. Each line is a
+    same in every view, and every point is clickable. Hovering (or
+    focusing) a point shows its value in a quieter bubble, with a thin
+    line and a small ring. Each line is a
     smooth monotone curve through the points where its value changes,
     so it never overshoots them.
     - Win chance: "Your win chance", the points above, your share
