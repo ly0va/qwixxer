@@ -49,13 +49,23 @@
                 <b>Start</b><span class="whose">before the first roll</span>
             {/if}
         </div>
+        <!-- At the start the dice and the switch keep their space (hidden), so stepping never moves the buttons. -->
         {#if roll?.before.dice}
             <div class="dice">
                 {#each FACES as f, i}<Die value={roll.before.dice[i]} face={f[0]} pip={f[1]} size={compact ? 38 : 34} label="{f[2]} die, {roll.before.dice[i]}" />{/each}
             </div>
+        {:else}
+            <div class="dice ghost" aria-hidden="true">
+                {#each FACES as f}<Die value={1} face={f[0]} pip={f[1]} size={compact ? 38 : 34} label="" />{/each}
+            </div>
         {/if}
     </div>
-    {#if roll}
+    {#if !roll}
+        <div class="switch ghost" aria-hidden="true">
+            <button type="button" tabindex="-1" disabled><span class="lab">Played</span></button>
+            <button type="button" tabindex="-1" disabled><span class="lab">Best</span></button>
+        </div>
+    {:else}
         <div class="switch" role="radiogroup" aria-label="Show on the sheets">
             <button type="button" role="radio" aria-checked={side === 'played'} class:on={side === 'played'} onclick={() => pick('played')}>
                 <span class="lab">Played</span>
@@ -82,7 +92,8 @@
                     </button>
                 {/each}
             </div>
-            {#if roll && r.game}<a class="explore" href={explorerHref(r.game, k)}>Open in explorer</a>{/if}
+            {#if roll && r.game}<a class="explore" href={explorerHref(r.game, k)}>Open in explorer</a>
+            {:else}<span class="explore ghost" aria-hidden="true">Open in explorer</span>{/if}
         </div>
     {/if}
 </section>
@@ -111,7 +122,8 @@
     .none { font-size: 13px; color: var(--muted); }
     .cost { margin-left: auto; font-family: var(--cond); font-weight: 800; font-size: 18px; color: var(--unlucky-ink); }
     .cost.best { color: var(--lucky-ink); font-size: 15px; }
-    .nav { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
+    .ghost { visibility: hidden; }
+    .nav { margin-left: auto; display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
     .steps { display: flex; gap: 4px; }
     .steps button { width: 38px; height: 38px; border-radius: 9px; border: none; background: var(--ground); color: var(--ink); display: flex; align-items: center; justify-content: center; cursor: pointer; padding: 0; }
     .explore { margin-left: auto; font-size: 13px; font-weight: 600; color: var(--soft); text-underline-offset: 3px; }
