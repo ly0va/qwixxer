@@ -69,7 +69,7 @@
             {#if r.game && series}
                 <section class="card" aria-label="Win chance over the game">
                     <div class="ghead"><h2>{nm.Your} win chance</h2><span class="key"><span class="dot"></span>{nm.your} mistakes</span></div>
-                    <EvalGraph values={series.values} luck={series.luck} dots={series.dots} selected={r.sel} {pending}
+                    <EvalGraph values={series.values} luck={series.luckZ} luckMax={3} luckLabel="Dice luck · z" dots={series.dots} selected={r.sel} {pending}
                         width={476} height={118} luckHeight={46} onSelect={(j) => r.select(j)} />
                 </section>
                 <ReviewLog {r} />

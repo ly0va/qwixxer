@@ -148,6 +148,12 @@ describe('graph series', () => {
         expect(g.luck[3]).toBeCloseTo(0.03);
         expect(g.luck[5]).toBeNull();
         expect(g.dots).toEqual([4]); // roll 2 cost you 4.6 points (≥ 2)
+        // Running z: luck so far over the root of its variance so far, on both of a roll's points.
+        expect(g.luckZ[0]).toBe(0);
+        expect(g.luckZ[1]).toBeCloseTo(-0.03 / Math.sqrt(0.002));
+        expect(g.luckZ[2]).toBeCloseTo(-0.03 / Math.sqrt(0.002));
+        expect(g.luckZ[3]).toBeCloseTo(0.03 / Math.sqrt(0.005));
+        expect(g.luckZ[5]).toBeNull();
     });
 });
 

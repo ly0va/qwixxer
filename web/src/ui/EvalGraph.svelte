@@ -7,16 +7,15 @@
     // Spec "The page": your win chance at every point (2 per roll), the
     // running dice luck under it, the selected point, and a hit target per
     // point. `values`/`luck` are per point (null: not analysed yet).
-    let { values, luck, dots, selected, pending, width, height, luckHeight, onSelect }: {
+    let { values, luck, dots, selected, pending, width, height, luckHeight, luckMax = 0.4, luckLabel = 'Dice luck', onSelect }: {
         values: (number | null)[]; luck: (number | null)[]; dots: number[]; selected: number; pending: string | null;
-        width: number; height: number; luckHeight: number; onSelect: (j: number) => void;
+        width: number; height: number; luckHeight: number; luckMax?: number; luckLabel?: string; onSelect: (j: number) => void;
     } = $props();
     const id = ++ids;
     const last = $derived(Math.max(1, values.length - 1));
     const X = (j: number) => (j / last) * width;
     const Y = (v: number) => height * (1 - v);
-    const LMAX = 0.4;
-    const LY = (v: number) => luckHeight / 2 - (Math.max(-LMAX, Math.min(LMAX, v)) / LMAX) * (luckHeight / 2);
+    const LY = (v: number) => luckHeight / 2 - (Math.max(-luckMax, Math.min(luckMax, v)) / luckMax) * (luckHeight / 2);
     /** The analysed prefix: points up to the first missing one. */
     const firstMissing = $derived(values.findIndex((v) => v === null));
     const done = $derived(firstMissing < 0 ? values.length - 1 : firstMissing - 1);
@@ -52,7 +51,7 @@
         {/each}
     </div>
     {#if luckHeight > 0}
-        <span class="lab">Dice luck</span>
+        <span class="lab">{luckLabel}</span>
         <div class="g luck" style="height: {luckHeight}px">
             <svg {width} height={luckHeight} viewBox="0 0 {width} {luckHeight}" aria-hidden="true">
                 <defs>
