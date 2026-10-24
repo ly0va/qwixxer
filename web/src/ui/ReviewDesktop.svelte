@@ -59,7 +59,8 @@
                         <ReviewSheet name={BOT_NAMES[r.game.bot]} prev={at.prev} pos={at.pos} who="opponent" />
                     </div>
                 </div>
-                <SelectedRoll {r} />
+                <!-- The roll card takes the column's last pixels, so it ends level with the move list. -->
+                <div class="fill"><SelectedRoll {r} /></div>
             {/if}
         </main>
         <aside>
@@ -87,5 +88,7 @@
     main { width: 684px; flex: none; display: flex; flex-direction: column; gap: 10px; }
     .board { display: flex; gap: 12px; }
     .sheets { flex: 1; display: flex; flex-direction: column; gap: 10px; }
+    .fill { flex: 1; display: flex; flex-direction: column; }
+    .fill > :global(section) { flex: 1; }
     aside { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 12px; min-height: 0; }
 </style>
