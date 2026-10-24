@@ -45,22 +45,22 @@
                 <b>Start</b><span class="whose">before the first roll</span>
             {/if}
         </div>
-        <!-- At the start the dice and the switch keep their space (hidden), so stepping never moves the buttons. -->
+        <!-- On desktop, at the start the dice and the switch keep their space (hidden), so stepping never moves the buttons. -->
         {#if roll?.before.dice}
             <div class="dice">
                 {#each FACES as f, i}<Die value={roll.before.dice[i]} face={f[0]} pip={f[1]} size={compact ? 38 : 34} label="{f[2]} die, {roll.before.dice[i]}" />{/each}
             </div>
-        {:else}
+        {:else if !compact}
             <div class="dice ghost" aria-hidden="true">
                 {#each FACES as f}<Die value={1} face={f[0]} pip={f[1]} size={compact ? 38 : 34} label="" />{/each}
             </div>
         {/if}
     </div>
     {#if !roll}
-        <div class="switch ghost" aria-hidden="true">
+        {#if !compact}<div class="switch ghost" aria-hidden="true">
             <button type="button" tabindex="-1" disabled><span class="lab">Played</span></button>
             <button type="button" tabindex="-1" disabled><span class="lab">Best</span></button>
-        </div>
+        </div>{/if}
     {:else}
         <div class="switch" role="radiogroup" aria-label="Show on the sheets">
             <button type="button" role="radio" aria-checked={side === 'played'} class:on={side === 'played'} onclick={() => pick('played')}>

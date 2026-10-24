@@ -61,12 +61,13 @@ export function totals(an: Analyses, n: number): { luck: number; var: number; yo
  * games compare whatever the dice could swing; the word is z's band
  * (rounded as shown). No percentile: its spread depends on how well you play.
  */
-export function luckScore(luck: number, variance: number): { z: number; word: string; text: string } {
+export function luckScore(luck: number, variance: number): { z: number; word: string; short: string; text: string } {
     const z = variance > 0 ? luck / Math.sqrt(variance) : 0;
     const r = Math.round(z * 10) / 10;
     const word = r <= -1.5 ? 'Very unlucky' : r <= -0.5 ? 'Unlucky' : r < 0.5 ? 'Average' : r < 1.5 ? 'Lucky' : 'Very lucky';
     const sign = r > 0 ? '+' : r < 0 ? '−' : '';
-    return { z, word, text: `${word} · z ${sign}${Math.abs(r).toFixed(1)}` };
+    const short = `z ${sign}${Math.abs(r).toFixed(1)}`;
+    return { z, word, short, text: `${word} · ${short}` };
 }
 
 /**

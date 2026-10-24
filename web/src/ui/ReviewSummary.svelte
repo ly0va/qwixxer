@@ -12,8 +12,10 @@
     const result = $derived(!g ? '' : !g.over ? 'Game not finished' : won === null ? 'Draw' : won ? `${nm.You} won` : `${BOT_NAMES[g.bot]} won`);
     const costly = $derived(r.an.filter((a) => a && a.you_cost >= DOT_COST).length);
     const soFar = $derived(t.done < n);
+    const score = $derived(luckScore(t.luck, t.var));
+    // On a phone notes are hidden; the dice luck keeps its z beside the number (the word is the tooltip).
     const tiles = $derived([
-        { label: 'Dice luck', short: 'Dice luck', value: signed(t.luck), tone: t.luck >= 0 ? 'lucky' : 'unlucky', note: soFar ? 'so far' : luckScore(t.luck, t.var).text },
+        { label: 'Dice luck', short: 'Dice luck', value: signed(t.luck), tone: t.luck >= 0 ? 'lucky' : 'unlucky', note: soFar ? 'so far' : score.text, aside: soFar ? null : score.short, title: score.text },
         { label: `${nm.Your} mistakes`, short: `${nm.Your} errors`, value: signed(-t.you), tone: 'unlucky', note: soFar ? 'so far' : `${costly} costing 2+ pts` },
         { ...botTile(t.bot, g ? BOT_NAMES[g.bot] : 'Bot', nm), ...(soFar ? { note: 'so far' } : {}) },
     ]);
@@ -30,7 +32,9 @@
             {#each tiles as tile}
                 <div class="tile">
                     <span class="lab">{compact ? tile.short : tile.label}</span>
-                    <b class={tile.tone}>{tile.value}</b>
+                    <span class="val" title={'title' in tile ? tile.title : undefined}>
+                        <b class={tile.tone}>{tile.value}</b>{#if compact && 'aside' in tile && tile.aside}<span class="z">{tile.aside}</span>{/if}
+                    </span>
                     {#if !compact}<span class="note">{tile.note}</span>{/if}
                 </div>
             {/each}
@@ -62,6 +66,8 @@
     .compact .lab { font-size: 11px; letter-spacing: 0.6px; }
     .tile b { font-family: var(--cond); font-weight: 800; font-size: 26px; line-height: 1.05; }
     .compact .tile b { font-size: 22px; }
+    .val { display: flex; align-items: baseline; gap: 5px; white-space: nowrap; }
+    .z { margin-left: auto; font-size: 12px; font-weight: 600; color: var(--muted); }
     .lucky { color: var(--lucky-ink); }
     .unlucky { color: var(--unlucky-ink); }
     .note { font-size: 12px; color: var(--muted); }

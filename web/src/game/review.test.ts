@@ -53,11 +53,11 @@ describe('review points', () => {
         expect(t.var).toBeCloseTo(0.002 + 0.003); // roll 1: the start's; roll 2: roll 1's after-move
     });
     it('luck score: total luck over its standard deviation, with a word', () => {
-        expect(luckScore(0.03, 0.005)).toEqual({ z: 0.03 / Math.sqrt(0.005), word: 'Average', text: 'Average · z +0.4' });
+        expect(luckScore(0.03, 0.005)).toEqual({ z: 0.03 / Math.sqrt(0.005), word: 'Average', short: 'z +0.4', text: 'Average · z +0.4' });
         expect(luckScore(-0.06, 0.004).word).toBe('Unlucky'); // z −0.95
         expect(luckScore(0.04, 0.0016).word).toBe('Lucky'); // z +1.0
         expect(luckScore(0.2, 0.01)).toMatchObject({ word: 'Very lucky', text: 'Very lucky · z +2.0' });
-        expect(luckScore(-0.2, 0.01)).toMatchObject({ word: 'Very unlucky', text: 'Very unlucky · z −2.0' });
+        expect(luckScore(-0.2, 0.01)).toMatchObject({ word: 'Very unlucky', short: 'z −2.0', text: 'Very unlucky · z −2.0' });
         expect(luckScore(0.05, 0.01).word).toBe('Lucky'); // z +0.5: the band starts there
         expect(luckScore(-0.15, 0.01).word).toBe('Very unlucky'); // z −1.5
         expect(luckScore(0.1, 0)).toMatchObject({ z: 0, word: 'Average' }); // the dice could change nothing
