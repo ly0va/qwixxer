@@ -184,8 +184,8 @@ shared link.
 
 - Header: the nav, and "Share game" (copies the link). Nothing else for
   your own game.
-- Left: a vertical eval bar (your win chance at the selected point, number
-  at its foot), then both sheets as they were at the selected point, then
+- Left: a vertical eval bar (your win chance at the selected point, filled
+  from the top with your number there, since your sheet is the top one), then both sheets as they were at the selected point, then
   the selected-roll strip:
   - "Roll 23", whose roll, the luck chip (as in the explorer:
     "Lucky +3.2" / "Unlucky −4.8" / "Average").
