@@ -265,7 +265,7 @@ export function graphModel(game: ReviewGame, an: Analyses, kind: GraphKind, nm: 
     const scale = { lo: -top / 100, hi: top / 100, area: false, guides: [{ v: 0, dash: false }], labels: [{ v: top / 100, text: `+${top}`, right: false }, { v: -top / 100, text: `−${top}`, right: false }], tag: signed };
     if (kind === 'luck') return { ...base, ...scale, title: 'Dice luck so far', short: 'Dice luck so far' };
     return {
-        ...base, ...scale, title: 'Mistakes so far, both players', short: 'Mistakes so far',
+        ...base, ...scale, title: 'Win chance won or lost by play', short: 'Won or lost by play',
         dots: game.rolls.flatMap((_, k): { j: number; tone: Tone }[] => {
             const a = an[k];
             if (!a || 2 * k + 2 > done) return [];

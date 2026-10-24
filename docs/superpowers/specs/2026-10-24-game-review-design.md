@@ -215,8 +215,10 @@ shared link.
     - Win chance: "Your win chance", the points above, your share
       filled from the bottom, a dashed 50% line, red dots on your
       mistakes costing 2+ pts (*my call*: the threshold).
-    - Skill: "Mistakes so far, both players" (phone: "Mistakes so
-      far"), the bot's play less your mistakes so far in points, one
+    - Skill: "Win chance won or lost by play" (phone: "Won or lost by
+      play"; not "mistakes": the bot's white-sum mark on your roll can
+      beat the prediction), the bot's play less your mistakes so far in
+      points, one
       line around zero (above green, below red), changing at each move.
       Dots on any mistake from 0.5 pts: red for yours, grey for the
       bot's.

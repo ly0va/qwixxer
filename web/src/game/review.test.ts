@@ -203,7 +203,7 @@ describe('graph views', () => {
     });
     it('skill: knots after each move, dots for both players\' mistakes', () => {
         const m = model('skill');
-        expect(m).toMatchObject({ title: 'Mistakes so far, both players', short: 'Mistakes so far', knots: [0, 2, 4] });
+        expect(m).toMatchObject({ title: 'Win chance won or lost by play', short: 'Won or lost by play', knots: [0, 2, 4] });
         expect(m.dots).toEqual([{ j: 2, tone: 'bot' }, { j: 4, tone: 'you' }]);
         expect(m.legend).toEqual([{ text: 'You', tone: 'you' }, { text: 'Master', tone: 'bot' }]);
         expect(m.tag(-0.036)).toBe('−3.6');
