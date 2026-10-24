@@ -95,6 +95,12 @@ export class ReviewController {
     first() { this.select(0); }
     last() { this.select(this.points - 1); }
     setSide(s: Side) { this.side = s; }
+    /** Show the played or the best outcome of the selected roll's move (from its dice point, move there first). */
+    show(s: Side) {
+        if (this.sel === 0) return;
+        if (this.sel % 2 === 1) this.select(this.sel + 1);
+        this.side = s;
+    }
 
     private async analyse() {
         const gen = this.gen;

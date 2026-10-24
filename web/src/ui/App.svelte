@@ -94,6 +94,8 @@
         else if (action === 'next') rv.step(1);
         else if (action === 'first') rv.first();
         else if (action === 'last') rv.last();
+        else if (action === 'played') rv.show('played');
+        else if (action === 'best') rv.show('best');
         else if (action === 'close') { if (c.menuOpen) c.menuOpen = false; else if (x.picker !== null) x.picker = null; else drawer = false; }
     }
 </script>

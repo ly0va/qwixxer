@@ -25,11 +25,7 @@
     const best = $derived(shown ? chipsFor(shown.marks, shown.strike) : null);
     const cost = $derived(!a || !shown ? '' : shown.grade === 'best' ? 'Best' : shown.grade === 'excellent' ? 'Excellent' : `${signed(-a.you_cost)} pts`);
     const side = $derived(r.sel % 2 === 0 ? r.side : null);
-    // The switch shows an outcome after the move: from the dice point it moves there first.
-    function pick(s: Side) {
-        if (r.sel % 2 === 1) r.select(r.sel + 1);
-        r.setSide(s);
-    }
+    const pick = (s: Side) => r.show(s);
     const STEPS = [
         { label: 'First', d: 'M6 5v14M18 6l-7 6 7 6', go: () => r.first() }, { label: 'Previous', d: 'M15 6l-6 6 6 6', go: () => r.step(-1) },
         { label: 'Next', d: 'M9 6l6 6-6 6', go: () => r.step(1) }, { label: 'Last', d: 'M18 5v14M6 6l7 6-7 6', go: () => r.last() },

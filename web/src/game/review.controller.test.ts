@@ -133,6 +133,19 @@ describe('ReviewController', () => {
         expect(r.sel).toBe(0);
     });
 
+    it('show picks the side after a roll\'s move, moving there from its dice point; at the start it does nothing', async () => {
+        const { e } = engine({ A: 3 });
+        const r = new ReviewController(e, memStore());
+        await r.load('A', false);
+        r.show('best');
+        expect([r.sel, r.side]).toEqual([0, 'played']);
+        r.select(3); // roll 2's dice
+        r.show('best');
+        expect([r.sel, r.side]).toEqual([4, 'best']);
+        r.show('played');
+        expect([r.sel, r.side]).toEqual([4, 'played']);
+    });
+
     it('clears an old error and the shared flag when there is nothing to show', async () => {
         const { e } = engine({});
         const r = new ReviewController(e, memStore());

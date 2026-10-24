@@ -31,6 +31,9 @@ describe('keyAction', () => {
         expect(keyAction('ArrowRight', review, undefined)).toBe('next');
         expect(keyAction('Home', review, undefined)).toBe('first');
         expect(keyAction('End', review, undefined)).toBe('last');
+        expect(keyAction('ArrowUp', review, undefined)).toBe('played');
+        expect(keyAction('ArrowDown', review, undefined)).toBe('best');
+        expect(keyAction('ArrowDown', { ...field, review: true }, undefined)).toBe(null);
         expect(keyAction('Enter', review, 'you_to_roll')).toBe(null);
         expect(keyAction(' ', review, 'you_to_roll')).toBe(null);
         expect(keyAction('ArrowLeft', { ...field, review: true }, undefined)).toBe(null);

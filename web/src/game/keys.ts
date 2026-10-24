@@ -10,13 +10,13 @@ export interface KeyTarget {
     modal?: boolean;
     /** The explorer is showing: no game keys at all; Escape closes the menu or die picker. */
     explore?: boolean;
-    /** The game review is showing: the arrows, Home and End step through the game. */
+    /** The game review is showing: ← → Home End step through the game, ↑ ↓ pick Played or Best. */
     review?: boolean;
 }
 
-export type KeyAction = 'confirm' | 'roll' | 'clear' | 'close' | 'swallow' | 'prev' | 'next' | 'first' | 'last' | null;
+export type KeyAction = 'confirm' | 'roll' | 'clear' | 'close' | 'swallow' | 'prev' | 'next' | 'first' | 'last' | 'played' | 'best' | null;
 
-const STEPS: Record<string, KeyAction> = { ArrowLeft: 'prev', ArrowRight: 'next', Home: 'first', End: 'last' };
+const STEPS: Record<string, KeyAction> = { ArrowLeft: 'prev', ArrowRight: 'next', Home: 'first', End: 'last', ArrowUp: 'played', ArrowDown: 'best' };
 
 /**
  * Spec "Implementation notes · Keyboard": Enter confirms, Space rolls, Escape
