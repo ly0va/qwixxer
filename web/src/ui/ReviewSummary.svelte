@@ -1,8 +1,8 @@
 <script lang="ts">
     import { BOT_NAMES } from '../engine/protocol';
-    import { botTile, DOT_COST, luckScore, names, signed, totals, verdict } from '../game/review';
+    import { botTile, DOT_COST, luckScore, names, signed, progress, totals } from '../game/review';
     import type { ReviewController } from '../game/review.svelte';
-    // Spec "The page": the result, the verdict, and the three totals.
+    // Spec "The page": the result, the analysis's progress, and the three totals.
     let { r, compact = false }: { r: ReviewController; compact?: boolean } = $props();
     const nm = $derived(names(r.shared));
     const g = $derived(r.game);
@@ -26,7 +26,7 @@
         <div class="head">
             <h2>{result}</h2>
             {#if g.over}<span class="score">{g.over.you} – {g.over.opponent}</span>{/if}
-            <span class="verdict">{r.error ? '' : verdict(t, n, won, nm)}</span>
+            <span class="progress">{r.error ? '' : progress(t, n)}</span>
         </div>
         <div class="tiles">
             {#each tiles as tile}
@@ -57,7 +57,7 @@
     h2 { margin: 0; font-family: var(--cond); font-size: 22px; font-weight: 700; }
     .compact h2 { font-size: 20px; }
     .score { font-family: var(--cond); font-weight: 700; font-size: 20px; color: var(--soft); }
-    .verdict { margin-left: auto; font-size: 14px; font-weight: 600; }
+    .progress { margin-left: auto; font-size: 14px; font-weight: 600; }
     .tiles { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
     .compact .tiles { gap: 6px; }
     .tile { display: flex; flex-direction: column; gap: 2px; padding: 8px 10px; border-radius: 10px; background: var(--log-bg); }

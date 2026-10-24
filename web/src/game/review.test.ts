@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { Position, ReviewGame, RollAnalysis, RollRecord, SheetSnap } from '../engine/protocol';
 import { decode } from './link';
 import {
-    bestShown, botTile, explorerHref, gameHref, graphSeries, names, pointValue, positionAt, reviewLog, reviewSheet, luckScore, rollLuck, signed, stepLabel, totals, verdict,
+    bestShown, botTile, explorerHref, gameHref, graphSeries, names, pointValue, positionAt, reviewLog, reviewSheet, luckScore, rollLuck, signed, stepLabel, totals, progress,
 } from './review';
 
 const sheet = (marked: [number, number][] = [], strikes = 0): SheetSnap => {
@@ -62,14 +62,10 @@ describe('review points', () => {
         expect(luckScore(-0.15, 0.01).word).toBe('Very unlucky'); // z −1.5
         expect(luckScore(0.1, 0)).toMatchObject({ z: 0, word: 'Average' }); // the dice could change nothing
     });
-    it('verdicts', () => {
-        const own = names(false);
-        expect(verdict({ luck: 0.3, you: 0.1, bot: 0, done: 3 }, 3, false, own)).toBe('Mostly the dice');
-        expect(verdict({ luck: 0.05, you: 0.2, bot: 0, done: 3 }, 3, false, own)).toBe('Mostly your mistakes');
-        expect(verdict({ luck: 0.05, you: 0, bot: 0.2, done: 3 }, 3, true, own)).toBe('Mostly your play');
-        expect(verdict({ luck: 0, you: 0, bot: 0, done: 1 }, 3, null, own)).toBe('Analysing… 1 of 3');
+    it('progress shows while analysing, nothing once done', () => {
+        expect(progress({ done: 1 }, 3)).toBe('Analysing… 1 of 3');
+        expect(progress({ done: 3 }, 3)).toBe('');
         expect(names(true).Your).toBe('Player’s');
-        expect(verdict({ luck: 0.05, you: 0.2, bot: 0, done: 3 }, 3, false, names(true))).toBe('Mostly Player’s mistakes');
     });
     it('the bot tile is its play, signed for you: mistakes in your favour, better-than-predicted marks against you', () => {
         expect(botTile(0.05, 'Master+', names(false))).toEqual({ label: 'Master+’s play', short: 'Bot’s play', value: '+5.0', tone: 'lucky', note: 'in your favour' });

@@ -166,9 +166,8 @@ values it; move costs look one roll further (1-ply, below).
   user decided to ignore such gaps and not show them.
 - **Totals:** the sum of luck over all rolls; the sum of your mistakes;
   the sum of the bot's mistakes.
-- **Verdict** (*my call*): compare |luck total| with |bot's mistakes −
-  your mistakes|. If luck is larger: "Mostly the dice". Otherwise "Mostly
-  your mistakes" after a loss, "Mostly your play" after a win.
+- **No verdict.** A "Mostly the dice / your mistakes" line was dropped:
+  the luck score's word and z say what it did.
 
 ## The page
 
@@ -204,7 +203,8 @@ shared link.
     either point of the roll (*my call*); the explorer represents both
     rollers already.
 - Right:
-  - Summary: the result ("Master won 41–58"), the verdict, and three
+  - Summary: the result ("Master won 41–58"), the progress while
+    analysing, and three
     tiles: Dice luck, Your mistakes, Master's play.
   - "Your win chance" graph: the points above, your share filled from
     the bottom, a dashed 50% line, red dots on your mistakes costing 2+
@@ -250,7 +250,7 @@ pill "Shared game · Player vs Master" (the bot level from the code).
   phone. The user accepted the wait.
 - The graph and luck line grow left to right; the rest of the graph is
   hatched with "Analysing… 14 of 36 rolls". Tiles show totals "so far";
-  the verdict reads "Analysing… 14 of 36". Rolls not yet analysed show
+  the summary reads "Analysing… 14 of 36". Rolls not yet analysed show
   "…" for luck, cost and best move ("working it out…").
 - Selecting a roll that isn't analysed yet is allowed. *My call:* the
   analysis doesn't reorder to jump to it.

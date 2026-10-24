@@ -84,13 +84,8 @@ export function botTile(bot: number, name: string, nm: Names) {
     };
 }
 
-/** Spec "Verdict": luck against the net of both players' mistakes. */
-export function verdict(t: { luck: number; you: number; bot: number; done: number }, n: number, youWon: boolean | null, nm: Names): string {
-    if (t.done < n) return `Analysing… ${t.done} of ${n}`;
-    const skill = t.bot - t.you;
-    if (Math.abs(t.luck) > Math.abs(skill)) return 'Mostly the dice';
-    return (youWon ?? skill > 0) ? `Mostly ${nm.your} play` : `Mostly ${nm.your} mistakes`;
-}
+/** The summary's progress line while the analysis runs; nothing once it's done. */
+export const progress = (t: { done: number }, n: number) => (t.done < n ? `Analysing… ${t.done} of ${n}` : '');
 
 export const fromEngine = (p: Position): ExPosition => ({
     you: p.you, opponent: p.opponent, locked: [...p.locked],
