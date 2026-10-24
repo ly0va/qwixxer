@@ -119,6 +119,8 @@
     .cost { margin-left: auto; font-family: var(--cond); font-weight: 800; font-size: 18px; color: var(--unlucky-ink); }
     .cost.best { color: var(--lucky-ink); font-size: 15px; }
     .ghost { visibility: hidden; }
+    /* Desktop: the three columns share the step column's height, so their tops and bottoms line up. */
+    .strip:not(.compact) > :is(.roll, .switch, .nav) { height: 76px; box-sizing: border-box; justify-content: space-between; }
     .nav { margin-left: auto; display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
     .steps { display: flex; gap: 4px; }
     .steps button { width: 38px; height: 38px; border-radius: 9px; border: none; background: var(--ground); color: var(--ink); display: flex; align-items: center; justify-content: center; cursor: pointer; padding: 0; }
