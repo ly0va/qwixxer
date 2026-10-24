@@ -23,7 +23,7 @@
     const played = $derived(roll ? chipsFor(roll.record.you, roll.record.roller === 'you' && roll.record.you_strike) : []);
     const shown = $derived(r.game && k >= 0 ? bestShown(r.game, r.an, k) : null);
     const best = $derived(shown ? chipsFor(shown.marks, shown.strike) : null);
-    const cost = $derived(!a || !shown ? '' : shown.tie ? 'Best move' : `${signed(-a.you_cost)} pts`);
+    const cost = $derived(!a || !shown ? '' : shown.grade === 'best' ? 'Best move' : shown.grade === 'excellent' ? 'Excellent' : `${signed(-a.you_cost)} pts`);
     const side = $derived(r.sel % 2 === 0 ? r.side : null);
     // The switch shows an outcome after the move: from the dice point it moves there first.
     function pick(s: Side) {
@@ -61,7 +61,7 @@
                 <span class="lab">Played</span>
                 {#each played as ch}<ChipView chip={ch} size={24} />{/each}
                 {#if played.length === 0}<span class="none">nothing</span>{/if}
-                <b class="cost" class:best={shown?.tie}>{cost}</b>
+                <b class="cost" class:best={shown && shown.grade !== 'cost'}>{cost}</b>
             </button>
             <button type="button" role="radio" aria-checked={side === 'best'} class:on={side === 'best'} onclick={() => pick('best')}>
                 <span class="lab">Best</span>

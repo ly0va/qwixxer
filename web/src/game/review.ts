@@ -60,20 +60,31 @@ export const fromEngine = (p: Position): ExPosition => ({
     dice: p.dice ? [...p.dice] : Array(6).fill(null), roller: p.roller,
 });
 
-/** Below this a cost rounds to 0.0 points: your move counts as the best (a tie). */
+/** Below this a cost rounds to 0.0 points. */
 export const TIE = 0.0005;
 
 /**
- * Your choice's best alternative on roll k as the page shows it: a cost that
- * rounds to 0.0 points is a tie, so your own move is shown (the label never
- * says "Best move" next to a different move). null: not analysed yet.
+ * How your choice on a roll compares with the best: your own move ("best"),
+ * a different move within TIE ("excellent"), or one that cost you more.
  */
-export function bestShown(game: ReviewGame, an: Analyses, k: number): { marks: Sq[]; strike: boolean; after: Position; tie: boolean } | null {
+export type Grade = 'best' | 'excellent' | 'cost';
+
+const sameMove = (a: Sq[], b: Sq[]) =>
+    a.length === b.length && a.every((q) => b.some((r) => r.row === q.row && r.n === q.n));
+
+/**
+ * The best move on roll k as the page shows it, with your choice's grade:
+ * "Best move" only ever sits next to your own move. null: not analysed yet.
+ */
+export function bestShown(game: ReviewGame, an: Analyses, k: number): { marks: Sq[]; strike: boolean; after: Position; grade: Grade } | null {
     const a = an[k];
     if (!a) return null;
-    if (a.you_cost >= TIE) return { ...a.you_best, tie: false };
     const r = game.rolls[k];
-    return { marks: r.record.you, strike: r.record.roller === 'you' && r.record.you_strike, after: r.after, tie: true };
+    const strike = r.record.roller === 'you' && r.record.you_strike;
+    if (sameMove(a.you_best.marks, r.record.you) && a.you_best.strike === strike) {
+        return { marks: r.record.you, strike, after: r.after, grade: 'best' };
+    }
+    return { ...a.you_best, grade: a.you_cost < TIE ? 'excellent' : 'cost' };
 }
 
 /**

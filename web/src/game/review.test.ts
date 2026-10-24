@@ -132,17 +132,24 @@ describe('graph series', () => {
 });
 
 describe('the best move shown', () => {
-    it('a cost that rounds to 0.0 points is a tie: your move is shown as the best', () => {
-        const tie = [an[0], { ...an[1], you_cost: 0.0001 }];
-        const b = bestShown(game, tie, 1)!;
-        expect(b.tie).toBe(true);
+    it('your own move as the best is "best", shown as played', () => {
+        const same = [an[0], { ...an[1], you_cost: 0, you_best: { marks: [{ row: 1, n: 9 }], strike: false, after: game.rolls[1].after } }];
+        const b = bestShown(game, same, 1)!;
+        expect(b.grade).toBe('best');
         expect(b.marks).toEqual([{ row: 1, n: 9 }]);
         expect(b.after).toEqual(game.rolls[1].after);
-        expect(positionAt(game, tie, 4, 'best').pos.you.marks[1][7]).toBe(true);
     });
-    it('any larger cost shows the better move', () => {
+    it('a different move within 0.05 points is "excellent", and the better move is shown', () => {
+        const close = [an[0], { ...an[1], you_cost: 0.0001 }];
+        const b = bestShown(game, close, 1)!;
+        expect(b.grade).toBe('excellent');
+        expect(b.marks).toEqual([{ row: 0, n: 9 }]);
+        expect(b.after).toEqual(an[1].you_best.after);
+        expect(positionAt(game, close, 4, 'best').pos).toEqual(positionAt(game, an, 4, 'best').pos);
+    });
+    it('any larger cost is a cost, with the better move shown', () => {
         const b = bestShown(game, an, 1)!;
-        expect(b.tie).toBe(false);
+        expect(b.grade).toBe('cost');
         expect(b.marks).toEqual([{ row: 0, n: 9 }]);
         expect(bestShown(game, an, 2)).toBeNull(); // not analysed yet
     });
