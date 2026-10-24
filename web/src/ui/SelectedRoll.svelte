@@ -23,7 +23,7 @@
     const played = $derived(roll ? chipsFor(roll.record.you, roll.record.roller === 'you' && roll.record.you_strike) : []);
     const shown = $derived(r.game && k >= 0 ? bestShown(r.game, r.an, k) : null);
     const best = $derived(shown ? chipsFor(shown.marks, shown.strike) : null);
-    const cost = $derived(!a || !shown ? '' : shown.grade === 'best' ? 'Best move' : shown.grade === 'excellent' ? 'Excellent' : `${signed(-a.you_cost)} pts`);
+    const cost = $derived(!a || !shown ? '' : shown.grade === 'best' ? 'Best' : shown.grade === 'excellent' ? 'Excellent' : `${signed(-a.you_cost)} pts`);
     const side = $derived(r.sel % 2 === 0 ? r.side : null);
     // The switch shows an outcome after the move: from the dice point it moves there first.
     function pick(s: Side) {

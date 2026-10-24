@@ -189,7 +189,7 @@ shared link.
     decision for that roll: on your roll your turn, on the bot's roll
     your white-sum mark (*my call*; the bot's mistakes show only as costs
     in the log). "Played" shows the played move's chips and its cost
-    ("−4.6 pts"), or "Best move" when the best is your own move, or
+    ("−4.6 pts"), or "Best" when the best is your own move, or
     "Excellent" when a different move is better by under 0.05 pts;
     "Best" the best move's chips. The selected row decides
     which outcome both sheets show: the chosen move of yours with
