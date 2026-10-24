@@ -1,6 +1,6 @@
 import type { Engine, ReviewGame, RollAnalysis } from '../engine/protocol';
 import type { Store } from './controller.svelte';
-import type { Analyses, Side } from './review';
+import type { Analyses, GraphKind, Side } from './review';
 
 /** The last finished game's code (spec "The page": the Review tab opens it). */
 export const LAST_GAME = 'qwixxer.lastGame';
@@ -17,6 +17,8 @@ export class ReviewController {
     /** The selected point: 0 = start, 2k+1 after roll k's dice, 2k+2 after its move. */
     sel = $state(0);
     side = $state<Side>('played');
+    /** The graph card's view (spec "The graph"): win chance until you pick another. */
+    graph = $state<GraphKind>('win');
     error = $state<string | null>(null);
     /** Opened from someone's link: "Player" instead of "You". */
     shared = $state(false);

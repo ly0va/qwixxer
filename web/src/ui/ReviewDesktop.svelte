@@ -2,10 +2,10 @@
     import { BOT_NAMES } from '../engine/protocol';
     import type { GameController } from '../game/controller.svelte';
     import { DESK_H, DESK_W, deskScale } from '../game/layout';
-    import { gameHref, graphSeries, names, pointValue, positionAt } from '../game/review';
+    import { gameHref, names, pointValue, positionAt } from '../game/review';
     import type { ReviewController } from '../game/review.svelte';
     import EvalBar from './EvalBar.svelte';
-    import EvalGraph from './EvalGraph.svelte';
+    import GraphCard from './GraphCard.svelte';
     import Icon from './Icon.svelte';
     import Menu from './Menu.svelte';
     import type { Nav } from './nav';
@@ -21,8 +21,6 @@
     const scale = $derived(deskScale(w, h));
     const nm = $derived(names(r.shared));
     const at = $derived(r.game ? positionAt(r.game, r.an, r.sel, r.side) : null);
-    const series = $derived(r.game ? graphSeries(r.game, r.an) : null);
-    const pending = $derived(r.game && series && series.values.includes(null) ? `Analysing… ${r.an.filter(Boolean).length} of ${r.game.rolls.length} rolls` : null);
     let notice = $state('');
     async function share() {
         if (!r.code) return;
@@ -66,12 +64,8 @@
         </main>
         <aside>
             <ReviewSummary {r} />
-            {#if r.game && series}
-                <section class="card" aria-label="Win chance over the game">
-                    <div class="ghead"><h2>{nm.Your} win chance</h2><span class="key"><span class="dot"></span>{nm.your} mistakes</span></div>
-                    <EvalGraph values={series.values} luck={series.luckZ} luckMax={3} luckLabel="Dice luck · z" dots={series.dots} selected={r.sel} {pending}
-                        width={476} height={118} luckHeight={46} onSelect={(j) => r.select(j)} />
-                </section>
+            {#if r.game}
+                <GraphCard {r} game={r.game} width={476} height={150} />
                 <ReviewLog {r} />
             {/if}
         </aside>
@@ -94,9 +88,4 @@
     .board { display: flex; gap: 12px; }
     .sheets { flex: 1; display: flex; flex-direction: column; gap: 10px; }
     aside { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 12px; min-height: 0; }
-    .card { display: flex; flex-direction: column; gap: 6px; background: var(--paper); border-radius: 14px; padding: 12px 16px; box-shadow: 0 1px 0 var(--edge); }
-    .ghead { display: flex; align-items: baseline; gap: 10px; }
-    h2 { margin: 0; font-family: var(--cond); font-size: 18px; font-weight: 700; }
-    .key { margin-left: auto; display: flex; align-items: center; gap: 5px; font-size: 12px; color: var(--muted); }
-    .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--unlucky-ink); }
 </style>

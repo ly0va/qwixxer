@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { Position, ReviewGame, RollAnalysis, RollRecord, SheetSnap } from '../engine/protocol';
 import { decode } from './link';
 import {
-    bestShown, botTile, explorerHref, gameHref, graphSeries, names, pointValue, positionAt, reviewLog, reviewSheet, luckScore, rollLuck, signed, stepLabel, totals, progress,
+    bestShown, botTile, graphModel, GRAPHS, explorerHref, gameHref, graphSeries, names, pointValue, positionAt, reviewLog, reviewSheet, luckScore, rollLuck, signed, stepLabel, totals, progress,
 } from './review';
 
 const sheet = (marked: [number, number][] = [], strikes = 0): SheetSnap => {
@@ -178,5 +178,44 @@ describe('the best move shown', () => {
         expect(b.grade).toBe('cost');
         expect(b.marks).toEqual([{ row: 0, n: 9 }]);
         expect(bestShown(game, an, 2)).toBeNull(); // not analysed yet
+    });
+});
+
+describe('graph views', () => {
+    const own = names(false);
+    const model = (k: Parameters<typeof graphModel>[2]) => graphModel(game, an, k, own, 'Master');
+    it('the tabs, win chance first and skill second', () => {
+        expect(GRAPHS.map((g) => g.tab)).toEqual(['Win chance', 'Skill', 'Dice luck', 'Luck · z']);
+    });
+    it('skill: the bot\'s play less your mistakes so far, changing at each move', () => {
+        expect(graphSeries(game, an).skill).toEqual([0, 0, 0.01, 0.01, expect.closeTo(-0.036), null, null]);
+    });
+    it('win chance: every analysed point is a knot, 0–1, a dashed 50% line, dots on costly moves', () => {
+        const m = model('win');
+        expect(m).toMatchObject({ title: 'Your win chance', knots: [0, 1, 2, 3, 4], lo: 0, hi: 1, area: true, guides: [{ v: 0.5, dash: true }], dots: [{ j: 4, tone: 'you' }] });
+        expect(m.tag(0.456)).toBe('46%');
+    });
+    it('dice luck: knots after each roll\'s dice (and the last analysed point), a scale in tens of points', () => {
+        const m = model('luck');
+        expect(m).toMatchObject({ title: 'Dice luck so far', knots: [0, 1, 3, 4], lo: -0.1, hi: 0.1, area: false, guides: [{ v: 0, dash: false }] });
+        expect(m.labels.map((l) => l.text)).toEqual(['+10', '−10']);
+        expect(m.tag(-0.03)).toBe('−3.0');
+    });
+    it('skill: knots after each move, dots for both players\' mistakes', () => {
+        const m = model('skill');
+        expect(m).toMatchObject({ title: 'Mistakes so far, both players', short: 'Mistakes so far', knots: [0, 2, 4] });
+        expect(m.dots).toEqual([{ j: 2, tone: 'bot' }, { j: 4, tone: 'you' }]);
+        expect(m.legend).toEqual([{ text: 'You', tone: 'you' }, { text: 'Master', tone: 'bot' }]);
+        expect(m.tag(-0.036)).toBe('−3.6');
+    });
+    it('luck · z: ±3 with the luck score\'s bands', () => {
+        const m = model('z');
+        expect(m).toMatchObject({ title: 'Dice luck compared with a typical game', short: 'Luck vs a typical game', lo: -3, hi: 3, bands: [{ from: -0.5, to: 0.5 }] });
+        expect(m.guides.map((g) => g.v)).toEqual([1.5, 0.5, -0.5, -1.5]);
+        expect(m.labels.map((l) => l.text)).toEqual(['Very lucky', 'Lucky', 'Average', 'Unlucky', 'Very unlucky']);
+        expect(m.tag(1.37)).toBe('z +1.4');
+    });
+    it('nothing analysed: no knots', () => {
+        expect(graphModel(game, [], 'luck', own, 'Master').knots).toEqual([]);
     });
 });

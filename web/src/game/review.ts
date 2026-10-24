@@ -61,12 +61,17 @@ export function totals(an: Analyses, n: number): { luck: number; var: number; yo
  * games compare whatever the dice could swing; the word is z's band
  * (rounded as shown). No percentile: its spread depends on how well you play.
  */
+/** A z as shown, one decimal: "z +1.4", "z −0.9". */
+const zText = (z: number) => {
+    const r = Math.round(z * 10) / 10;
+    return `z ${r > 0 ? '+' : r < 0 ? '−' : ''}${Math.abs(r).toFixed(1)}`;
+};
+
 export function luckScore(luck: number, variance: number): { z: number; word: string; short: string; text: string } {
     const z = variance > 0 ? luck / Math.sqrt(variance) : 0;
     const r = Math.round(z * 10) / 10;
     const word = r <= -1.5 ? 'Very unlucky' : r <= -0.5 ? 'Unlucky' : r < 0.5 ? 'Average' : r < 1.5 ? 'Lucky' : 'Very lucky';
-    const sign = r > 0 ? '+' : r < 0 ? '−' : '';
-    const short = `z ${sign}${Math.abs(r).toFixed(1)}`;
+    const short = zText(z);
     return { z, word, short, text: `${word} · ${short}` };
 }
 
@@ -172,27 +177,102 @@ export function reviewLog(game: ReviewGame, an: Analyses, nm: Names): ReviewEntr
 export const DOT_COST = 0.02;
 
 /**
- * The graph's data: win chance per point, running luck and its running z
- * (luck so far over the root of its variance so far) per point (null: not
- * yet), and points with a dot.
+ * The graph's data per point (null: not yet): win chance; running luck and
+ * its running z (luck so far over the root of its variance so far); skill
+ * (the bot's play less your mistakes so far, changing at each move); and
+ * the points with a dot on the win chance graph.
  */
-export function graphSeries(game: ReviewGame, an: Analyses): { values: (number | null)[]; luck: (number | null)[]; luckZ: (number | null)[]; dots: number[] } {
+export function graphSeries(game: ReviewGame, an: Analyses) {
     const n = game.rolls.length;
     const values = Array.from({ length: 2 * n + 1 }, (_, j) => pointValue(an, j));
     const luck: (number | null)[] = [an[0] ? 0 : null];
     const luckZ: (number | null)[] = [an[0] ? 0 : null];
+    const skill: (number | null)[] = [an[0] ? 0 : null];
     let sum: number | null = 0;
     let vsum = 0;
+    let sk: number | null = 0;
     for (let k = 0; k < n; k++) {
+        const a = an[k];
         const l = rollLuck(an, k);
         sum = sum !== null && l !== null ? sum + l : null;
         vsum += rollVar(an, k) ?? 0;
         const z = sum === null ? null : luckScore(sum, vsum).z;
         luck.push(sum, sum);
         luckZ.push(z, z);
+        skill.push(a ? sk : null);
+        sk = sk !== null && a ? sk + a.bot_cost - a.you_cost : null;
+        skill.push(sk);
     }
     const dots = game.rolls.flatMap((_, k) => ((an[k]?.you_cost ?? 0) >= DOT_COST ? [2 * k + 2] : []));
-    return { values, luck, luckZ, dots };
+    return { values, luck, luckZ, skill, dots };
+}
+
+/** Spec "The graph": one card, four views. */
+export type GraphKind = 'win' | 'skill' | 'luck' | 'z';
+export const GRAPHS: { kind: GraphKind; tab: string }[] = [
+    { kind: 'win', tab: 'Win chance' }, { kind: 'skill', tab: 'Skill' }, { kind: 'luck', tab: 'Dice luck' }, { kind: 'z', tab: 'Luck · z' },
+];
+
+/** A mistake from this many points of win chance gets a dot on the skill graph. */
+const SKILL_DOT = 0.005;
+
+export type Tone = 'you' | 'bot';
+export interface GraphModel {
+    title: string;
+    /** The title on a phone. */
+    short: string;
+    values: (number | null)[];
+    /** The points the curve passes through: where the value changes, up to the last analysed point. */
+    knots: number[];
+    lo: number;
+    hi: number;
+    /** Filled from the bottom (win chance), else above and below 0 in the luck colours. */
+    area: boolean;
+    guides: { v: number; dash: boolean }[];
+    bands: { from: number; to: number }[];
+    labels: { v: number; text: string; right: boolean }[];
+    dots: { j: number; tone: Tone }[];
+    legend: { text: string; tone: Tone }[];
+    /** The selected point's bubble. */
+    tag: (v: number) => string;
+}
+
+export function graphModel(game: ReviewGame, an: Analyses, kind: GraphKind, nm: Names, botName: string): GraphModel {
+    const g = graphSeries(game, an);
+    const values = kind === 'win' ? g.values : kind === 'skill' ? g.skill : kind === 'luck' ? g.luck : g.luckZ;
+    const missing = values.findIndex((v) => v === null);
+    const done = missing < 0 ? values.length - 1 : missing - 1;
+    const knots = values.flatMap((_, j) => (j > done ? [] : j === 0 || j === done || kind === 'win' || (kind === 'skill' ? j % 2 === 0 : j % 2 === 1) ? [j] : []));
+    const base = { values, knots, bands: [], labels: [], dots: [], legend: [] };
+    if (kind === 'win') {
+        return {
+            ...base, title: `${nm.Your} win chance`, short: `${nm.Your} win chance`, lo: 0, hi: 1, area: true, guides: [{ v: 0.5, dash: true }],
+            dots: g.dots.filter((j) => j <= done).map((j) => ({ j, tone: 'you' })), legend: [{ text: `${nm.your} mistakes`, tone: 'you' }],
+            tag: (v) => `${Math.round(v * 100)}%`,
+        };
+    }
+    if (kind === 'z') {
+        return {
+            ...base, title: 'Dice luck compared with a typical game', short: 'Luck vs a typical game', lo: -3, hi: 3, area: false,
+            guides: [1.5, 0.5, -0.5, -1.5].map((v) => ({ v, dash: true })), bands: [{ from: -0.5, to: 0.5 }],
+            labels: ([['Very lucky', 2.25], ['Lucky', 1], ['Average', 0], ['Unlucky', -1], ['Very unlucky', -2.25]] as const).map(([text, v]) => ({ v, text, right: true })),
+            tag: zText,
+        };
+    }
+    // Points of win chance: a scale in whole tens of points, at least ±10.
+    const most = Math.max(0, ...values.slice(0, done + 1).map((v) => Math.abs(v ?? 0)));
+    const top = Math.max(10, Math.ceil(Math.round(most * 1000) / 10 / 10) * 10);
+    const scale = { lo: -top / 100, hi: top / 100, area: false, guides: [{ v: 0, dash: false }], labels: [{ v: top / 100, text: `+${top}`, right: false }, { v: -top / 100, text: `−${top}`, right: false }], tag: signed };
+    if (kind === 'luck') return { ...base, ...scale, title: 'Dice luck so far', short: 'Dice luck so far' };
+    return {
+        ...base, ...scale, title: 'Mistakes so far, both players', short: 'Mistakes so far',
+        dots: game.rolls.flatMap((_, k): { j: number; tone: Tone }[] => {
+            const a = an[k];
+            if (!a || 2 * k + 2 > done) return [];
+            return [...(Math.abs(a.bot_cost) >= SKILL_DOT ? [{ j: 2 * k + 2, tone: 'bot' as const }] : []), ...(a.you_cost >= SKILL_DOT ? [{ j: 2 * k + 2, tone: 'you' as const }] : [])];
+        }),
+        legend: [{ text: nm.You, tone: 'you' }, { text: botName, tone: 'bot' }],
+    };
 }
 
 export function stepLabel(j: number, n: number): { title: string; sub: string } {

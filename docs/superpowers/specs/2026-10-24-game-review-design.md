@@ -206,13 +206,27 @@ shared link.
   - Summary: the result ("Master won 41–58"), the progress while
     analysing, and three
     tiles: Dice luck, Your mistakes, Master's play.
-  - "Your win chance" graph: the points above, your share filled from
-    the bottom, a dashed 50% line, red dots on your mistakes costing 2+
-    pts (*my call*: the threshold), the selected point as a vertical line
-    and ring with its percentage. Every point is clickable.
-  - "Dice luck": the running total of luck, one line around zero (above
-    green, below red), aligned with the graph above it, same selection
-    line.
+  - **The graph** (board R10): one card, a switch on top with four
+    views, Win chance first (the default) and Skill second. The selected
+    point (a vertical line and a ring with its value in a bubble) is the
+    same in every view, and every point is clickable. Each line is a
+    smooth monotone curve through the points where its value changes,
+    so it never overshoots them.
+    - Win chance: "Your win chance", the points above, your share
+      filled from the bottom, a dashed 50% line, red dots on your
+      mistakes costing 2+ pts (*my call*: the threshold).
+    - Skill: "Mistakes so far, both players" (phone: "Mistakes so
+      far"), the bot's play less your mistakes so far in points, one
+      line around zero (above green, below red), changing at each move.
+      Dots on any mistake from 0.5 pts: red for yours, grey for the
+      bot's.
+    - Dice luck: "Dice luck so far", the running total of luck, changing
+      at each roll's dice. Its scale is whole tens of points, at least
+      ±10, marked at both ends.
+    - Luck · z: "Dice luck compared with a typical game" (phone: "Luck
+      vs a typical game"), the running luck score's z (luck so far
+      over the root of its variance so far), ±3, dashed lines at the
+      bands' edges (±0.5, ±1.5) with the band words on the right.
   - "Moves": the game log as on the game page, one entry per roll, each
     with a luck pill; your mistakes show their cost. Clicking an entry
     selects it; the selected entry is outlined and scrolled into view.
@@ -221,7 +235,7 @@ shared link.
   coloured frames. (Chosen from the R2/R3 options.)
 
 **Phone (R4, R5):** one scrolling page: summary (tiles in one row, short
-labels), the two graphs, the selected-roll card (dice, the switch rows,
+labels), the graph card, the selected-roll card (dice, the switch rows,
 "Explore"), both sheets side by side as columns (as in the explorer's
 phone layout), the log. Pinned to the bottom of the screen: a 6 px eval
 bar running edge to edge, and the step bar (first, previous, "Roll 23 of
@@ -248,7 +262,7 @@ pill "Shared game · Player vs Master" (the bot level from the code).
   average per other candidate (usually 2, at most 3), about 0.5–0.8 s per
   roll in WASM, so 20–30 s for a typical game on a laptop, more on a
   phone. The user accepted the wait.
-- The graph and luck line grow left to right; the rest of the graph is
+- The graph grows left to right; the rest of the graph is
   hatched with "Analysing… 14 of 36 rolls". Tiles show totals "so far";
   the summary reads "Analysing… 14 of 36". Rolls not yet analysed show
   "…" for luck, cost and best move ("working it out…").

@@ -2,10 +2,10 @@
     import { BOT_NAMES } from '../engine/protocol';
     import type { GameController } from '../game/controller.svelte';
     import { explorerPhoneSize } from '../game/layout';
-    import { gameHref, graphSeries, names, pointValue, positionAt, stepLabel } from '../game/review';
+    import { gameHref, names, pointValue, positionAt, stepLabel } from '../game/review';
     import type { ReviewController } from '../game/review.svelte';
     import EvalBar from './EvalBar.svelte';
-    import EvalGraph from './EvalGraph.svelte';
+    import GraphCard from './GraphCard.svelte';
     import Icon from './Icon.svelte';
     import Menu from './Menu.svelte';
     import type { Nav } from './nav';
@@ -23,8 +23,6 @@
     const graphW = $derived(Math.min(w, 430) - 48);
     const nm = $derived(names(r.shared));
     const at = $derived(r.game ? positionAt(r.game, r.an, r.sel, r.side) : null);
-    const series = $derived(r.game ? graphSeries(r.game, r.an) : null);
-    const pending = $derived(r.game && series && series.values.includes(null) ? `Analysing… ${r.an.filter(Boolean).length} of ${r.game.rolls.length} rolls` : null);
     const p = $derived(pointValue(r.an, r.sel));
     const step = $derived(stepLabel(r.sel, r.game?.rolls.length ?? 0));
     let notice = $state('');
@@ -54,12 +52,8 @@
     {#if notice}<div class="notice" role="status">{notice}</div>{/if}
     {#if r.shared && r.game}<div class="pill">Shared game · {nm.You} vs {BOT_NAMES[r.game.bot]}</div>{/if}
     <ReviewSummary {r} compact />
-    {#if r.game && series && at}
-        <section class="card" aria-label="Win chance over the game">
-            <div class="ghead"><h2>{nm.Your} win chance</h2><span class="key"><span class="dot"></span>{nm.your} mistakes</span></div>
-            <EvalGraph values={series.values} luck={series.luckZ} luckMax={3} luckLabel="Dice luck · z" dots={series.dots} selected={r.sel} {pending}
-                width={graphW} height={92} luckHeight={34} onSelect={(j) => r.select(j)} />
-        </section>
+    {#if r.game && at}
+        <GraphCard {r} game={r.game} width={graphW} height={120} compact />
         <SelectedRoll {r} compact />
         <div class="sheets">
             <ReviewSheet name={nm.You} prev={at.prev} pos={at.pos} who="you" compact {size} {strikeSize} />
@@ -92,11 +86,6 @@
     .icon { width: 44px; height: 44px; border-radius: 12px; border: none; background: var(--paper); box-shadow: 0 1px 0 var(--edge); color: var(--ink); display: flex; align-items: center; justify-content: center; padding: 0; cursor: pointer; }
     .notice { font-size: 13px; color: var(--soft); }
     .pill { align-self: flex-start; height: 28px; padding: 0 12px; border-radius: 14px; display: inline-flex; align-items: center; font-size: 13px; font-weight: 600; background: var(--btn-muted-bg); color: var(--soft); }
-    .card { display: flex; flex-direction: column; gap: 6px; background: var(--paper); border-radius: 14px; padding: 10px 12px; box-shadow: 0 1px 0 var(--edge); }
-    .ghead { display: flex; align-items: baseline; gap: 8px; }
-    h2 { margin: 0; font-family: var(--cond); font-size: 17px; font-weight: 700; }
-    .key { margin-left: auto; display: flex; align-items: center; gap: 5px; font-size: 12px; color: var(--muted); }
-    .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--unlucky-ink); }
     .sheets { display: flex; gap: 8px; justify-content: center; }
     .log { display: flex; }
     .pinned { position: fixed; left: 0; right: 0; bottom: 0; z-index: 5; background: var(--paper); box-shadow: 0 -1px 0 var(--edge), 0 -8px 24px var(--shadow); }
