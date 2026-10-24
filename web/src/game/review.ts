@@ -69,6 +69,20 @@ export function luckScore(luck: number, variance: number): { z: number; word: st
     return { z, word, text: `${word} · z ${sign}${Math.abs(r).toFixed(1)}` };
 }
 
+/**
+ * The bot's tile: its play, signed for you. Its mistakes count for you; on
+ * your roll its white-sum mark can also beat the prediction luck used, which
+ * counts against you. The tone and note follow the sign shown.
+ */
+export function botTile(bot: number, name: string, nm: Names) {
+    const value = signed(bot);
+    const against = value.startsWith('−');
+    return {
+        label: `${name}’s play`, short: 'Bot’s play', value,
+        tone: against ? 'unlucky' : 'lucky', note: against ? `against ${nm.you}` : `in ${nm.your} favour`,
+    };
+}
+
 /** Spec "Verdict": luck against the net of both players' mistakes. */
 export function verdict(t: { luck: number; you: number; bot: number; done: number }, n: number, youWon: boolean | null, nm: Names): string {
     if (t.done < n) return `Analysing… ${t.done} of ${n}`;

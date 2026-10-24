@@ -1,6 +1,6 @@
 <script lang="ts">
     import { BOT_NAMES } from '../engine/protocol';
-    import { DOT_COST, luckScore, names, signed, totals, verdict } from '../game/review';
+    import { botTile, DOT_COST, luckScore, names, signed, totals, verdict } from '../game/review';
     import type { ReviewController } from '../game/review.svelte';
     // Spec "The page": the result, the verdict, and the three totals.
     let { r, compact = false }: { r: ReviewController; compact?: boolean } = $props();
@@ -15,7 +15,7 @@
     const tiles = $derived([
         { label: 'Dice luck', short: 'Dice luck', value: signed(t.luck), tone: t.luck >= 0 ? 'lucky' : 'unlucky', note: soFar ? 'so far' : luckScore(t.luck, t.var).text },
         { label: `${nm.Your} mistakes`, short: `${nm.Your} errors`, value: signed(-t.you), tone: 'unlucky', note: soFar ? 'so far' : `${costly} costing 2+ pts` },
-        { label: `${g ? BOT_NAMES[g.bot] : 'Bot'}’s mistakes`, short: 'Bot errors', value: signed(t.bot), tone: t.bot >= 0 ? 'lucky' : 'unlucky', note: soFar ? 'so far' : `in ${nm.your} favour` },
+        { ...botTile(t.bot, g ? BOT_NAMES[g.bot] : 'Bot', nm), ...(soFar ? { note: 'so far' } : {}) },
     ]);
 </script>
 

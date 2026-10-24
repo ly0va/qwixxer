@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { Position, ReviewGame, RollAnalysis, RollRecord, SheetSnap } from '../engine/protocol';
 import { decode } from './link';
 import {
-    bestShown, explorerHref, gameHref, graphSeries, names, pointValue, positionAt, reviewLog, reviewSheet, luckScore, rollLuck, signed, stepLabel, totals, verdict,
+    bestShown, botTile, explorerHref, gameHref, graphSeries, names, pointValue, positionAt, reviewLog, reviewSheet, luckScore, rollLuck, signed, stepLabel, totals, verdict,
 } from './review';
 
 const sheet = (marked: [number, number][] = [], strikes = 0): SheetSnap => {
@@ -70,6 +70,12 @@ describe('review points', () => {
         expect(verdict({ luck: 0, you: 0, bot: 0, done: 1 }, 3, null, own)).toBe('Analysing… 1 of 3');
         expect(names(true).Your).toBe('Player’s');
         expect(verdict({ luck: 0.05, you: 0.2, bot: 0, done: 3 }, 3, false, names(true))).toBe('Mostly Player’s mistakes');
+    });
+    it('the bot tile is its play, signed for you: mistakes in your favour, better-than-predicted marks against you', () => {
+        expect(botTile(0.05, 'Master+', names(false))).toEqual({ label: 'Master+’s play', short: 'Bot’s play', value: '+5.0', tone: 'lucky', note: 'in your favour' });
+        expect(botTile(-0.008, 'Master+', names(false))).toMatchObject({ value: '−0.8', tone: 'unlucky', note: 'against you' });
+        expect(botTile(-0.0004, 'Master+', names(true))).toMatchObject({ value: '0.0', tone: 'lucky', note: 'in Player’s favour' });
+        expect(botTile(-0.008, 'Master+', names(true)).note).toBe('against Player');
     });
     it('a value that rounds to 0.0 has no sign', () => {
         expect(signed(-0.0004)).toBe('0.0');

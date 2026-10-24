@@ -154,6 +154,11 @@ values it; move costs look one roll further (1-ply, below).
     trusts a single predicted white-sum mark of yours and rated Y12 a sure
     win, so the swing was counted nowhere.
   - Your mistakes count against you; the bot's count for you.
+  - The bot's tile is "Master's play", not "mistakes": its sum can be
+    negative when its white-sum marks on your rolls beat the prediction
+    (game `1BJGR4klqyg3X3UhcWHsNGIKBZDKwpiLL9F8ytO4WfFaBwXsP8JPdQSzrOM1ltgFhbI9NeRNwgbMLjmAc1M-hDeMOIWhkjnmxu`,
+    roll 12: −0.8). The note follows the sign shown: "in your favour" or
+    "against you".
 - **The gap is ignored.** Each luck step on the graph is exact (after the
   move → after the next roll is f − E[f]), but the step from "after the
   roll" (static) to "after the move" (1-ply) is the mistake plus the
@@ -200,7 +205,7 @@ shared link.
     rollers already.
 - Right:
   - Summary: the result ("Master won 41–58"), the verdict, and three
-    tiles: Dice luck, Your mistakes, Master's mistakes.
+    tiles: Dice luck, Your mistakes, Master's play.
   - "Your win chance" graph: the points above, your share filled from
     the bottom, a dashed 50% line, red dots on your mistakes costing 2+
     pts (*my call*: the threshold), the selected point as a vertical line
