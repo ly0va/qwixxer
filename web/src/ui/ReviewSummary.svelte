@@ -15,7 +15,7 @@
     const tiles = $derived([
         { label: 'Dice luck', short: 'Dice luck', value: signed(t.luck), tone: t.luck >= 0 ? 'lucky' : 'unlucky', note: soFar ? 'so far' : luckScore(t.luck, t.var).text },
         { label: `${nm.Your} mistakes`, short: `${nm.Your} errors`, value: signed(-t.you), tone: 'unlucky', note: soFar ? 'so far' : `${costly} costing 2+ pts` },
-        { label: `${g ? BOT_NAMES[g.bot] : 'Bot'}’s mistakes`, short: 'Bot errors', value: signed(t.bot), tone: 'lucky', note: soFar ? 'so far' : `in ${nm.your} favour` },
+        { label: `${g ? BOT_NAMES[g.bot] : 'Bot'}’s mistakes`, short: 'Bot errors', value: signed(t.bot), tone: t.bot >= 0 ? 'lucky' : 'unlucky', note: soFar ? 'so far' : `in ${nm.your} favour` },
     ]);
 </script>
 

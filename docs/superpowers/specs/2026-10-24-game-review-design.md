@@ -124,7 +124,8 @@ values it; move costs look one roll further (1-ply, below).
   best turn, valued statically: the luck machinery). A turn that ends the
   game takes its exact 0% or 100%; turns leaving identical sheets share
   one average.
-- **Mistake** of a choice, from the chooser's side, ≥ 0:
+- **Mistake** of a choice, from the chooser's side (≥ 0 except the bot's
+  white-sum mark on your roll):
   - The roller's turn: the best 1-ply value minus the played turn's 1-ply
     value. The candidates are the static top 3 of the explorer's move list
     plus the played turn; "Best" is the highest of them by 1-ply. Agreed
@@ -137,11 +138,21 @@ values it; move costs look one roll further (1-ply, below).
     colour decision, and bots other than Master often mark differently).
     On the bot's roll, with the sheets swapped, as for luck. This is what
     makes the played turn's 1-ply value equal the next roll's luck average.
-  - The other player's white-sum mark: the top of their passive options
-    minus the one they chose (the explorer's opponent-roll list for your
-    mark; sheets swapped for the bot's). *My call:* valued as the explorer
-    does, against the roller's predicted turn, since that mark is made
-    before the roller's colour decision.
+  - Your white-sum mark on the bot's roll: the top of your passive options
+    minus the one you chose (the explorer's opponent-roll list). *My
+    call:* valued as the explorer does, against the bot's predicted turn,
+    since that mark is made before the bot's colour decision.
+  - The bot's white-sum mark on your roll (user's decision, 2026-10-24):
+    your best turn's static value given its actual mark minus f (your best
+    given its *predicted* mark, as luck prices the roll). 0 when the
+    prediction held; signed, so a mark that did better for the bot than
+    predicted counts in its favour. Reference game
+    `1BYOETJzRqHuIBP3ejVceFls0TKOkWFds8GAUhS5nwNWGSDUlocA9IbrpPdho7Y1AumCJWH5wGgPbFn3YP`,
+    last roll: predicted R12 holds you to 21% (luck −13.5); the bot marked
+    Y12, you closed yellow then red and won: +78.6 for the bot's mistake.
+    Before, it was valued by the bot's own passive ranking, whose lookahead
+    trusts a single predicted white-sum mark of yours and rated Y12 a sure
+    win, so the swing was counted nowhere.
   - Your mistakes count against you; the bot's count for you.
 - **The gap is ignored.** Each luck step on the graph is exact (after the
   move → after the next roll is f − E[f]), but the step from "after the

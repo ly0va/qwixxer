@@ -206,7 +206,12 @@ impl Explorer {
         };
 
         let (you_cost, you_best, bot_cost) = if you_roll {
-            let (bot_cost, _) = passive_cost(&bot, &you);
+            // The bot's white-sum mark, against the prediction luck priced
+            // your roll with: your best turn's (static) value given its
+            // actual mark less this roll's f. Signed: 0 when the prediction
+            // held, negative when its mark did better for it.
+            let top_actual = vals.iter().copied().fold(f32::MIN, f32::max);
+            let bot_cost = top_actual - this_roll;
             let mv = BestMove {
                 marks: best.0.marks.iter().map(|&m| Sq::from(m)).collect(),
                 strike: best.0.strike,
@@ -354,12 +359,16 @@ mod tests {
     }
 
     #[test]
-    fn costs_are_non_negative_and_best_is_a_candidate() {
+    fn your_costs_are_non_negative_and_best_is_a_candidate() {
         let ex = Explorer::new();
         let (_, g) = game(5);
         for k in 0..g.rolls.len() {
             let a = ex.review_roll(&g, k).unwrap();
-            assert!(a.you_cost >= 0.0 && a.bot_cost >= 0.0, "roll {k}: {a:?}");
+            // The bot's cost may be negative on your roll (its mark did better than predicted).
+            assert!(a.you_cost >= 0.0, "roll {k}: {a:?}");
+            if g.rolls[k].before.roller == Roller::Opponent {
+                assert!(a.bot_cost >= 0.0, "roll {k}: {a:?}");
+            }
             for q in &a.you_best.marks {
                 let row = &a.you_best.after.you.marks[q.row];
                 assert!(
@@ -474,6 +483,38 @@ mod tests {
         let bogus = [Sq { row: 0, n: 2 }, Sq { row: 0, n: 3 }, Sq { row: 0, n: 4 }];
         assert!(ex.move_one_ply(&mine.before, &bogus, false).is_err());
         assert!(ex.move_one_ply(&mine.before, &[], true).is_ok());
+    }
+
+    #[test]
+    fn on_your_roll_the_bots_cost_is_its_white_marks_effect_against_the_prediction() {
+        // The reference game: on the last roll the bot was predicted to close
+        // red with its white sum, which holds you to 21%; it marked yellow 12
+        // instead, and you closed yellow, then red, and won.
+        let ex = Explorer::new();
+        let g = replay("1BYOETJzRqHuIBP3ejVceFls0TKOkWFds8GAUhS5nwNWGSDUlocA9IbrpPdho7Y1AumCJWH5wGgPbFn3YP").unwrap();
+        let k = g.rolls.len() - 1;
+        let a = ex.review_roll(&g, k).unwrap();
+        assert!((a.this_roll - 0.2138).abs() < 1e-3, "{}", a.this_roll);
+        assert!((a.bot_cost - (1.0 - a.this_roll)).abs() < 1e-6, "{}", a.bot_cost);
+    }
+
+    #[test]
+    fn on_your_roll_the_bots_cost_is_zero_when_the_prediction_held() {
+        let ex = Explorer::new();
+        let (_, g) = game(13);
+        let mut checked = 0;
+        for (k, roll) in g.rolls.iter().enumerate() {
+            let pos = &roll.before;
+            if pos.roller != Roller::You {
+                continue;
+            }
+            let (you, bot, _) = states(pos);
+            if predict_opp_white(&ex.net, &you, &bot, pos.dice.unwrap()) == roll.record.bot_white.map(Into::into) {
+                assert_eq!(ex.review_roll(&g, k).unwrap().bot_cost, 0.0, "roll {k}");
+                checked += 1;
+            }
+        }
+        assert!(checked >= 3, "{checked}");
     }
 
     #[test]
