@@ -229,4 +229,8 @@ describe('moreBadges', () => {
         p = tapStrike(p, 'you', 3);
         expect(at(4.2, p)).toBeNull();
     });
+    it('never expects more than four strikes in all', () => {
+        const three = tapStrike(emptyPosition(), 'you', 2);
+        expect(moreBadges(three, 'you', { marks: [0, 0, 0, 0], strikes: 4.4 }).strikes?.text).toBe('+1.0');
+    });
 });

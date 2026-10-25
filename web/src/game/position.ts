@@ -153,7 +153,8 @@ const estimate = (what: string) => `About ${what} by the end of the game (an est
 /**
  * What the net expects a side to add by the end of the game: per row the
  * marks still to come, rounded (none for a closed row, or below one), and
- * the strikes to one decimal (none below 0.1, or with four already).
+ * the strikes to one decimal, four at most in all (none below 0.1, or with
+ * four already).
  */
 export function moreBadges(p: ExPosition, who: Who, e: Ends): { rows: (Badge | null)[]; strikes: Badge | null } {
     const s = p[who];
@@ -163,7 +164,8 @@ export function moreBadges(p: ExPosition, who: Who, e: Ends): { rows: (Badge | n
         if (closed[r] || n < 1) return null;
         return { text: `+${n}`, tip: estimate(`${n} more ${NAME[r].toLowerCase()} mark${n === 1 ? '' : 's'}`) };
     });
-    const k = (e.strikes - s.strikes).toFixed(1);
+    // The strikes head is unbounded: a game ends at four.
+    const k = (Math.min(e.strikes, 4) - s.strikes).toFixed(1);
     const strikes = s.strikes >= 4 || Number(k) < 0.1 ? null : { text: `+${k}`, tip: estimate(`${k} more strike${k === '1.0' ? '' : 's'}`) };
     return { rows, strikes };
 }
