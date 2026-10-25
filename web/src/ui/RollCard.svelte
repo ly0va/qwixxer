@@ -59,7 +59,7 @@
         {#if !compact}<h2>Roll</h2>{/if}
         <div class="seg" role="radiogroup" aria-label="Whose roll">
             <button type="button" role="radio" aria-checked={x.pos.roller === 'you'} aria-label="Your roll" onclick={() => x.setRoller('you')}>{compact ? 'You' : 'Your roll'}</button>
-            <button type="button" role="radio" aria-checked={x.pos.roller === 'opponent'} aria-label="Opponent’s roll" onclick={() => x.setRoller('opponent')}>{compact ? 'Them' : 'Opponent’s roll'}</button>
+            <button type="button" role="radio" aria-checked={x.pos.roller === 'opponent'} aria-label="Opponent’s roll" onclick={() => x.setRoller('opponent')}>{compact ? 'Them' : 'Opponent’s'}</button>
         </div>
         {#if luckShown}
             <span class="luck {luck?.tone ?? 'pending'}" class:stale={luckStale} aria-live="polite" title={luck?.detail}>
