@@ -75,6 +75,11 @@ Agreed in conversation; layout details marked *my call* are mine.
     - `rollerColour` (0–8): 0 = none, else 1 + row × 2 + whiteDie (row
       0–3 as above, whiteDie 0 or 1): white die + that row's colour die.
       When both white dice show the same value, always whiteDie 0.
+  - Each roll is written as the lowest action that replays to it. On the
+    bot's roll, only actions with its recorded reading count: one square
+    can be both its white-sum mark and a colour mark, and the code keeps
+    which it was (that reading must be legal: white sum in phase 1, colour
+    in phase 2). Codes written before this keep replaying (2026-10-25).
     - `otherWhite` (0–4): the other player's white-sum mark, as
       `rollerWhite`.
   - Whoever rolls, their marks go in `rollerWhite` / `rollerColour`, and
@@ -128,7 +133,9 @@ values it; move costs look one roll further (1-ply, below).
   white-sum mark on your roll):
   - The roller's turn: the best 1-ply value minus the played turn's 1-ply
     value. The candidates are the static top 3 of the explorer's move list
-    plus the played turn; "Best" is the highest of them by 1-ply. Agreed
+    (and any tied with the third) plus the played turn; "Best" is the
+    highest of them by 1-ply, the played turn on a tie (so a move that
+    costs nothing is its own best). Agreed
     after a probe (16 self-play games, 380 rolls, 2026-10-24): 1-ply
     changed the best move on 29 rolls, and on 18 of those Master+'s search
     picked the 1-ply move (7 the static one); costs moved 0.64 pts on
@@ -139,9 +146,14 @@ values it; move costs look one roll further (1-ply, below).
     On the bot's roll, with the sheets swapped, as for luck. This is what
     makes the played turn's 1-ply value equal the next roll's luck average.
   - Your white-sum mark on the bot's roll: the top of your passive options
-    minus the one you chose (the explorer's opponent-roll list). *My
-    call:* valued as the explorer does, against the bot's predicted turn,
-    since that mark is made before the bot's colour decision.
+    minus the one you chose (the explorer's opponent-roll list), yours on
+    a tie. *My call:* valued as the explorer does, against the bot's
+    predicted turn, since that mark is made before the bot's colour
+    decision. The Best sheet shows the bot's turn as played as far as it
+    stays legal with your best mark: phase 1 is simultaneous, so its
+    white-sum mark stays; if your mark ends the game after phase 1 its
+    colour mark and strike go, and if it closes the row of the bot's colour
+    mark the bot gets its best legal finish (static value).
   - The bot's white-sum mark on your roll (user's decision, 2026-10-24):
     your best turn's static value given its actual mark minus f (your best
     given its *predicted* mark, as luck prices the roll). 0 when the
@@ -251,9 +263,9 @@ roll → roll 1 after the move → roll 2 … Arrow keys step, Home/End jump
 (*my call*, as chess.com). At an "after the roll" point the sheets show
 the position before the move, with the dice.
 
-**Shared link (R9):** the same page with "You / your" replaced by
-"Player / Player's" everywhere (the user chose "Player"), and a header
-pill "Shared game · Player vs Master" (the bot level from the code).
+**Shared link (R9):** the same page. The "Shared game" pill and the
+"Player" naming were dropped (user, 2026-10-25): whether a game was yours
+could only be guessed from local storage, so the human is always "You".
 
 **Dark mode (R6, R7):** the app's dark tokens; nothing new.
 
@@ -299,7 +311,8 @@ with its average (roll 1: `start_var`; roll k: roll k−1's `after_var`).
 ## Explorer
 
 So the explorer and the review pick the same best move, the explorer's
-move list on your roll uses the review's 1-ply values for its static top 3:
+move list on your roll uses the review's 1-ply values for its static top 3
+(and any tied with the third, as the review takes them):
 
 - After the move list arrives, each of the top 3 is valued 1-ply
   (`one_ply` after the move and the opponent's *predicted* white-sum mark),
@@ -329,7 +342,7 @@ move list on your roll uses the review's 1-ply values for its static top 3:
   candidates take 0% or 100%.
 - Luck is zero-sum: the bot's luck is minus yours (as in the explorer).
 - UI: stepping order; the switch shows played vs best on the sheets;
-  pending states while analysing; "Player" naming on a shared link.
+  pending states while analysing.
 
 ## Left to the builder
 
