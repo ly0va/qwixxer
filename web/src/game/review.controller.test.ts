@@ -172,4 +172,28 @@ describe('ReviewController', () => {
         expect(r.error).toBeNull();
         expect(r.game?.rolls).toHaveLength(1);
     });
+
+    it('share copies the game link and a second share’s notice lasts its full time', async () => {
+        vi.useFakeTimers();
+        try {
+            const { e } = engine({ A: 2 });
+            const r = new ReviewController(e, memStore());
+            await r.load('A');
+            const copied: string[] = [];
+            const copy = async (t: string) => { copied.push(t); };
+            await r.share('https://x.test/qwixxer/', copy);
+            expect(copied).toEqual(['https://x.test/qwixxer/#/review?g=A']);
+            expect(r.notice).toBe('Link copied');
+            vi.advanceTimersByTime(1500);
+            await r.share('https://x.test/qwixxer/', copy);
+            vi.advanceTimersByTime(1000); // the first share's timer would have cleared it here
+            expect(r.notice).toBe('Link copied');
+            vi.advanceTimersByTime(1000);
+            expect(r.notice).toBe('');
+            await r.share('https://x.test/qwixxer/', async () => { throw new Error('denied'); });
+            expect(r.notice).toBe('Couldn’t copy the link');
+        } finally {
+            vi.useRealTimers();
+        }
+    });
 });

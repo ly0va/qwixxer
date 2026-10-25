@@ -2,7 +2,7 @@
     import { BOT_NAMES } from '../engine/protocol';
     import type { GameController } from '../game/controller.svelte';
     import { DESK_H, DESK_W, deskScale } from '../game/layout';
-    import { gameHref, pointValue, positionAt } from '../game/review';
+    import { pointValue, positionAt } from '../game/review';
     import type { ReviewController } from '../game/review.svelte';
     import EvalBar from './EvalBar.svelte';
     import GraphCard from './GraphCard.svelte';
@@ -20,17 +20,6 @@
     let h = $state(window.innerHeight);
     const scale = $derived(deskScale(w, h));
     const at = $derived(r.game ? positionAt(r.game, r.an, r.sel, r.side) : null);
-    let notice = $state('');
-    async function share() {
-        if (!r.code) return;
-        try {
-            await navigator.clipboard.writeText(location.origin + location.pathname + gameHref(r.code));
-            notice = 'Link copied';
-        } catch {
-            notice = 'Couldn’t copy the link';
-        }
-        setTimeout(() => (notice = ''), 2000);
-    }
 </script>
 
 <svelte:window bind:innerWidth={w} bind:innerHeight={h} />
@@ -42,8 +31,8 @@
             <Tabs current="review" onPlay={nav.play} onExplore={nav.explorer} onReview={nav.review} />
         </div>
         <div class="right">
-            {#if notice}<span class="notice" role="status">{notice}</span>{/if}
-            {#if r.game}<button type="button" class="btn" onclick={share}><Icon name="link" />Share game</button>{/if}
+            {#if r.notice}<span class="notice" role="status">{r.notice}</span>{/if}
+            {#if r.game}<button type="button" class="btn" onclick={() => r.share()}><Icon name="link" />Share game</button>{/if}
             <Menu {c} {nav} tabs />
         </div>
     </header>

@@ -1,6 +1,6 @@
 import type { Engine, ReviewGame, RollAnalysis } from '../engine/protocol';
 import type { Store } from './controller.svelte';
-import type { Analyses, GraphKind, Side } from './review';
+import { gameHref, type Analyses, type GraphKind, type Side } from './review';
 
 /** The last finished game's code (spec "The page": the Review tab opens it). */
 export const LAST_GAME = 'qwixxer.lastGame';
@@ -20,6 +20,8 @@ export class ReviewController {
     /** The graph card's view (spec "The graph"): win chance until you pick another. */
     graph = $state<GraphKind>('win');
     error = $state<string | null>(null);
+    /** "Share game"'s result, shown for two seconds. */
+    notice = $state('');
 
     private engine: Engine;
     private store: Store;
@@ -28,6 +30,7 @@ export class ReviewController {
     private gen = 0;
     /** The generation whose analysis loop is running, if any. */
     private running: number | null = null;
+    private noticeTimer: ReturnType<typeof setTimeout> | undefined;
 
     constructor(engine: Engine, store: Store) {
         this.engine = engine;
@@ -83,6 +86,21 @@ export class ReviewController {
         }
         this.error = null;
         void this.analyse();
+    }
+
+    /** Copies the game's link (`base`: the app's address). */
+    async share(base = location.origin + location.pathname, copy = (t: string) => navigator.clipboard.writeText(t)) {
+        if (!this.code) return;
+        let text: string;
+        try {
+            await copy(base + gameHref(this.code));
+            text = 'Link copied';
+        } catch {
+            text = 'Couldn’t copy the link';
+        }
+        clearTimeout(this.noticeTimer);
+        this.notice = text;
+        this.noticeTimer = setTimeout(() => (this.notice = ''), 2000);
     }
 
     select(j: number) {

@@ -2,7 +2,7 @@
     import { BOT_NAMES } from '../engine/protocol';
     import type { GameController } from '../game/controller.svelte';
     import { explorerPhoneSize } from '../game/layout';
-    import { gameHref, pointValue, positionAt, stepLabel } from '../game/review';
+    import { pointValue, positionAt, stepLabel } from '../game/review';
     import type { ReviewController } from '../game/review.svelte';
     import EvalBar from './EvalBar.svelte';
     import GraphCard from './GraphCard.svelte';
@@ -24,17 +24,6 @@
     const at = $derived(r.game ? positionAt(r.game, r.an, r.sel, r.side) : null);
     const p = $derived(pointValue(r.an, r.sel));
     const step = $derived(stepLabel(r.sel, r.game?.rolls.length ?? 0));
-    let notice = $state('');
-    async function share() {
-        if (!r.code) return;
-        try {
-            await navigator.clipboard.writeText(location.origin + location.pathname + gameHref(r.code));
-            notice = 'Link copied';
-        } catch {
-            notice = 'Couldn’t copy the link';
-        }
-        setTimeout(() => (notice = ''), 2000);
-    }
     const LEFT = [{ label: 'First', d: 'M6 5v14M18 6l-7 6 7 6', go: () => r.first() }, { label: 'Previous', d: 'M15 6l-6 6 6 6', go: () => r.step(-1) }];
     const RIGHT = [{ label: 'Next', d: 'M9 6l6 6-6 6', go: () => r.step(1) }, { label: 'Last', d: 'M18 5v14M6 6l7 6-7 6', go: () => r.last() }];
 </script>
@@ -44,11 +33,11 @@
     <header class="head">
         <div class="word">Qwixxer</div>
         <div class="right">
-            {#if r.game}<button type="button" class="icon" aria-label="Share game" onclick={share}><Icon name="link" size={20} /></button>{/if}
+            {#if r.game}<button type="button" class="icon" aria-label="Share game" onclick={() => r.share()}><Icon name="link" size={20} /></button>{/if}
             <Menu {c} {nav} />
         </div>
     </header>
-    {#if notice}<div class="notice" role="status">{notice}</div>{/if}
+    {#if r.notice}<div class="notice" role="status">{r.notice}</div>{/if}
     <ReviewSummary {r} compact />
     {#if r.game && at}
         <GraphCard {r} game={r.game} width={graphW} height={120} compact />
