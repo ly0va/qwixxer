@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!-- The four row colours, crossed off with the sheet's hand-drawn cross. -->
+  <clipPath id="c"><rect width="64" height="64" rx="14"/></clipPath>
+  <g clip-path="url(#c)">
+    <rect width="32" height="32" fill="#C8323C"/>
+    <rect x="32" width="32" height="32" fill="#E9B824"/>
+    <rect y="32" width="32" height="32" fill="#2F8F4E"/>
+    <rect x="32" y="32" width="32" height="32" fill="#2C5FAF"/>
+  </g>
+  <path d="M17.0 15.5 C 27.5 26.0, 38.0 38.0, 48.5 50.0 M48.5 15.5 C 38.0 26.0, 27.5 38.0, 15.5 48.5" stroke="#FFFDF8" stroke-width="9" stroke-linecap="round" fill="none"/>
+</svg>
