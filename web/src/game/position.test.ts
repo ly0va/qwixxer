@@ -206,7 +206,7 @@ describe('rankMoves', () => {
 });
 
 describe('moreBadges', () => {
-    const tip = (what: string) => `About ${what} by the end of the game (the net’s estimate)`;
+    const tip = (what: string) => `About ${what} by the end of the game (an estimate)`;
     it('rounds the marks each row still gets, and shows none for a closed row or nothing more', () => {
         let p = markRed([0, 1, 2]); // red: 3 marks
         p = toggleSquare(p, 'you', 1, 0); // yellow: 1 mark

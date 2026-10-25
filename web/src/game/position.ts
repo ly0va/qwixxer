@@ -148,7 +148,7 @@ export function exploreSheet(p: ExPosition, who: Who): RowModel[] {
 /** A pencil badge: the text ("+2") and what it means, in words. */
 export interface Badge { text: string; tip: string }
 
-const estimate = (what: string) => `About ${what} by the end of the game (the net’s estimate)`;
+const estimate = (what: string) => `About ${what} by the end of the game (an estimate)`;
 
 /**
  * What the net expects a side to add by the end of the game: per row the

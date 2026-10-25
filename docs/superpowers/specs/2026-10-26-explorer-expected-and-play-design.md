@@ -16,7 +16,7 @@ so it never reads as points:
   strike boxes on desktop and on its own line under them on the phone. None
   below 0.1 or with four strikes.
 - **Explanation:** a tooltip on each badge (hover, focus or tap), e.g. "About
-  3 more yellow marks by the end of the game (the net's estimate)". No
+  3 more yellow marks by the end of the game (an estimate)". No
   heading or legend. On the phone the tooltip spans the sheet.
 - The badges dim while a new answer is pending and disappear once the game
   is over. The desktop sheet column is 666 px so a row and its badge fit.
