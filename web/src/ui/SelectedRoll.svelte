@@ -40,6 +40,7 @@
                 <span class="luck {luck?.tone ?? 'pending'}" title={luck?.detail}>
                     {#if luck}{luck.word}{#if luck.value}<b>{luck.value}</b>{/if}{:else}Luck …{/if}
                 </span>
+                {#if compact && r.game}<a class="open explore" href={explorerHref(r.game, k)}>Explore</a>{/if}
             {:else}
                 <b>Start</b><span class="whose">before the first roll</span>
             {/if}
@@ -48,7 +49,6 @@
         {#if roll?.before.dice}
             <div class="dice">
                 {#each FACES as f, i}<Die value={roll.before.dice[i]} face={f[0]} pip={f[1]} size={compact ? 38 : 34} label="{f[2]} die, {roll.before.dice[i]}" />{/each}
-                {#if compact && r.game}<a class="open explore" href={explorerHref(r.game, k)}>Explore</a>{/if}
             </div>
         {:else if !compact}
             <div class="dice ghost" aria-hidden="true">
@@ -98,9 +98,9 @@
     .strip.compact { flex-direction: column; align-items: stretch; gap: 8px; padding: 10px 12px; }
     .roll { display: flex; flex-direction: column; gap: 6px; }
     .title { display: flex; align-items: center; gap: 8px; min-height: 26px; }
-    .title b { font-family: var(--cond); font-weight: 700; font-size: 19px; }
-    .whose { font-size: 13px; color: var(--muted); }
-    .dice { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; }
+    .title b { font-family: var(--cond); font-weight: 700; font-size: 19px; white-space: nowrap; }
+    .whose { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; color: var(--muted); }
+    .dice { display: flex; gap: 5px; }
     .compact .dice { gap: 6px; }
     .luck { height: 24px; padding: 0 9px; border-radius: 12px; display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; font-weight: 700; font-size: 13px; }
     .luck b { font-family: var(--cond); font-weight: 800; font-size: 16px; }
@@ -126,6 +126,6 @@
     .open { height: 32px; padding: 0 12px; border-radius: 9px; background: var(--ground); color: var(--ink); display: inline-flex; align-items: center; font-size: 13px; font-weight: 600; text-decoration: none; white-space: nowrap; }
     .open:hover { background: color-mix(in srgb, var(--ink) 10%, var(--ground)); }
     .open:focus-visible { outline: 2px solid var(--ink); outline-offset: 1px; }
-    /* Phone: the explorer button ends the dice row. */
-    .explore { margin-left: auto; height: 34px; }
+    /* Phone: the explorer button ends the title row. */
+    .explore { flex: none; margin-left: auto; height: 28px; padding: 0 10px; }
 </style>
