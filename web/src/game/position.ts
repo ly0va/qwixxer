@@ -152,15 +152,16 @@ const estimate = (what: string) => `About ${what} by the end of the game (an est
 
 /**
  * What the net expects a side to add by the end of the game: per row the
- * marks still to come, rounded (none for a closed row, or below one), and
- * the strikes to one decimal, four at most in all (none below 0.1, or with
- * four already).
+ * marks still to come, rounded, twelve at most in all (none for a closed
+ * row, or below one), and the strikes to one decimal, four at most in all
+ * (none below 0.1, or with four already).
  */
 export function moreBadges(p: ExPosition, who: Who, e: Ends): { rows: (Badge | null)[]; strikes: Badge | null } {
     const s = p[who];
     const closed = closedRows(p);
     const rows = [0, 1, 2, 3].map((r) => {
-        const n = Math.round(e.marks[r] - s.marks[r].filter(Boolean).length);
+        // The marks head is unbounded too: a row holds twelve with its lock.
+        const n = Math.round(Math.min(e.marks[r], 12) - s.marks[r].filter(Boolean).length);
         if (closed[r] || n < 1) return null;
         return { text: `+${n}`, tip: estimate(`${n} more ${NAME[r].toLowerCase()} mark${n === 1 ? '' : 's'}`) };
     });
