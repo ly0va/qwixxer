@@ -22,6 +22,12 @@
     const sv = $derived(m.values[selected] ?? null);
     const sx = $derived(X(selected));
     const sy = $derived(sv === null || selected > done ? height / 2 : curve.at(sx));
+    /** Each dot's centre: two at one point (both chose badly) sit side by side, the bot's on the left, level on the curve. */
+    const dots = $derived(m.dots.map((d) => {
+        const pair = m.dots.filter((e) => e.j === d.j).length > 1;
+        const x = X(d.j);
+        return { tone: d.tone, x: x + (pair ? (d.tone === 'bot' ? -5 : 5) : 0), y: curve.at(x) };
+    }));
     const tagLeft = (x: number) => (x + 9 + 64 > width ? x - 9 - 64 : x + 9);
     /** The point under the pointer (or keyboard focus): its value in a quieter bubble. */
     let hover = $state<number | null>(null);
@@ -54,7 +60,7 @@
     {#each m.labels as lb}<span class="lab" class:right={lb.right} style="top: {Math.max(1, Math.min(height - 17, Y(lb.v) - 8))}px">{lb.text}</span>{/each}
     {#if pending}<div class="pending" style="left: {X(Math.max(0, done))}px">{pending}</div>{/if}
     <span class="sel" style="left: {sx - 1}px"></span>
-    {#each m.dots as d}<span class="dot {d.tone}" style="left: {X(d.j) - 4}px; top: {curve.at(X(d.j)) - 4}px"></span>{/each}
+    {#each dots as d}<span class="dot {d.tone}" style="left: {d.x - 4}px; top: {d.y - 4}px"></span>{/each}
     <span class="ring" style="left: {sx - 6}px; top: {sy - 6}px"></span>
     {#if hv !== null}
         <span class="hsel" style="left: {hx - 0.5}px"></span>
