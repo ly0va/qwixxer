@@ -30,6 +30,9 @@
     const luckShown = $derived(d.every((v) => v !== null) && !isOver(x.pos));
     const luck = $derived(x.luck ? luckText(x.luck.value) : null);
     const luckStale = $derived(!!x.luck && x.luck.key !== luckKey(x.pos));
+    // The last move played from the list, and Undo.
+    const played = $derived(x.lastPlay);
+    const theirs = $derived(!played ? '' : played.opponentStrike ? 'took a strike' : played.opponent.length ? 'marked' : 'passed');
     // A click outside the picker closes it; a die button toggles it itself.
     // (closest, not contains: a picked face may already have left the DOM.)
     function outside(e: MouseEvent) {
@@ -40,6 +43,18 @@
 <svelte:document onclick={outside} />
 
 <section class="card" class:compact aria-label="Roll">
+    {#if played}
+        <div class="played" role="status">
+            <span class="what">{played.marks.length || played.strike ? 'Played' : 'Passed'}</span>
+            {#each chipsFor(played.marks, played.strike) as ch}<ChipView chip={ch} size={24} />{/each}
+            <span class="them">· {compact ? 'opp.' : 'opponent'} {theirs}</span>
+            {#each chipsFor(played.opponent, false) as ch}<ChipView chip={ch} size={24} />{/each}
+            <button type="button" class="undo" onclick={() => x.undo()}>
+                <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 14L4 9l5-5"></path><path d="M4 9h10a6 6 0 0 1 0 12h-3"></path></svg>
+                Undo
+            </button>
+        </div>
+    {/if}
     <div class="top">
         {#if !compact}<h2>Roll</h2>{/if}
         <div class="seg" role="radiogroup" aria-label="Whose roll">
@@ -115,6 +130,10 @@
     .opp { margin: 0; display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--soft); min-height: 22px; }
     .opp.stale { opacity: 0.6; }
     .opp .after { color: var(--muted); }
+    .played { display: flex; align-items: center; gap: 6px; padding: 6px 6px 6px 10px; border-radius: 10px; background: var(--log-bg); }
+    .played .what { font-size: 14px; font-weight: 600; }
+    .played .them { font-size: 13px; color: var(--muted); white-space: nowrap; }
+    .undo { margin-left: auto; height: 32px; padding: 0 12px; border-radius: 8px; border: none; background: var(--paper); box-shadow: 0 1px 0 var(--edge); color: var(--ink); display: flex; align-items: center; gap: 5px; font-weight: 600; font-size: 14px; cursor: pointer; }
     .card { display: flex; flex-direction: column; gap: 10px; background: var(--paper); border-radius: 14px; padding: 12px 16px; box-shadow: 0 1px 0 var(--edge); }
     .card.compact { padding: 10px 12px; }
     .top { display: flex; align-items: center; gap: 10px; }

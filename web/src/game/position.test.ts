@@ -3,7 +3,7 @@ import type { MoveOut, View } from '../engine/protocol';
 import {
     clearSheet, closedRows, emptyPosition, exploreSheet, fromView, marginText, nextUnsetDie, overText, percent, randomDice,
     setDie, sheetTotal, swapSides, tapStrike, toEngine, toggleLock, toggleSquare,
-    addAnalysis, analysisKey, analysisMargin, chanceText, gamesText, isOver, luckText, moveChance, rankMoves, refineCount, winChance, ZERO_ANALYSIS,
+    addAnalysis, analysisKey, analysisMargin, chanceText, gamesText, isOver, luckText, moreBadges, moveChance, rankMoves, refineCount, winChance, ZERO_ANALYSIS,
 } from './position';
 
 const markRed = (idx: number[]) => idx.reduce((p, i) => toggleSquare(p, 'you', 0, i), emptyPosition());
@@ -202,5 +202,31 @@ describe('rankMoves', () => {
 
     it('handles fewer than 3 moves', () => {
         expect(rankMoves([mv(2, 0.5)], [0.6]).map((m) => [m.p_win, m.refined])).toEqual([[0.6, true]]);
+    });
+});
+
+describe('moreBadges', () => {
+    const tip = (what: string) => `About ${what} by the end of the game (the net’s estimate)`;
+    it('rounds the marks each row still gets, and shows none for a closed row or nothing more', () => {
+        let p = markRed([0, 1, 2]); // red: 3 marks
+        p = toggleSquare(p, 'you', 1, 0); // yellow: 1 mark
+        p = toggleLock(p, 3); // blue closed
+        const b = moreBadges(p, 'you', { marks: [5.4, 1.3, 2.6, 4], strikes: 0 });
+        expect(b.rows).toEqual([
+            { text: '+2', tip: tip('2 more red marks') },
+            null,
+            { text: '+3', tip: tip('3 more green marks') },
+            null,
+        ]);
+        expect(moreBadges(p, 'you', { marks: [4.4, 1, 0, 0], strikes: 0 }).rows[0]).toEqual({ text: '+1', tip: tip('1 more red mark') });
+    });
+    it('gives strikes one decimal, from 0.1 up, and none at four strikes', () => {
+        let p = tapStrike(emptyPosition(), 'you', 0); // 1 strike
+        const at = (strikes: number, q = p) => moreBadges(q, 'you', { marks: [0, 0, 0, 0], strikes }).strikes;
+        expect(at(1.46)).toEqual({ text: '+0.5', tip: tip('0.5 more strikes') });
+        expect(at(2.04)).toEqual({ text: '+1.0', tip: tip('1.0 more strike') });
+        expect(at(1.04)).toBeNull();
+        p = tapStrike(p, 'you', 3);
+        expect(at(4.2, p)).toBeNull();
     });
 });

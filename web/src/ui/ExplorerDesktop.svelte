@@ -67,7 +67,8 @@
     .btn { height: 44px; padding: 0 14px; border-radius: 12px; border: none; background: var(--paper); box-shadow: 0 1px 0 var(--edge); color: var(--ink); display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 15px; cursor: pointer; }
     .btn.small { height: 34px; padding: 0 12px; border-radius: 9px; font-size: 14px; gap: 6px; }
     .body { display: flex; gap: 24px; flex: 1; min-height: 0; }
-    main { width: 640px; display: flex; flex-direction: column; gap: 10px; }
+    /* 666: a row (592 px) plus its expected-marks badge (6 + 36) inside the card's 28 px of padding. */
+    main { width: 666px; display: flex; flex-direction: column; gap: 10px; }
     .mid { display: flex; align-items: center; gap: 10px; }
     .btn:disabled { opacity: 0.5; cursor: default; }
     .hint { font-size: 13px; color: var(--muted); }

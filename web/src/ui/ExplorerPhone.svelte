@@ -2,9 +2,10 @@
     import type { ExplorerController } from '../game/explorer.svelte';
     import type { GameController } from '../game/controller.svelte';
     import { explorerPhoneSize } from '../game/layout';
-    import { exploreSheet, sheetTotal, type Who } from '../game/position';
+    import { exploreSheet, moreBadges, sheetTotal, type Who } from '../game/position';
     import { cellIndex } from '../game/rules';
     import Menu from './Menu.svelte';
+    import MoreBadge from './MoreBadge.svelte';
     import MovesList from './MovesList.svelte';
     import type { Nav } from './nav';
     import PositionCard from './PositionCard.svelte';
@@ -18,6 +19,8 @@
     const strikeSize = $derived(Math.min(34, Math.floor((4 * size + 41 - 15) / 4)));
     const base = () => location.origin + location.pathname;
     const sides: { who: Who; name: string }[] = [{ who: 'you', name: 'You' }, { who: 'opponent', name: 'Opponent' }];
+    // What the net expects each side to add by the end (none once the game is over).
+    const more = (who: Who) => (x.answer && !x.answer.over ? moreBadges(x.pos, who, x.answer.eval.expected[who]) : null);
 </script>
 
 <svelte:window bind:innerWidth={w} />
@@ -36,10 +39,14 @@
     <div class="sheets">
         {#each sides as sd (sd.who)}
             {@const rows = exploreSheet(x.pos, sd.who)}
+            {@const m = more(sd.who)}
             <section class="side" aria-label="{sd.name} sheet">
                 <div class="name"><h2>{sd.name}</h2><b>{sheetTotal(x.pos[sd.who])}</b></div>
-                <SheetColumns {rows} {size} compact onTap={(cell) => x.tapSquare(sd.who, cell.sq.row, cellIndex(cell.sq.row, cell.sq.n))} onLock={(r) => x.tapLock(r)} />
+                <SheetColumns {rows} {size} compact onTap={(cell) => x.tapSquare(sd.who, cell.sq.row, cellIndex(cell.sq.row, cell.sq.n))} onLock={(r) => x.tapLock(r)}>
+                    {#snippet below(r)}{#if m?.rows[r]}<MoreBadge badge={m.rows[r]} wide stale={x.pending} />{/if}{/snippet}
+                </SheetColumns>
                 <StrikeBoxes count={x.pos[sd.who].strikes} size={strikeSize} label={sd.name} onTap={(k) => x.tapStrike(sd.who, k)} />
+                {#if m?.strikes}<MoreBadge badge={m.strikes} wide stale={x.pending} />{/if}
             </section>
         {/each}
     </div>
@@ -60,7 +67,7 @@
     .icon { width: 44px; height: 44px; border-radius: 12px; border: none; background: var(--paper); box-shadow: 0 1px 0 var(--edge); color: var(--ink); display: flex; align-items: center; justify-content: center; padding: 0; cursor: pointer; }
     .notice { font-size: 13px; color: var(--soft); }
     .sheets { display: flex; gap: 8px; justify-content: center; }
-    .side { display: flex; flex-direction: column; align-items: center; gap: 6px; }
+    .side { position: relative; display: flex; flex-direction: column; align-items: center; gap: 6px; }
     .name { align-self: stretch; display: flex; align-items: baseline; justify-content: space-between; padding: 0 4px; }
     .name h2 { margin: 0; font-family: var(--cond); font-size: 19px; font-weight: 700; }
     .name b { font-family: var(--cond); font-weight: 800; font-size: 20px; }
