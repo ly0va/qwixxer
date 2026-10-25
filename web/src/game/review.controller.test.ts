@@ -110,6 +110,9 @@ describe('ReviewController', () => {
         const r2 = new ReviewController(none.e, memStore());
         await r2.load(null);
         expect(r2.game).toBeNull();
+        const r3 = new ReviewController(none.e, memStore({ [LAST_GAME]: '' })); // the last game had no code
+        await r3.load(null);
+        expect(r3.code).toBeNull();
         expect(none.e.reviewGame).not.toHaveBeenCalled();
     });
 

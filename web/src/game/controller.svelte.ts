@@ -69,7 +69,7 @@ export class GameController {
     }
 
     async init() {
-        this.lastCode = this.store.get(LAST_GAME);
+        this.lastCode = this.store.get(LAST_GAME) || null;
         const prefs = this.read<{ theme: 'light' | 'dark'; nextBot: BotKind }>(PREFS);
         if (prefs) {
             this.theme = prefs.theme ?? 'light';
@@ -117,6 +117,8 @@ export class GameController {
             this.log = saved.log;
             this.rollNo = saved.rollNo;
             this.view = restored;
+            // A reload can land before the code of the game it ended was kept.
+            if (restored.phase === 'over') void this.keepCode();
             if (restored.phase === 'bot_to_roll') await this.botTurn();
         });
         return true;
@@ -318,7 +320,9 @@ export class GameController {
             this.lastCode = code;
             this.store.set(LAST_GAME, code);
         } catch {
+            // No code: "the last game" is none, not the one before it.
             this.lastCode = null;
+            this.store.set(LAST_GAME, '');
         }
     }
 

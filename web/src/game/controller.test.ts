@@ -386,7 +386,8 @@ describe('GameController', () => {
             submitActive: vi.fn(async () => ({ view: v({ phase: 'over', over: 'locks' }), record: rec() })),
             gameCode: vi.fn(async () => { throw new EngineError('this game was saved before rolls were recorded', 'engine'); }),
         });
-        const c = new GameController(e, memStore({ 'qwixxer.lastGame': '1OLD', 'qwixxer.save.v1': JSON.stringify({ snapshot: '{}', log: [], rollNo: 3, bot: 'master', nextBot: 'master' }) }), instant, () => 1);
+        const store = memStore({ 'qwixxer.lastGame': '1OLD', 'qwixxer.save.v1': JSON.stringify({ snapshot: '{}', log: [], rollNo: 3, bot: 'master', nextBot: 'master' }) });
+        const c = new GameController(e, store, instant, () => 1);
         await c.init();
         expect(c.lastCode).toBe('1OLD');
         c.tapSquare({ row: 0, n: 3 });
@@ -394,5 +395,17 @@ describe('GameController', () => {
         await new Promise((r) => setTimeout(r, 0));
         expect(c.lastCode).toBeNull();
         expect(c.error).toBe('');
+        // A review of "the last game" must not open the one before it.
+        expect(store.data['qwixxer.lastGame'] || null).toBeNull();
+    });
+
+    it('a finished game restored on reload keeps its own code, not the previous game’s', async () => {
+        const e = fakeEngine({ restore: vi.fn(async () => v({ phase: 'over', over: 'locks' })), gameCode: vi.fn(async () => '1NEW') });
+        const store = memStore({ 'qwixxer.lastGame': '1OLD', 'qwixxer.save.v1': JSON.stringify({ snapshot: '{}', log: [], rollNo: 9, bot: 'master', nextBot: 'master' }) });
+        const c = new GameController(e, store, instant, () => 1);
+        await c.init();
+        await new Promise((r) => setTimeout(r, 0));
+        expect(c.lastCode).toBe('1NEW');
+        expect(store.data['qwixxer.lastGame']).toBe('1NEW');
     });
 });

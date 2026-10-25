@@ -40,7 +40,7 @@ export class ReviewController {
 
     /** Shows the game `code` (null: the last finished game, if any). The same code again changes nothing. */
     async load(code: string | null) {
-        const c = code ?? this.store.get(LAST_GAME);
+        const c = code ?? (this.store.get(LAST_GAME) || null);
         if (c === null) {
             this.gen++;
             this.code = null;
