@@ -68,14 +68,17 @@
                 {#if played.length === 0}<span class="none">nothing</span>{/if}
                 <b class="cost" class:best={shown && shown.grade !== 'cost'}>{cost}</b>
             </button>
-            <button type="button" role="radio" aria-checked={side === 'best'} class:on={side === 'best'} onclick={() => pick('best')}>
-                <span class="lab">Best</span>
-                {#if best}
-                    {#each best as ch}<ChipView chip={ch} size={24} />{/each}
-                    {#if best.length === 0}<span class="none">nothing</span>{/if}
-                {:else}<span class="none">working it out…</span>{/if}
-                {#if compact && r.game}<a class="explore" href={explorerHref(r.game, k)} onclick={(e) => e.stopPropagation()}>Explore</a>{/if}
-            </button>
+            <!-- The phone's Explore link sits over the Best row, not inside its button. -->
+            <div class="bestrow">
+                <button type="button" role="radio" aria-checked={side === 'best'} class:on={side === 'best'} onclick={() => pick('best')}>
+                    <span class="lab">Best</span>
+                    {#if best}
+                        {#each best as ch}<ChipView chip={ch} size={24} />{/each}
+                        {#if best.length === 0}<span class="none">nothing</span>{/if}
+                    {:else}<span class="none">working it out…</span>{/if}
+                </button>
+                {#if compact && r.game}<a class="explore" href={explorerHref(r.game, k)}>Explore</a>{/if}
+            </div>
         </div>
     {/if}
     {#if !compact}
@@ -126,5 +129,7 @@
     .open { height: 32px; padding: 0 12px; border-radius: 9px; background: var(--ground); color: var(--ink); display: inline-flex; align-items: center; font-size: 13px; font-weight: 600; text-decoration: none; white-space: nowrap; }
     .open:hover { background: color-mix(in srgb, var(--ink) 10%, var(--ground)); }
     .open:focus-visible { outline: 2px solid var(--ink); outline-offset: 1px; }
-    .explore { margin-left: auto; font-size: 13px; font-weight: 600; color: var(--soft); text-underline-offset: 3px; }
+    .bestrow { position: relative; display: flex; flex-direction: column; }
+    .compact .bestrow button { padding-right: 72px; }
+    .explore { position: absolute; right: 10px; top: 50%; transform: translateY(-50%); font-size: 13px; font-weight: 600; color: var(--soft); text-underline-offset: 3px; }
 </style>
