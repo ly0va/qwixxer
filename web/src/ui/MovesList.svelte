@@ -106,7 +106,7 @@
     .info button { width: 28px; height: 28px; margin: -3px 0; padding: 0; border: none; border-radius: 50%; background: none; color: var(--muted); display: flex; align-items: center; justify-content: center; cursor: pointer; }
     .tip { display: none; position: absolute; z-index: 4; bottom: calc(100% - 4px); left: 30px; max-width: calc(100% - 38px); width: max-content; box-sizing: border-box; padding: 8px 10px; border-radius: 10px; background: var(--ink); color: var(--ground); font-size: 13px; font-weight: 500; line-height: 1.35; box-shadow: 0 6px 20px var(--shadow); }
     .info:hover .tip, .info:focus-within .tip, .info.open .tip { display: block; }
-    .play { flex: none; align-self: stretch; padding: 0 10px 0 8px; border-radius: 10px; border: none; background: var(--btn-muted-bg); color: var(--ink); display: flex; align-items: center; gap: 5px; font-weight: 600; font-size: 14px; cursor: pointer; }
+    .play { flex: none; align-self: stretch; padding: 0 10px 0 8px; border-radius: 10px; border: none; background: var(--ground); color: var(--ink); display: flex; align-items: center; gap: 5px; font-weight: 600; font-size: 14px; cursor: pointer; }
     /* Quiet until pointed at (or focused from the keyboard). */
     .play:enabled:hover, .play:focus-visible { background: var(--ink); color: var(--ground); }
     .play:disabled { opacity: 0.5; cursor: default; }
