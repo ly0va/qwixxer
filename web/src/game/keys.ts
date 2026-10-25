@@ -6,7 +6,7 @@ export interface KeyTarget {
     field: boolean;
     /** A control has keyboard focus (`:focus-visible`): Enter/Space activate it natively. */
     keyboardFocus: boolean;
-    /** A modal (the phone's bot/log drawer) is open over the game. */
+    /** A modal (the phone’s bot/log drawer, or the menu) is open over the page. */
     modal?: boolean;
     /** The explorer is showing: no game keys at all; Escape closes the menu or die picker. */
     explore?: boolean;
@@ -29,7 +29,7 @@ const STEPS: Record<string, KeyAction> = { ArrowLeft: 'prev', ArrowRight: 'next'
  */
 export function keyAction(key: string, t: KeyTarget, phase: Phase | undefined): KeyAction {
     if (t.explore) return key === 'Escape' ? 'close' : null;
-    if (t.review) return key === 'Escape' ? 'close' : t.field ? null : (STEPS[key] ?? null);
+    if (t.review) return key === 'Escape' ? 'close' : t.field || t.modal ? null : (STEPS[key] ?? null);
     if (t.modal) {
         if (key === 'Escape') return 'close';
         if (key !== 'Enter' && key !== ' ') return null;

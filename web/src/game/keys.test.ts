@@ -34,6 +34,9 @@ describe('keyAction', () => {
         expect(keyAction('ArrowUp', review, undefined)).toBe('played');
         expect(keyAction('ArrowDown', review, undefined)).toBe('best');
         expect(keyAction('ArrowDown', { ...field, review: true }, undefined)).toBe(null);
+        // The open menu keeps its keys: the game behind it doesn't step.
+        for (const k of ['ArrowLeft', 'ArrowDown', 'Home', 'End']) expect(keyAction(k, { ...review, modal: true }, undefined)).toBe(null);
+        expect(keyAction('Escape', { ...review, modal: true }, undefined)).toBe('close');
         expect(keyAction('Enter', review, 'you_to_roll')).toBe(null);
         expect(keyAction(' ', review, 'you_to_roll')).toBe(null);
         expect(keyAction('ArrowLeft', { ...field, review: true }, undefined)).toBe(null);
