@@ -34,40 +34,11 @@ fn set_key(sel: &[Mark]) -> Vec<(usize, u8)> {
 /// after both phase-1 marks and lock propagation; if two rows are locked
 /// after phase 1 the turn ends there (no colour mark, no strike).
 pub fn active_options(you: &State, bot: &State, bot_white: Option<Mark>, dice: [u8; 6]) -> ActiveOptions {
-    let white_sum = dice[0] + dice[1];
-    let mut bot_after = *bot;
-    if let Some(w) = bot_white {
-        bot_after.apply_mark(w);
-    }
-    let bot_locks = bot_after.locked();
-    let base_locks = union(you.locked(), bot_locks);
-    let ends_after_bot = n_locked(base_locks) >= 2;
-
-    let mut raw: Vec<Vec<Mark>> = Vec::new();
-    for w in you.generate_white_moves(white_sum) {
-        raw.push(vec![w]);
-        let mut after_white = *you;
-        after_white.apply_mark(w);
-        let locks = union(after_white.locked(), bot_locks);
-        if n_locked(locks) >= 2 {
-            continue;
-        }
-        after_white.lock(locks);
-        for c in after_white.generate_color_moves(dice) {
-            raw.push(vec![w, c]);
-        }
-    }
-    if !ends_after_bot {
-        let mut no_white = *you;
-        no_white.lock(base_locks);
-        for c in no_white.generate_color_moves(dice) {
-            raw.push(vec![c]);
-        }
-    }
-
+    let (turns, ends_after_bot) = attributed_turns(you, bot, bot_white, dice);
     let mut seen: Vec<Vec<(usize, u8)>> = Vec::new();
     let mut selections = Vec::new();
-    for sel in raw {
+    for (w, c) in turns {
+        let sel: Vec<Mark> = w.into_iter().chain(c).collect();
         let k = set_key(&sel);
         if !seen.contains(&k) {
             seen.push(k);
@@ -79,6 +50,52 @@ pub fn active_options(you: &State, bot: &State, bot_white: Option<Mark>, dice: [
         strike: !ends_after_bot,
         pass: ends_after_bot,
     }
+}
+
+/// A marking turn as (white-sum mark, colour mark).
+pub type Attributed = (Option<Mark>, Option<Mark>);
+
+/// Every legal marking turn as (white-sum mark, colour mark), by the rules of
+/// [`active_options`]: one square can appear both as a white-sum mark and as
+/// a colour mark. Also whether the other's white-sum mark ends the game
+/// after phase 1.
+pub fn attributed_turns(
+    you: &State,
+    bot: &State,
+    bot_white: Option<Mark>,
+    dice: [u8; 6],
+) -> (Vec<Attributed>, bool) {
+    let white_sum = dice[0] + dice[1];
+    let mut bot_after = *bot;
+    if let Some(w) = bot_white {
+        bot_after.apply_mark(w);
+    }
+    let bot_locks = bot_after.locked();
+    let base_locks = union(you.locked(), bot_locks);
+    let ends_after_bot = n_locked(base_locks) >= 2;
+
+    let mut turns = Vec::new();
+    for w in you.generate_white_moves(white_sum) {
+        turns.push((Some(w), None));
+        let mut after_white = *you;
+        after_white.apply_mark(w);
+        let locks = union(after_white.locked(), bot_locks);
+        if n_locked(locks) >= 2 {
+            continue;
+        }
+        after_white.lock(locks);
+        for c in after_white.generate_color_moves(dice) {
+            turns.push((Some(w), Some(c)));
+        }
+    }
+    if !ends_after_bot {
+        let mut no_white = *you;
+        no_white.lock(base_locks);
+        for c in no_white.generate_color_moves(dice) {
+            turns.push((None, Some(c)));
+        }
+    }
+    (turns, ends_after_bot)
 }
 
 /// On the bot's turn the human may mark only the white sum, or pass.

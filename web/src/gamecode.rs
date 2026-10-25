@@ -11,7 +11,7 @@
 
 use crate::bots::BotKind;
 use crate::explorer::{legal_turns, states, Over, Position, Roller, Turn};
-use crate::selection::{n_locked, passive_options};
+use crate::selection::{attributed_turns, n_locked, passive_options};
 use crate::session::{RollRecord, SheetSnap, Sq, Who};
 use qwixxer::state::{Mark, State};
 use serde::Serialize;
@@ -143,19 +143,41 @@ fn resolve(r: &State, o: &State, dice: [u8; 6], marks: Vec<Mark>, other: Option<
 
 /// The lowest action that replays to `turn` (same marks as a set, same
 /// strike or pass) with the other player's white mark `other_white`, if
-/// any does: each game has exactly one code.
+/// any does: each game has exactly one code. With `white` (the bot's roll)
+/// the action also says which mark was the roller's white-sum mark, `None`
+/// for none: one square can be both, and that reading must be legal too.
 pub fn canonical_action(
     roller: &State,
     other: &State,
     dice: [u8; 6],
     turn: &Turn,
     other_white: Option<Mark>,
+    white: Option<Option<Mark>>,
 ) -> Option<u32> {
     let want = turn.key();
     (0..ACTIONS).find(|&a| {
         let (marks, ow) = turn_of(dice, a);
-        ow == other_white && resolve(roller, other, dice, marks, ow).is_some_and(|t| t.key() == want)
+        ow == other_white
+            && white.is_none_or(|w| roller_white(dice, a) == w && reading_is_legal(roller, other, dice, a, ow))
+            && resolve(roller, other, dice, marks, ow).is_some_and(|t| t.key() == want)
     })
+}
+
+/// The roller's white-sum mark an action records.
+fn roller_white(dice: [u8; 6], action: u32) -> Option<Mark> {
+    (action / 45 > 0).then(|| turn_of(dice, action).0[0])
+}
+
+/// The action's marks are legal read as it records them: its white-sum mark
+/// in phase 1, its colour mark in phase 2.
+fn reading_is_legal(r: &State, o: &State, dice: [u8; 6], action: u32, other: Option<Mark>) -> bool {
+    let (marks, _) = turn_of(dice, action);
+    if marks.is_empty() {
+        return true;
+    }
+    let w = roller_white(dice, action);
+    let c = (!(action / 5).is_multiple_of(9)).then(|| *marks.last().unwrap());
+    attributed_turns(r, o, other, dice).0.contains(&(w, c))
 }
 
 impl Position {
@@ -255,7 +277,8 @@ pub(crate) fn replay_roll(
     let (marks, other) = turn_of(dice, action);
     let turn = resolve(&r, &o, dice, marks.clone(), other)
         .ok_or_else(|| format!("illegal move (action {action}, dice {dice:?})"))?;
-    if canonical_action(&r, &o, dice, &turn, other) != Some(action) {
+    let white = (!you_roll).then(|| roller_white(dice, action));
+    if canonical_action(&r, &o, dice, &turn, other, white) != Some(action) {
         return Err(format!("action {action} isn't written the canonical way"));
     }
     let after = applied(pos, &turn, other);
@@ -394,7 +417,7 @@ mod tests {
             marks: vec![m(0, 6)],
             strike: false,
         };
-        let a = canonical_action(&s, &s, dice, &turn, None).unwrap();
+        let a = canonical_action(&s, &s, dice, &turn, None, None).unwrap();
         assert_eq!(a, (1 + 0 * 2 + 0) * 5);
     }
 
@@ -442,32 +465,12 @@ mod tests {
             .map(|(pos, rec)| {
                 let (you, bot, _) = states(pos);
                 let dice = pos.dice.unwrap();
-                let (r, o, turn, other) = match rec.roller {
-                    Who::You => (
-                        you,
-                        bot,
-                        Turn {
-                            marks: rec.you.iter().map(|&q| q.into()).collect(),
-                            strike: rec.you_strike,
-                        },
-                        rec.bot_white.map(Mark::from),
-                    ),
-                    Who::Bot => (
-                        bot,
-                        you,
-                        Turn {
-                            marks: rec
-                                .bot_white
-                                .iter()
-                                .chain(rec.bot_colour.iter())
-                                .map(|&q| q.into())
-                                .collect(),
-                            strike: rec.bot_strike,
-                        },
-                        rec.you.first().map(|&q| q.into()),
-                    ),
+                let (turn, other) = turn_of_record(rec);
+                let (r, o, white) = match rec.roller {
+                    Who::You => (you, bot, None),
+                    Who::Bot => (bot, you, Some(rec.bot_white.map(Mark::from))),
                 };
-                pack(dice, canonical_action(&r, &o, dice, &turn, other).unwrap())
+                pack(dice, canonical_action(&r, &o, dice, &turn, other, white).unwrap())
             })
             .collect();
         encode(
@@ -591,5 +594,58 @@ mod tests {
         assert!(after.you.marks[0][10] && after.opponent.marks[1][10]);
         // The same roll with a colour mark (blue 7: white 6 + blue 1) is illegal.
         assert!(replay_roll(&pos, dice, 1 * 45 + (1 + 3 * 2) * 5 + 2).is_err());
+    }
+
+    fn empty_pos(roller: Roller) -> Position {
+        Position {
+            you: marked([&[], &[], &[], &[]]),
+            opponent: marked([&[], &[], &[], &[]]),
+            locked: [false; 4],
+            dice: None,
+            roller,
+        }
+    }
+
+    #[test]
+    fn the_bots_mark_keeps_which_dice_made_it() {
+        // White 3+4 and white 3 + red 4 both make red 7.
+        let pos = empty_pos(Roller::Opponent);
+        let (you, bot, _) = states(&pos);
+        let dice = [3, 4, 4, 1, 1, 1];
+        let turn = Turn {
+            marks: vec![m(0, 7)],
+            strike: false,
+        };
+        let white = canonical_action(&bot, &you, dice, &turn, None, Some(Some(m(0, 7)))).unwrap();
+        let colour = canonical_action(&bot, &you, dice, &turn, None, Some(None)).unwrap();
+        assert_ne!(white, colour);
+        let (rec, _, _) = replay_roll(&pos, dice, white).unwrap();
+        assert_eq!((rec.bot_white, rec.bot_colour), (Some(Sq { row: 0, n: 7 }), None));
+        let (rec, _, _) = replay_roll(&pos, dice, colour).unwrap();
+        assert_eq!((rec.bot_white, rec.bot_colour), (None, Some(Sq { row: 0, n: 7 })));
+    }
+
+    #[test]
+    fn a_colour_mark_in_a_row_your_white_mark_closed_is_not_the_bots() {
+        // Both have five reds; white 6+6: both close red with the white sum.
+        // Red 12 as the bot's colour mark (white 6 + red 6) would come after
+        // red closed, so only its white-sum reading is legal.
+        let pos = Position {
+            you: marked([&[0, 1, 2, 3, 4], &[], &[], &[]]),
+            opponent: marked([&[0, 1, 2, 3, 4], &[], &[], &[]]),
+            ..empty_pos(Roller::Opponent)
+        };
+        let (you, bot, _) = states(&pos);
+        let dice = [6, 6, 6, 1, 1, 1];
+        let turn = Turn {
+            marks: vec![m(0, 12)],
+            strike: false,
+        };
+        let r12 = Some(m(0, 12));
+        assert_eq!(canonical_action(&bot, &you, dice, &turn, r12, Some(None)), None);
+        let a = canonical_action(&bot, &you, dice, &turn, r12, Some(r12)).unwrap();
+        let (rec, _, _) = replay_roll(&pos, dice, a).unwrap();
+        assert_eq!(rec.bot_white, Some(Sq { row: 0, n: 12 }));
+        assert_eq!(rec.bot_colour, None);
     }
 }

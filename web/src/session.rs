@@ -5,7 +5,6 @@
 //! starts. Display marks are the source of truth; `State` is derived.
 
 use crate::bots::BotKind;
-use crate::explorer::Turn;
 use crate::gamecode::{self, Header};
 use crate::selection::{active_options, n_locked, passive_options, ActiveOptions};
 use qwixxer::state::{Mark, State};
@@ -258,32 +257,12 @@ impl Session {
     /// Appends a resolved roll to the history, from the sheets before it.
     fn record(&mut self, pre: (State, State), dice: [u8; 6], rec: &RollRecord) {
         let (you, bot) = pre;
-        let (r, o, turn, other) = match rec.roller {
-            Who::You => (
-                you,
-                bot,
-                Turn {
-                    marks: rec.you.iter().map(|&q| q.into()).collect(),
-                    strike: rec.you_strike,
-                },
-                rec.bot_white.map(Mark::from),
-            ),
-            Who::Bot => (
-                bot,
-                you,
-                Turn {
-                    marks: rec
-                        .bot_white
-                        .iter()
-                        .chain(rec.bot_colour.iter())
-                        .map(|&q| q.into())
-                        .collect(),
-                    strike: rec.bot_strike,
-                },
-                rec.you.first().map(|&q| q.into()),
-            ),
+        let (turn, other) = gamecode::turn_of_record(rec);
+        let (r, o, white) = match rec.roller {
+            Who::You => (you, bot, None),
+            Who::Bot => (bot, you, Some(rec.bot_white.map(Mark::from))),
         };
-        match gamecode::canonical_action(&r, &o, dice, &turn, other) {
+        match gamecode::canonical_action(&r, &o, dice, &turn, other, white) {
             Some(a) => {
                 if let Some(h) = self.g.history.as_mut() {
                     h.push(gamecode::pack(dice, a));

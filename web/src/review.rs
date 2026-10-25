@@ -518,7 +518,7 @@ mod tests {
             marks: a.you_best.marks.iter().map(|&q| q.into()).collect(),
             strike: a.you_best.strike,
         };
-        let action = canonical_action(&you, &bot, dice, &best, roll.record.bot_white.map(Into::into)).unwrap();
+        let action = canonical_action(&you, &bot, dice, &best, roll.record.bot_white.map(Into::into), None).unwrap();
         let (h, values) = decode(&code).unwrap();
         let mut v = values[..k].to_vec();
         v.push(pack(dice, action));
