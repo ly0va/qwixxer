@@ -1,15 +1,17 @@
 # qwixxer
 
-A bot framework for the dice game [Qwixx](https://en.wikipedia.org/wiki/Qwixx): hand-crafted strategies, a genetic algorithm, value networks trained by self-play, decision-time search, and a terminal and a web UI.
+A bot framework for the dice game [Qwixx](https://boardgamegeek.com/boardgame/131260/qwixx): hand-crafted strategies, a genetic algorithm, value networks trained by self-play, decision-time search, and a terminal and a web UI.
 
-**[Play in your browser](https://ly0va.github.io/qwixxer/)**: no installation needed. Four opponents, from **Newbie** to **Master+**, on a paper-sheet board that works on desktop and phone (light and dark).
+**[Play in your browser](https://ly0va.github.io/qwixxer/)**: no installation needed. Four opponents, from **Newbie** to **Master+**, on a paper-sheet board that works on desktop and phone (light and dark). An explorer ranks the moves in any position, and a game review shows whether a game was won or lost by luck or by play.
 
 ## Bots
 
 | Bot | Web name | Description | vs GA (1v1) |
 |---|---|---|---|
-| **Pair-Search** | Master+ | Pair net + gated rollout search (see below) | **~62.8%** |
-| **Pair** | Master | Joint two-board value net, static play | ~60.1% |
+| **Win-Search** | Master+ | Win net + gated rollout search (see below) | **~63.7%** |
+| **Win** | Master | Direct P(win) net (2 players), static play with passive lookahead | ~63.3% |
+| **Pair-Search** | | Pair net + gated rollout search | ~62.7% |
+| **Pair** | | Joint two-board value net, static play | ~60.1% |
 | **DQN** | | TD(λ) single-board value net + Gaussian P(win) ranking | ~60.3% |
 | **GA Champion** | Student | Genetically evolved 4-weight heuristic | baseline |
 | **MCTS** | | Monte Carlo tree search with GA rollouts | ~GA level |
@@ -20,25 +22,32 @@ A bot framework for the dice game [Qwixx](https://en.wikipedia.org/wiki/Qwixx): 
 Win rates are from deterministic paired-dice benches; the full history is in `docs/EXPERIMENTS.md`.
 
 All non-trivial bots share one decision pipeline (`src/strategy/bot_impl.rs`) with **meta-rules**:
-- **Smart lock / smart strike**: end the game when it is won, never end it into a loss.
+- **Smart lock / smart strike**: end the game when it is won, never end it into a loss. The win net judges safe locks itself instead of always taking them.
 - **Move pruning**: drop moves dominated by another (same row closer to the free pointer, equal progress with a higher total, post-state dominance).
 
-## Pair net
+## Win net
 
-A two-board MLP (45 inputs → 128 → 64 → 2): per-board features for both players plus pair-level features. It predicts the distribution of the *future* score differential, `(μ, log σ²)`, and ranks candidate moves by `(current_diff + μ) / σ`, which is monotone in a Gaussian P(win) against the leading opponent. Trained by self-play (`pair-train`), then improved by expert iteration and distillation from the search bot.
+The production net for two players (`src/dqn/win.rs`): it predicts P(win) directly. Inputs are both boards regrouped as 4 row tokens (one row of both players, with thermometer-coded progress and marks) and 9 globals. A shared row encoder, summed within the colour pairs, feeds a shared pair encoder summed over both pairs, then a head g(me, opp); the logit is g(me, opp) − g(opp, me), so the two players' chances add up to 1 and the colour relabellings leave it unchanged, both exactly. Auxiliary heads predict final row marks, strikes and score difference (used by the explorer, never in play), and a tempo head values moving next.
 
-## Pair-Search
+Training (`win-data`, `win-arm`, `win-gate`): the champion plays itself, every turn end and every decision the search would search is labelled by 64 full-game rollouts, and a net is fitted from scratch on those labels and promoted only if it beats the champion in paired games.
 
-Decision-time search on top of the pair net (`src/strategy/search.rs`), the production `pair-search` bot:
+**Passive lookahead**: a white-sum mark on the opponent's roll is valued at the end of the opponent's turn (its predicted white mark, then its colour choice against the boards it sees), so locks and game ends caused by that turn count.
 
-- **Gate**: search only close decisions (top-2 static gap < 0.15) or the endgame (a locked row, 3 strikes, or a locking candidate); active and passive (white-sum) decisions both qualify.
-- **Candidates**: the top 3 static moves, each with its turn completed deterministically.
+## Search
+
+Decision-time search on top of a static net (`src/strategy/search.rs`). Master+ runs it on the win net (`SearchConfig::win()`):
+
+- **Gate**: search only close decisions, where the top-2 static gap is under 0.05 (probit units); active and passive decisions both qualify.
+- **Candidates**: those within the gate of the best (2 to 4), each with its turn completed deterministically.
 - **Rollouts**: one full round per sample with common random numbers across candidates; the leaf is the exact outcome if the game ended, else the net's win probability.
 - **Sequential sampling**: start at 32 samples per candidate and double up to 512 until the leader beats each rival by 2 standard errors; decisively worse candidates stop early.
 - **Blend**: the pick score is `0.3 · Φ(static z) + 0.7 · rollout mean`.
-- **Lock adjudication**: a forced safe lock is checked against the best alternative with 256 full-game rollouts each.
 
-The search config is a string (`k=512,passive,lock=256,blend=0.7,seq=32,cands=3` in production); `pair-search-exp` reads an experimental one from `QWIXXER_SEARCH`.
+Pair-search (`SearchConfig::default()`) also searches the endgame regardless of the gap, takes the top 3 candidates, uses a 0.15 gate and adjudicates forced safe locks with 256 full-game rollouts each. The search config is a string (e.g. `k=512,passive,lock=256,blend=0.7,seq=32,cands=3`); `pair-search-exp` and `win-search-exp` read an experimental one from `QWIXXER_SEARCH`.
+
+## Pair net
+
+A two-board MLP (45 inputs → 128 → 64 → 2): per-board features for both players plus pair-level features. It predicts the distribution of the *future* score differential, `(μ, log σ²)`, and ranks candidate moves by `(current_diff + μ) / σ`, which is monotone in a Gaussian P(win) against the leading opponent. Trained by self-play (`pair-train`), then improved by expert iteration and distillation from the search bot. Unlike the win net it handles more than two players.
 
 ## DQN
 
@@ -52,13 +61,13 @@ Evolves a 4-weight vector over gene functions (`weighted_prob`, `strikes`, `conc
 
 ```bash
 # Play in the terminal (human vs bots)
-cargo run --release -- play pair-search
-cargo run --release -- play ga opportunist          # vs 2 bots
+cargo run --release -- play win-search
+cargo run --release -- play ga opportunist          # vs 2 bots (the win bots are 2-player only)
 
 # Benchmark bots against each other (seat rotation, paired dice)
-cargo run --release -- bench pair-search ga -n 100000
+cargo run --release -- bench win-search ga -n 100000
 cargo run --release -- bench pair dqn ga ga -n 100000   # aggregate stats by bot
-QWIXXER_SEARCH="k=128,noseq" cargo run --release -- bench pair-search-exp pair-search -n 50000
+QWIXXER_SEARCH="k=128,noseq" cargo run --release -- bench win-search-exp win-search -n 50000
 
 # Single-player score benchmark across all bots
 cargo run --release -- solo -n 10000
@@ -67,43 +76,28 @@ cargo run --release -- solo -n 10000
 cargo run --release -- evolve                         # GA champion
 cargo run --release -- dqn-selfplay -i 40 -b 100000   # DQN self-play
 cargo run --release -- pair-train -i 40 -b 100000 -c  # pair net self-play
-cargo run --release -- pair-train --search -g 5000 -e 5 -b 500000 -c   # expert iteration
+cargo run --release -- win-data --help                # win net: rollout-labelled dataset
+cargo run --release -- win-arm --help                 # win net: fit from scratch
+cargo run --release -- win-gate --help                # win net: paired-game promotion gate
 ```
 
-`cargo run --release -- <command> --help` lists every option and bot name.
+`cargo run --release -- <command> --help` lists every option and bot name. The current win-net recipe (exact flags) is in `docs/EXPERIMENTS.md`, Phase 28.
 
 Model artifacts (committed, embedded in the web build):
 - `champion.txt`: GA weights
 - `dqn_model/model.mpk`: DQN weights
 - `pair_model/model.mpk`: pair-net weights
+- `win_model/`: win-net config, weights, auxiliary and tempo heads
 
 ## Web UI
 
-Svelte 5 + TypeScript + Vite. The game rules run in Rust compiled to WASM inside a Web Worker, so bot thinking never blocks the animations. PWA-installable and playable offline. Deployed to GitHub Pages by `.github/workflows/deploy.yml` on every push to `main`. An explorer (`#/explore`) evaluates any two-sheet position and, for a roll, ranks your moves and shows which one each bot would pick; positions can be shared as links. Build and development instructions are in `web/README.md`; the design is in `docs/superpowers/specs/2026-10-13-web-turn-flow-design.md`.
+Svelte 5 + TypeScript + Vite. The game rules and bots run in Rust compiled to WASM inside a Web Worker, so bot thinking never blocks the animations. PWA-installable and playable offline; nothing leaves the browser. Deployed to GitHub Pages by `.github/workflows/deploy.yml` on every push to `main`.
 
-## Project structure
+- **Play**: two-player games against Newbie, Student, Master or Master+.
+- **Explorer** (`#/explore`): evaluates any two-sheet position; for a roll, ranks your moves by win chance (the top ones refined one roll ahead), shows which move each bot would pick, the opponent's predicted turn and how lucky the roll was. Positions can be shared as links.
+- **Game review** (`#/review`): replays a finished game with an eval bar and graph, splits the result into dice luck and play, and for each mistake shows what it cost and the best move. A whole game fits in a short link (`?g=…`).
 
-```
-src/
-  state.rs         Game state, moves, scoring, lock rules, move pruning
-  game.rs          Game loop, players, dice sources
-  strategy/        Strategy trait, hand-written bots, shared bot pipeline (bot_impl.rs),
-                   pair-search (search.rs), batched rollout simulation (sim.rs)
-  bot.rs           GA: DNA, genes, population, evolution
-  dqn/             DQN (mod.rs, train.rs), pair net (pair.rs, pair_train.rs)
-  mcts.rs          Monte Carlo tree search
-  main.rs          CLI (clap subcommands)
-examples/          Analysis tools: divergence and feature screens, sigma probes,
-                   score distributions, search calibration
-web/
-  src/*.rs         WASM crate: game session, legal selections, bots, explorer, latency bench
-  src/engine/      Worker RPC to the WASM engine
-  src/game/        Pure UI model, controller, keyboard and layout helpers
-  src/ui/          Svelte components (desktop and phone layouts)
-docs/
-  ARCHITECTURE.md  Technical reference
-  EXPERIMENTS.md   Chronological experiment log
-```
+Build and development instructions are in `web/README.md`; the designs are in `docs/superpowers/specs/` (turn flow, explorer, roll luck, game review).
 
 ## Feature flags
 

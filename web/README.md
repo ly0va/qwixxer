@@ -14,11 +14,14 @@ the engine about it. Spec: `docs/superpowers/specs/2026-10-14-state-explorer-des
 
 - `src/explorer.rs` (`WasmExplorer` in `src/lib.rs`): a play-out win chance
   and margin for the position that keeps refining while the explorer is open
-  (`analyze`, run in batches by the controller), and for a roll every legal
-  move of yours ranked by the pair net's score (P(win) × 1000) after it, judged as Master judges it
-  (with the opponent's predicted white-sum mark on your roll, which every bot
-  also sees), tagged with the move each bot would make in your seat; an (i)
-  tooltip explains Master+'s or Master's move when it isn't first. Runs as the `explore` command of the same worker as the game.
+  (`analyze`, run in batches by the controller; play-outs run 4 turns, then the
+  win net), and for a roll every legal move of yours ranked by the win net's
+  P(win) after it, judged as Master judges it (with the opponent's predicted
+  white-sum mark on your roll, which every bot also sees), the top 3 refined
+  one roll ahead, tagged with the move each bot would make in your seat; a note
+  explains Master+'s or Master's move when it isn't first. On a roll it also
+  shows the roll's luck, and on the opponent's roll its predicted turn. Runs as
+  the `explore` command of the same worker as the game.
 - `src/game/position.ts`: the editable position (marks, strikes, tap-closed
   rows, dice, whose roll) and its sheet model; `src/game/link.ts`: the
   21-character link code (`#/explore?p=<code>`); `src/game/explorer.svelte.ts`:
@@ -27,6 +30,23 @@ the engine about it. Spec: `docs/superpowers/specs/2026-10-14-state-explorer-des
   hash routing.
 - `src/ui/`: `ExplorerDesktop` / `ExplorerPhone`, with `ExSheet`,
   `PositionCard`, `RollCard`, `MovesList`, `StrikeBoxes` and `Tabs`.
+
+## Game review
+
+`#/review` (the Review tab, or "Analyze" at the end of a game) replays a
+finished game: an eval bar and a graph (win chance, skill, luck, luck vs a
+typical game), the luck of every roll, and for each choice what it cost
+against the best one. Spec: `docs/superpowers/specs/2026-10-24-game-review-design.md`.
+
+- `src/gamecode.rs`: the game code (`#/review?g=<code>`): the dice and the
+  choices of every roll, 4 characters a roll, replayed and validated on load.
+- `src/review.rs` (`review_roll` in `src/lib.rs`): one roll's numbers; the
+  roller's static top 3 and the played move valued one roll ahead.
+- `src/game/review.ts`, `src/game/review.svelte.ts`: the pure review model and
+  `ReviewController` (loads the last game or a shared one, analyses roll by
+  roll, Share game); `src/ui/`: `ReviewDesktop` / `ReviewPhone`, with
+  `EvalBar`, `EvalGraph`, `GraphCard`, `SelectedRoll`, `ReviewLog` and
+  `ReviewSummary`.
 
 ## Prerequisites
 
@@ -43,9 +63,9 @@ From the repo root, compile the WASM crate into `web/pkg/` and run wasm-opt:
 ./web/build.sh
 ```
 
-This embeds `champion.txt` (Student, GA weights) and `pair_model/model.mpk`
-(pair net for Master and Master+) into the WASM binary via `include_bytes!`.
-Rebuild after changing either file.
+This embeds `champion.txt` (Student, GA weights) and `win_model/` (the win
+net for Master and Master+) into the WASM binary via `include_bytes!`.
+Rebuild after changing either.
 
 ## Frontend
 
