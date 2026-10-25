@@ -65,7 +65,7 @@
                         <b>{moveChance(m.p_win)}</b>
                         <span class="bar"><span style="width: {m.p_win * 100}%"></span></span>
                     </div>
-                    <button type="button" class="play" class:top={i === 0} disabled={x.pending} aria-label="Play this move" onclick={() => x.play(m)}>
+                    <button type="button" class="play" disabled={x.pending} aria-label="Play this move" onclick={() => x.play(m)}>
                         <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"></path></svg>
                         Play
                     </button>
@@ -104,7 +104,8 @@
     .tip { display: none; position: absolute; z-index: 4; bottom: calc(100% - 4px); left: 30px; max-width: calc(100% - 38px); width: max-content; box-sizing: border-box; padding: 8px 10px; border-radius: 10px; background: var(--ink); color: var(--ground); font-size: 13px; font-weight: 500; line-height: 1.35; box-shadow: 0 6px 20px var(--shadow); }
     .info:hover .tip, .info:focus-within .tip, .info.open .tip { display: block; }
     .play { flex: none; height: 34px; padding: 0 10px 0 8px; border-radius: 9px; border: none; background: var(--ground); color: var(--ink); display: flex; align-items: center; gap: 5px; font-weight: 600; font-size: 14px; cursor: pointer; }
-    .play.top { background: var(--ink); color: var(--ground); }
+    /* Quiet until its row is pointed at (or the button has keyboard focus). */
+    li:hover .play:enabled, .play:focus-visible { background: var(--ink); color: var(--ground); }
     .play:disabled { opacity: 0.5; cursor: default; }
     .compact li { gap: 8px; padding: 6px 6px 6px 10px; }
     .compact .pct { width: 62px; }
