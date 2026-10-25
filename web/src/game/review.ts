@@ -153,7 +153,8 @@ export function reviewSheet(prev: ExPosition, pos: ExPosition, who: Who): RowMod
 export interface ReviewLine { who: string; you: boolean; chips: Chip[]; empty: string; cost: string | null }
 export interface ReviewEntry { k: number; n: number; lines: ReviewLine[]; luck: string }
 
-const cost = (c: number | undefined) => (c !== undefined && c >= TIE ? signed(-c) : null);
+/** A choice's cost as a gain for its chooser; the bot's can be a gain (its white-sum mark beat the prediction). */
+const cost = (c: number | undefined) => (c !== undefined && Math.abs(c) >= TIE ? signed(-c) : null);
 
 /** The game log, roller first, with each roll's luck and each choice's cost. */
 export function reviewLog(game: ReviewGame, an: Analyses): ReviewEntry[] {

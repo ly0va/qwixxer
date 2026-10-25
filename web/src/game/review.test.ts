@@ -122,6 +122,10 @@ describe('review log', () => {
         expect(log[2].luck).toBe('luck …');
         expect(log[1].lines[0].who).toBe('You');
     });
+    it('shows a bot mark that beat the prediction as a gain on its line', () => {
+        const better = an.map((a, k) => (a && k === 1 ? { ...a, bot_cost: -0.008 } : a));
+        expect(reviewLog(game, better)[1].lines[1]).toMatchObject({ who: 'Bot', cost: '+0.8' });
+    });
 });
 
 describe('review links', () => {
