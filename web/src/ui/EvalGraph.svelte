@@ -26,7 +26,7 @@
     const dots = $derived(m.dots.map((d) => {
         const pair = m.dots.filter((e) => e.j === d.j).length > 1;
         const x = X(d.j);
-        return { tone: d.tone, x: x + (pair ? (d.tone === 'bot' ? -6 : 6) : 0), y: curve.at(x) };
+        return { tone: d.tone, x: x + (pair ? (d.tone === 'bot' ? -5 : 5) : 0), y: curve.at(x) };
     }));
     const tagLeft = (x: number) => (x + 9 + 64 > width ? x - 9 - 64 : x + 9);
     /** The point under the pointer (or keyboard focus): its value in a quieter bubble. */
@@ -93,7 +93,7 @@
     .pending { position: absolute; top: 0; bottom: 0; right: 0; box-sizing: border-box; padding-top: 8px; display: flex; justify-content: center; font-size: 13px; font-weight: 600; color: var(--muted); pointer-events: none;
         background: repeating-linear-gradient(135deg, transparent 0 6px, color-mix(in srgb, var(--ink) 5%, transparent) 6px 12px); }
     .sel { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--lucky-ink); opacity: 0.9; pointer-events: none; }
-    .dot { position: absolute; width: 8px; height: 8px; border-radius: 50%; box-shadow: 0 0 0 2px var(--paper); pointer-events: none; }
+    .dot { position: absolute; width: 8px; height: 8px; border-radius: 50%; box-shadow: 0 0 0 1px var(--paper); pointer-events: none; }
     .dot.you { background: var(--unlucky-ink); }
     .dot.bot { background: var(--soft); }
     .ring { position: absolute; width: 12px; height: 12px; border-radius: 50%; background: var(--paper); box-shadow: 0 0 0 3px var(--lucky-ink); pointer-events: none; }
