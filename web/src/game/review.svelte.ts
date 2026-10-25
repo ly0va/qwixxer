@@ -20,8 +20,6 @@ export class ReviewController {
     /** The graph card's view (spec "The graph"): win chance until you pick another. */
     graph = $state<GraphKind>('win');
     error = $state<string | null>(null);
-    /** Opened from someone's link: "Player" instead of "You". */
-    shared = $state(false);
 
     private engine: Engine;
     private store: Store;
@@ -41,20 +39,18 @@ export class ReviewController {
     }
 
     /** Shows the game `code` (null: the last finished game, if any). The same code again changes nothing. */
-    async load(code: string | null, shared: boolean) {
+    async load(code: string | null) {
         const c = code ?? this.store.get(LAST_GAME);
         if (c === null) {
             this.gen++;
             this.code = null;
             this.game = null;
             this.error = null;
-            this.shared = false;
             return;
         }
         if (c === this.code && (this.game || this.error)) return;
         const gen = ++this.gen;
         this.code = c;
-        this.shared = shared;
         this.game = null;
         this.an = [];
         this.sel = 0;
@@ -82,7 +78,7 @@ export class ReviewController {
         if (!this.game && this.code) {
             const c = this.code;
             this.code = null;
-            void this.load(c, this.shared);
+            void this.load(c);
             return;
         }
         this.error = null;

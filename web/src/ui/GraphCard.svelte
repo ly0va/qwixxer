@@ -4,7 +4,7 @@
 
 <script lang="ts">
     import { BOT_NAMES, type ReviewGame } from '../engine/protocol';
-    import { GRAPHS, graphModel, names } from '../game/review';
+    import { GRAPHS, graphModel } from '../game/review';
     import type { ReviewController } from '../game/review.svelte';
     import EvalGraph from './EvalGraph.svelte';
     // Spec "The graph": one card for the game's graphs, a switch on top
@@ -12,8 +12,7 @@
     // then the graph. The selected point is shared by every view.
     let { r, game, width, height, compact = false }: { r: ReviewController; game: ReviewGame; width: number; height: number; compact?: boolean } = $props();
     const id = `graph${++ids}`;
-    const nm = $derived(names(r.shared));
-    const m = $derived(graphModel(game, r.an, r.graph, nm, BOT_NAMES[game.bot]));
+    const m = $derived(graphModel(game, r.an, r.graph, BOT_NAMES[game.bot]));
     const pending = $derived(r.an.filter(Boolean).length < game.rolls.length ? `Analysing… ${r.an.filter(Boolean).length} of ${game.rolls.length} rolls` : null);
 </script>
 

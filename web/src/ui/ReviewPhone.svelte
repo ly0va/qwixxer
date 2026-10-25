@@ -2,7 +2,7 @@
     import { BOT_NAMES } from '../engine/protocol';
     import type { GameController } from '../game/controller.svelte';
     import { explorerPhoneSize } from '../game/layout';
-    import { gameHref, names, pointValue, positionAt, stepLabel } from '../game/review';
+    import { gameHref, pointValue, positionAt, stepLabel } from '../game/review';
     import type { ReviewController } from '../game/review.svelte';
     import EvalBar from './EvalBar.svelte';
     import GraphCard from './GraphCard.svelte';
@@ -21,7 +21,6 @@
     const strikeSize = $derived(Math.min(34, Math.floor((4 * size + 41 - 15) / 4)));
     // The graph card's inner width: the page column (≤ 430) less page and card padding.
     const graphW = $derived(Math.min(w, 430) - 48);
-    const nm = $derived(names(r.shared));
     const at = $derived(r.game ? positionAt(r.game, r.an, r.sel, r.side) : null);
     const p = $derived(pointValue(r.an, r.sel));
     const step = $derived(stepLabel(r.sel, r.game?.rolls.length ?? 0));
@@ -50,13 +49,12 @@
         </div>
     </header>
     {#if notice}<div class="notice" role="status">{notice}</div>{/if}
-    {#if r.shared && r.game}<div class="pill">Shared game · {nm.You} vs {BOT_NAMES[r.game.bot]}</div>{/if}
     <ReviewSummary {r} compact />
     {#if r.game && at}
         <GraphCard {r} game={r.game} width={graphW} height={120} compact />
         <SelectedRoll {r} compact />
         <div class="sheets">
-            <ReviewSheet name={nm.You} prev={at.prev} pos={at.pos} who="you" compact {size} {strikeSize} />
+            <ReviewSheet name="You" prev={at.prev} pos={at.pos} who="you" compact {size} {strikeSize} />
             <ReviewSheet name={BOT_NAMES[r.game.bot]} prev={at.prev} pos={at.pos} who="opponent" compact {size} {strikeSize} />
         </div>
         <div class="log"><ReviewLog {r} /></div>
@@ -71,7 +69,7 @@
                 <b>{step.title}</b>
                 <!-- Below 380 px the long form doesn't fit between the buttons. -->
                 {#if w < 380}<span>{step.sub.replace('the ', '')}{#if p !== null}{' · '}<b class="pct">{Math.round(p * 100)}%</b>{/if}</span>
-                {:else}<span>{step.sub}{#if p !== null}{' · '}<b class="pct">{Math.round(p * 100)}%</b> {nm.you} win{/if}</span>{/if}
+                {:else}<span>{step.sub}{#if p !== null}{' · '}<b class="pct">{Math.round(p * 100)}%</b> you win{/if}</span>{/if}
             </div>
             {#each RIGHT as s}<button type="button" aria-label={s.label} onclick={s.go}><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d={s.d}></path></svg></button>{/each}
         </nav>
@@ -85,7 +83,6 @@
     .right { display: flex; align-items: center; gap: 8px; }
     .icon { width: 44px; height: 44px; border-radius: 12px; border: none; background: var(--paper); box-shadow: 0 1px 0 var(--edge); color: var(--ink); display: flex; align-items: center; justify-content: center; padding: 0; cursor: pointer; }
     .notice { font-size: 13px; color: var(--soft); }
-    .pill { align-self: flex-start; height: 28px; padding: 0 12px; border-radius: 14px; display: inline-flex; align-items: center; font-size: 13px; font-weight: 600; background: var(--btn-muted-bg); color: var(--soft); }
     .sheets { display: flex; gap: 8px; justify-content: center; }
     .log { display: flex; }
     .pinned { position: fixed; left: 0; right: 0; bottom: 0; z-index: 5; background: var(--paper); box-shadow: 0 -1px 0 var(--edge), 0 -8px 24px var(--shadow); }

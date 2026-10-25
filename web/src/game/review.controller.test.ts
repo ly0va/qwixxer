@@ -32,7 +32,7 @@ describe('ReviewController', () => {
         const { e, rolls } = engine({ A: 3 });
         const r = new ReviewController(e, memStore());
         r.setActive(true);
-        await r.load('A', false);
+        await r.load('A');
         expect(r.game?.rolls).toHaveLength(3);
         expect(r.sel).toBe(0);
         await flush();
@@ -46,7 +46,7 @@ describe('ReviewController', () => {
     it('waits while inactive and resumes at the first missing roll', async () => {
         const { e, rolls } = engine({ A: 3 });
         const r = new ReviewController(e, memStore());
-        await r.load('A', false);
+        await r.load('A');
         await flush();
         expect(rolls).toHaveLength(0);
         r.setActive(true);
@@ -66,13 +66,12 @@ describe('ReviewController', () => {
         const { e, rolls } = engine({ A: 3, B: 2 });
         const r = new ReviewController(e, memStore());
         r.setActive(true);
-        await r.load('A', false);
+        await r.load('A');
         await flush();
-        await r.load('B', true);
+        await r.load('B');
         rolls[0].resolve(analysis(0)); // A's roll 0
         await flush();
         expect(r.code).toBe('B');
-        expect(r.shared).toBe(true);
         expect(r.an[0]).toBeUndefined();
         const b = rolls.filter((x) => x.code === 'B');
         expect(b.map((x) => x.k)).toEqual([0]);
@@ -82,7 +81,7 @@ describe('ReviewController', () => {
         const { e, rolls } = engine({ A: 2 });
         const r = new ReviewController(e, memStore());
         r.setActive(true);
-        await r.load('A', false);
+        await r.load('A');
         await flush();
         rolls[0].reject(new Error('engine was reset'));
         await flush();
@@ -97,7 +96,7 @@ describe('ReviewController', () => {
     it('a bad code is an error with no game', async () => {
         const { e } = engine({});
         const r = new ReviewController(e, memStore());
-        await r.load('nope', true);
+        await r.load('nope');
         expect(r.game).toBeNull();
         expect(r.error).toBe('bad code');
     });
@@ -105,11 +104,11 @@ describe('ReviewController', () => {
     it('with no code shows the last finished game, or nothing', async () => {
         const { e } = engine({ L: 2 });
         const r = new ReviewController(e, memStore({ [LAST_GAME]: 'L' }));
-        await r.load(null, false);
+        await r.load(null);
         expect(r.code).toBe('L');
         const none = engine({});
         const r2 = new ReviewController(none.e, memStore());
-        await r2.load(null, false);
+        await r2.load(null);
         expect(r2.game).toBeNull();
         expect(none.e.reviewGame).not.toHaveBeenCalled();
     });
@@ -117,7 +116,7 @@ describe('ReviewController', () => {
     it('steps within the game and resets the side on a new selection', async () => {
         const { e } = engine({ A: 3 });
         const r = new ReviewController(e, memStore());
-        await r.load('A', false);
+        await r.load('A');
         r.step(-1);
         expect(r.sel).toBe(0);
         r.last();
@@ -129,14 +128,14 @@ describe('ReviewController', () => {
         expect(r.side).toBe('played');
         r.first();
         expect(r.sel).toBe(0);
-        await r.load('A', false); // same code: nothing changes
+        await r.load('A'); // same code: nothing changes
         expect(r.sel).toBe(0);
     });
 
     it('show picks the side after a roll\'s move, moving there from its dice point; at the start it does nothing', async () => {
         const { e } = engine({ A: 3 });
         const r = new ReviewController(e, memStore());
-        await r.load('A', false);
+        await r.load('A');
         r.show('best');
         expect([r.sel, r.side]).toEqual([0, 'played']);
         r.select(3); // roll 2's dice
@@ -146,13 +145,12 @@ describe('ReviewController', () => {
         expect([r.sel, r.side]).toEqual([4, 'played']);
     });
 
-    it('clears an old error and the shared flag when there is nothing to show', async () => {
+    it('clears an old error when there is nothing to show', async () => {
         const { e } = engine({});
         const r = new ReviewController(e, memStore());
-        await r.load('nope', true);
-        await r.load(null, false);
+        await r.load('nope');
+        await r.load(null);
         expect(r.error).toBeNull();
-        expect(r.shared).toBe(false);
         expect(r.code).toBeNull();
     });
 
@@ -163,7 +161,7 @@ describe('ReviewController', () => {
             reviewRoll: vi.fn(() => new Promise(() => {})),
         } as unknown as Engine;
         const r = new ReviewController(e, memStore());
-        await r.load('A', false);
+        await r.load('A');
         expect(r.error).toBe('engine failed to load');
         fail = false;
         r.retry();

@@ -3,7 +3,7 @@
     import { createEngine } from '../engine/client';
     import { GameController } from '../game/controller.svelte';
     import { ExplorerController } from '../game/explorer.svelte';
-    import { LAST_GAME, ReviewController } from '../game/review.svelte';
+    import { ReviewController } from '../game/review.svelte';
     import { keyAction } from '../game/keys';
     import { parseRoute, type Route } from '../game/route';
     import Desktop from './Desktop.svelte';
@@ -41,8 +41,7 @@
             route = { view: 'explore', code: null };
         } else route = r;
         // A review keeps its ?g= code in the address: the code never changes, so a reload shows the same game.
-        // It is shared unless it is your own last game.
-        if (route.view === 'review') void rv.load(route.code, route.code !== null && route.code !== store.get(LAST_GAME));
+        if (route.view === 'review') void rv.load(route.code);
         // The explorer evaluates when entered (loadCode already has).
         if (route.view === 'explore') x.refresh();
         c.menuOpen = false;

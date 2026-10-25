@@ -1,23 +1,22 @@
 <script lang="ts">
     import { BOT_NAMES } from '../engine/protocol';
-    import { botTile, DOT_COST, luckScore, names, signed, progress, totals } from '../game/review';
+    import { botTile, DOT_COST, luckScore, signed, progress, totals } from '../game/review';
     import type { ReviewController } from '../game/review.svelte';
     // Spec "The page": the result, the analysis's progress, and the three totals.
     let { r, compact = false }: { r: ReviewController; compact?: boolean } = $props();
-    const nm = $derived(names(r.shared));
     const g = $derived(r.game);
     const n = $derived(g?.rolls.length ?? 0);
     const t = $derived(totals(r.an, n));
     const won = $derived(g?.over ? (g.over.you === g.over.opponent ? null : g.over.you > g.over.opponent) : null);
-    const result = $derived(!g ? '' : !g.over ? 'Game not finished' : won === null ? 'Draw' : won ? `${nm.You} won` : `${BOT_NAMES[g.bot]} won`);
+    const result = $derived(!g ? '' : !g.over ? 'Game not finished' : won === null ? 'Draw' : won ? 'You won' : `${BOT_NAMES[g.bot]} won`);
     const costly = $derived(r.an.filter((a) => a && a.you_cost >= DOT_COST).length);
     const soFar = $derived(t.done < n);
     const score = $derived(luckScore(t.luck, t.var));
     // On a phone notes are hidden; the dice luck keeps its z beside the number (the word is the tooltip).
     const tiles = $derived([
         { label: 'Dice luck', short: 'Dice luck', value: signed(t.luck), tone: t.luck >= 0 ? 'lucky' : 'unlucky', note: soFar ? 'so far' : score.text, aside: soFar ? null : score.short, title: score.text },
-        { label: `${nm.Your} mistakes`, short: `${nm.Your} errors`, value: signed(-t.you), tone: 'unlucky', note: soFar ? 'so far' : `${costly} costing 2+ pts` },
-        { ...botTile(t.bot, g ? BOT_NAMES[g.bot] : 'Bot', nm), ...(soFar ? { note: 'so far' } : {}) },
+        { label: 'Your mistakes', short: 'Your errors', value: signed(-t.you), tone: 'unlucky', note: soFar ? 'so far' : `${costly} costing 2+ pts` },
+        { ...botTile(t.bot, g ? BOT_NAMES[g.bot] : 'Bot'), ...(soFar ? { note: 'so far' } : {}) },
     ]);
 </script>
 

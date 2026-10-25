@@ -12,11 +12,6 @@ import { chipsFor, type Chip, type RowModel } from './rules';
 export type Side = 'played' | 'best';
 export type Analyses = (RollAnalysis | undefined)[];
 
-/** What the human is called: "You" in your own game, "Player" in a shared one. */
-export interface Names { you: string; You: string; your: string; Your: string }
-export const names = (shared: boolean): Names =>
-    shared ? { you: 'Player', You: 'Player', your: 'Player’s', Your: 'Player’s' } : { you: 'you', You: 'You', your: 'your', Your: 'Your' };
-
 /** Signed points of win chance with one decimal: "+3.2", "−4.6" (U+2212). */
 export const signed = (v: number) => {
     const r = Math.round(v * 1000) / 10; // the sign of what is shown: −0.04 points is "0.0"
@@ -80,12 +75,12 @@ export function luckScore(luck: number, variance: number): { z: number; word: st
  * your roll its white-sum mark can also beat the prediction luck used, which
  * counts against you. The tone and note follow the sign shown.
  */
-export function botTile(bot: number, name: string, nm: Names) {
+export function botTile(bot: number, name: string) {
     const value = signed(bot);
     const against = value.startsWith('−');
     return {
         label: `${name}’s play`, short: 'Bot’s play', value,
-        tone: against ? 'unlucky' : 'lucky', note: against ? `against ${nm.you}` : `in ${nm.your} favour`,
+        tone: against ? 'unlucky' : 'lucky', note: against ? 'against you' : 'in your favour',
     };
 }
 
@@ -161,11 +156,11 @@ export interface ReviewEntry { k: number; n: number; lines: ReviewLine[]; luck: 
 const cost = (c: number | undefined) => (c !== undefined && c >= TIE ? signed(-c) : null);
 
 /** The game log, roller first, with each roll's luck and each choice's cost. */
-export function reviewLog(game: ReviewGame, an: Analyses, nm: Names): ReviewEntry[] {
+export function reviewLog(game: ReviewGame, an: Analyses): ReviewEntry[] {
     return game.rolls.map((roll, k) => {
         const r = roll.record;
         const a = an[k];
-        const you: ReviewLine = { who: nm.You, you: true, chips: chipsFor(r.you, r.you_strike), empty: '–', cost: cost(a?.you_cost) };
+        const you: ReviewLine = { who: 'You', you: true, chips: chipsFor(r.you, r.you_strike), empty: '–', cost: cost(a?.you_cost) };
         const botMarks = [r.bot_white, r.bot_colour].filter((x) => x !== null);
         const bot: ReviewLine = { who: 'Bot', you: false, chips: chipsFor(botMarks, r.bot_strike), empty: '–', cost: cost(a?.bot_cost) };
         const l = rollLuck(an, k);
@@ -237,7 +232,7 @@ export interface GraphModel {
     tag: (v: number) => string;
 }
 
-export function graphModel(game: ReviewGame, an: Analyses, kind: GraphKind, nm: Names, botName: string): GraphModel {
+export function graphModel(game: ReviewGame, an: Analyses, kind: GraphKind, botName: string): GraphModel {
     const g = graphSeries(game, an);
     const values = kind === 'win' ? g.values : kind === 'skill' ? g.skill : kind === 'luck' ? g.luck : g.luckZ;
     const missing = values.findIndex((v) => v === null);
@@ -246,8 +241,8 @@ export function graphModel(game: ReviewGame, an: Analyses, kind: GraphKind, nm: 
     const base = { values, knots, bands: [], labels: [], dots: [], legend: [] };
     if (kind === 'win') {
         return {
-            ...base, title: `${nm.Your} win chance`, short: `${nm.Your} win chance`, lo: 0, hi: 1, area: true, guides: [{ v: 0.5, dash: true }],
-            dots: g.dots.filter((j) => j <= done).map((j) => ({ j, tone: 'you' })), legend: [{ text: `${nm.your} mistakes`, tone: 'you' }],
+            ...base, title: 'Your win chance', short: 'Your win chance', lo: 0, hi: 1, area: true, guides: [{ v: 0.5, dash: true }],
+            dots: g.dots.filter((j) => j <= done).map((j) => ({ j, tone: 'you' })), legend: [{ text: 'your mistakes', tone: 'you' }],
             tag: (v) => `${Math.round(v * 100)}%`,
         };
     }
@@ -271,7 +266,7 @@ export function graphModel(game: ReviewGame, an: Analyses, kind: GraphKind, nm: 
             if (!a || 2 * k + 2 > done) return [];
             return [...(Math.abs(a.bot_cost) >= SKILL_DOT ? [{ j: 2 * k + 2, tone: 'bot' as const }] : []), ...(a.you_cost >= SKILL_DOT ? [{ j: 2 * k + 2, tone: 'you' as const }] : [])];
         }),
-        legend: [{ text: nm.You, tone: 'you' }, { text: botName, tone: 'bot' }],
+        legend: [{ text: 'You', tone: 'you' }, { text: botName, tone: 'bot' }],
     };
 }
 

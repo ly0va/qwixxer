@@ -1,11 +1,11 @@
 <script lang="ts">
-    import { names, reviewLog } from '../game/review';
+    import { reviewLog } from '../game/review';
     import type { ReviewController } from '../game/review.svelte';
     import ChipView from './Chip.svelte';
     // Spec "The page": the game log, one entry per roll with its luck; your
     // choices show their cost. Clicking an entry selects it (after the move).
     let { r }: { r: ReviewController } = $props();
-    const entries = $derived(r.game ? reviewLog(r.game, r.an, names(r.shared)) : []);
+    const entries = $derived(r.game ? reviewLog(r.game, r.an) : []);
     const k = $derived(r.sel === 0 ? -1 : Math.floor((r.sel - 1) / 2));
     let list = $state<HTMLOListElement>();
     // Keep the selected entry in view by scrolling the list only (scrollIntoView

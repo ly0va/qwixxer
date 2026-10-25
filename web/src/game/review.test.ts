@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { Position, ReviewGame, RollAnalysis, RollRecord, SheetSnap } from '../engine/protocol';
 import { decode } from './link';
 import {
-    bestShown, botTile, graphModel, GRAPHS, explorerHref, gameHref, graphSeries, names, pointValue, positionAt, reviewLog, reviewSheet, luckScore, rollLuck, signed, stepLabel, totals, progress,
+    bestShown, botTile, graphModel, GRAPHS, explorerHref, gameHref, graphSeries, pointValue, positionAt, reviewLog, reviewSheet, luckScore, rollLuck, signed, stepLabel, totals, progress,
 } from './review';
 
 const sheet = (marked: [number, number][] = [], strikes = 0): SheetSnap => {
@@ -65,20 +65,18 @@ describe('review points', () => {
     it('progress shows while analysing, nothing once done', () => {
         expect(progress({ done: 1 }, 3)).toBe('Analysing… 1 of 3');
         expect(progress({ done: 3 }, 3)).toBe('');
-        expect(names(true).Your).toBe('Player’s');
     });
     it('the bot tile is its play, signed for you: mistakes in your favour, better-than-predicted marks against you', () => {
-        expect(botTile(0.05, 'Master+', names(false))).toEqual({ label: 'Master+’s play', short: 'Bot’s play', value: '+5.0', tone: 'lucky', note: 'in your favour' });
-        expect(botTile(-0.008, 'Master+', names(false))).toMatchObject({ value: '−0.8', tone: 'unlucky', note: 'against you' });
-        expect(botTile(-0.0004, 'Master+', names(true))).toMatchObject({ value: '0.0', tone: 'lucky', note: 'in Player’s favour' });
-        expect(botTile(-0.008, 'Master+', names(true)).note).toBe('against Player');
+        expect(botTile(0.05, 'Master+')).toEqual({ label: 'Master+’s play', short: 'Bot’s play', value: '+5.0', tone: 'lucky', note: 'in your favour' });
+        expect(botTile(-0.008, 'Master+')).toMatchObject({ value: '−0.8', tone: 'unlucky', note: 'against you' });
+        expect(botTile(-0.0004, 'Master+')).toMatchObject({ value: '0.0', tone: 'lucky', note: 'in your favour' });
     });
     it('a value that rounds to 0.0 has no sign', () => {
         expect(signed(-0.0004)).toBe('0.0');
         expect(signed(0.0004)).toBe('0.0');
         expect(signed(-0.0006)).toBe('−0.1');
         const tiny = [{ ...an[0], this_roll: an[0].start! - 0.0003 }];
-        expect(reviewLog(game, tiny, names(false))[0].luck).toBe('luck 0.0');
+        expect(reviewLog(game, tiny)[0].luck).toBe('luck 0.0');
     });
     it('steps are labelled by roll and phase', () => {
         expect(stepLabel(46, 36)).toEqual({ title: 'Roll 23 of 36', sub: 'after the move' });
@@ -114,7 +112,7 @@ describe('review sheets', () => {
 
 describe('review log', () => {
     it('puts costs on the chooser’s line and luck on each roll', () => {
-        const log = reviewLog(game, an, names(false));
+        const log = reviewLog(game, an);
         expect(log.map((e) => e.n)).toEqual([1, 2, 3]);
         expect(log[1].lines[0]).toMatchObject({ who: 'You', you: true, cost: '−4.6' });
         expect(log[1].lines[1]).toMatchObject({ who: 'Bot', cost: null });
@@ -122,7 +120,7 @@ describe('review log', () => {
         expect(log[0].luck).toBe('luck −3.0');
         expect(log[1].luck).toBe('luck +6.0');
         expect(log[2].luck).toBe('luck …');
-        expect(reviewLog(game, an, names(true))[1].lines[0].who).toBe('Player');
+        expect(log[1].lines[0].who).toBe('You');
     });
 });
 
@@ -182,8 +180,7 @@ describe('the best move shown', () => {
 });
 
 describe('graph views', () => {
-    const own = names(false);
-    const model = (k: Parameters<typeof graphModel>[2]) => graphModel(game, an, k, own, 'Master');
+    const model = (k: Parameters<typeof graphModel>[2]) => graphModel(game, an, k, 'Master');
     it('the tabs, win chance first and skill second', () => {
         expect(GRAPHS.map((g) => g.tab)).toEqual(['Win chance', 'Skill', 'Dice luck', 'Luck · z']);
     });
@@ -216,6 +213,6 @@ describe('graph views', () => {
         expect(m.tag(1.37)).toBe('z +1.4');
     });
     it('nothing analysed: no knots', () => {
-        expect(graphModel(game, [], 'luck', own, 'Master').knots).toEqual([]);
+        expect(graphModel(game, [], 'luck', 'Master').knots).toEqual([]);
     });
 });

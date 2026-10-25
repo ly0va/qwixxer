@@ -1,6 +1,6 @@
 <script lang="ts">
     import { luckText } from '../game/position';
-    import { bestShown, explorerHref, names, rollLuck, signed, type Side } from '../game/review';
+    import { bestShown, explorerHref, rollLuck, signed, type Side } from '../game/review';
     import type { ReviewController } from '../game/review.svelte';
     import { chipsFor } from '../game/rules';
     import ChipView from './Chip.svelte';
@@ -12,7 +12,6 @@
     const FACES = [['var(--die-face)', 'var(--die-pip)', 'White'], ['var(--die-face)', 'var(--die-pip)', 'White'],
         ['var(--red-band)', 'var(--on-band)', 'Red'], ['var(--yellow-band)', 'var(--on-yellow)', 'Yellow'],
         ['var(--green-band)', 'var(--on-band)', 'Green'], ['var(--blue-band)', 'var(--on-band)', 'Blue']];
-    const nm = $derived(names(r.shared));
     const k = $derived(r.sel === 0 ? -1 : Math.floor((r.sel - 1) / 2));
     const roll = $derived(k >= 0 ? r.game?.rolls[k] : undefined);
     const a = $derived(k >= 0 ? r.an[k] : undefined);
@@ -37,7 +36,7 @@
         <div class="title">
             {#if roll}
                 <b>Roll {k + 1}</b>
-                <span class="whose">{roll.record.roller === 'you' ? `${nm.your} roll` : 'bot’s roll'}</span>
+                <span class="whose">{roll.record.roller === 'you' ? 'your roll' : 'bot’s roll'}</span>
                 <span class="luck {luck?.tone ?? 'pending'}" title={luck?.detail}>
                     {#if luck}{luck.word}{#if luck.value}<b>{luck.value}</b>{/if}{:else}Luck …{/if}
                 </span>

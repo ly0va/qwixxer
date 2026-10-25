@@ -2,7 +2,7 @@
     import { BOT_NAMES } from '../engine/protocol';
     import type { GameController } from '../game/controller.svelte';
     import { DESK_H, DESK_W, deskScale } from '../game/layout';
-    import { gameHref, names, pointValue, positionAt } from '../game/review';
+    import { gameHref, pointValue, positionAt } from '../game/review';
     import type { ReviewController } from '../game/review.svelte';
     import EvalBar from './EvalBar.svelte';
     import GraphCard from './GraphCard.svelte';
@@ -19,7 +19,6 @@
     let w = $state(window.innerWidth);
     let h = $state(window.innerHeight);
     const scale = $derived(deskScale(w, h));
-    const nm = $derived(names(r.shared));
     const at = $derived(r.game ? positionAt(r.game, r.an, r.sel, r.side) : null);
     let notice = $state('');
     async function share() {
@@ -41,7 +40,6 @@
         <div class="left">
             <div class="word">Qwixxer</div>
             <Tabs current="review" onPlay={nav.play} onExplore={nav.explorer} onReview={nav.review} />
-            {#if r.shared && r.game}<span class="pill">Shared game · {nm.You} vs {BOT_NAMES[r.game.bot]}</span>{/if}
         </div>
         <div class="right">
             {#if notice}<span class="notice" role="status">{notice}</span>{/if}
@@ -55,7 +53,7 @@
                 <div class="board">
                     <EvalBar p={pointValue(r.an, r.sel)} vertical />
                     <div class="sheets">
-                        <ReviewSheet name={nm.You} prev={at.prev} pos={at.pos} who="you" />
+                        <ReviewSheet name="You" prev={at.prev} pos={at.pos} who="you" />
                         <ReviewSheet name={BOT_NAMES[r.game.bot]} prev={at.prev} pos={at.pos} who="opponent" />
                     </div>
                 </div>
@@ -81,7 +79,6 @@
     .left, .right { display: flex; align-items: center; gap: 20px; }
     .right { gap: 10px; }
     .word { font-family: var(--cond); font-weight: 800; font-size: 30px; letter-spacing: 0.5px; }
-    .pill { height: 30px; padding: 0 12px; border-radius: 15px; display: inline-flex; align-items: center; font-size: 14px; font-weight: 600; background: var(--btn-muted-bg); color: var(--soft); }
     .notice { font-size: 14px; color: var(--soft); }
     .btn { height: 44px; padding: 0 14px; border-radius: 12px; border: none; background: var(--paper); box-shadow: 0 1px 0 var(--edge); color: var(--ink); display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 15px; cursor: pointer; }
     .body { display: flex; gap: 24px; flex: 1; min-height: 0; }
