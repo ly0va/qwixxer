@@ -203,16 +203,24 @@ export const moveChance = (p: number) => percent(p, 1);
 export const REFINE_TOP = 3;
 export type RankedMove = MoveOut & { refined: boolean };
 
+/** How many of the static list get a 1-ply value: the top REFINE_TOP and any tied with the last of them, as the review takes them. */
+export function refineCount(moves: MoveOut[]): number {
+    let n = Math.min(REFINE_TOP, moves.length);
+    while (n > 0 && n < moves.length && moves[n].p_win === moves[n - 1].p_win) n++;
+    return n;
+}
+
 /**
  * The move list as shown: with `onePly` (the 1-ply values of the static top
- * REFINE_TOP, in static order) those rows take them and re-sort among
+ * `refineCount`, in static order) those rows take them and re-sort among
  * themselves, a tie keeping the static order; the rest stay below, static.
  * The new first row drops its note: a note explains a move that isn't first.
  */
 export function rankMoves(moves: MoveOut[], onePly: number[] | null): RankedMove[] {
     if (!onePly) return moves.map((m) => ({ ...m, refined: false }));
-    const top = moves.slice(0, REFINE_TOP).map((m, i) => ({ ...m, p_win: onePly[i], refined: true }));
+    const n = refineCount(moves);
+    const top = moves.slice(0, n).map((m, i) => ({ ...m, p_win: onePly[i], refined: true }));
     top.sort((a, b) => b.p_win - a.p_win);
     if (top.length) top[0] = { ...top[0], note: null };
-    return [...top, ...moves.slice(REFINE_TOP).map((m) => ({ ...m, refined: false }))];
+    return [...top, ...moves.slice(n).map((m) => ({ ...m, refined: false }))];
 }

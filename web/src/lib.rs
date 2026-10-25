@@ -83,6 +83,9 @@ impl WasmGame {
 #[wasm_bindgen]
 pub struct WasmExplorer {
     inner: explorer::Explorer,
+    /// The last game `review_roll` replayed, by code: a review asks for
+    /// every roll of one game in turn.
+    reviewed: Option<(String, gamecode::ReviewGame)>,
 }
 
 impl Default for WasmExplorer {
@@ -97,6 +100,7 @@ impl WasmExplorer {
     pub fn new() -> WasmExplorer {
         WasmExplorer {
             inner: explorer::Explorer::new(),
+            reviewed: None,
         }
     }
 
@@ -140,9 +144,12 @@ impl WasmExplorer {
     }
 
     /// Roll `k`'s review analysis (luck, the 1-ply move costs), as JSON.
-    pub fn review_roll(&self, code: &str, k: u32) -> Result<String, JsError> {
-        let g = gamecode::replay(code).map_err(js)?;
-        let a = self.inner.review_roll(&g, k as usize).map_err(js)?;
+    pub fn review_roll(&mut self, code: &str, k: u32) -> Result<String, JsError> {
+        if self.reviewed.as_ref().is_none_or(|(c, _)| c != code) {
+            self.reviewed = Some((code.to_string(), gamecode::replay(code).map_err(js)?));
+        }
+        let g = &self.reviewed.as_ref().unwrap().1;
+        let a = self.inner.review_roll(g, k as usize).map_err(js)?;
         Ok(serde_json::to_string(&a).unwrap())
     }
 }

@@ -195,6 +195,52 @@ pub struct ReviewGame {
     pub over: Option<Over>,
 }
 
+/// `pos` (dice dropped, the next roller) after the roller's `turn` and the
+/// other player's white-sum mark `other`.
+pub(crate) fn applied(pos: &Position, turn: &Turn, other: Option<Mark>) -> Position {
+    let you_roll = pos.roller == Roller::You;
+    let mut after = pos.clone();
+    after.dice = None;
+    after.roller = if you_roll { Roller::Opponent } else { Roller::You };
+    let (rs, os) = if you_roll {
+        (&mut after.you, &mut after.opponent)
+    } else {
+        (&mut after.opponent, &mut after.you)
+    };
+    for &m in &turn.marks {
+        rs.mark(m.into());
+    }
+    if turn.strike {
+        rs.strikes += 1;
+    }
+    if let Some(m) = other {
+        os.mark(m.into());
+    }
+    after
+}
+
+/// A roll's record as the roller's turn and the other player's white-sum mark.
+pub(crate) fn turn_of_record(rec: &RollRecord) -> (Turn, Option<Mark>) {
+    if rec.roller == Who::You {
+        let turn = Turn {
+            marks: rec.you.iter().map(|&q| q.into()).collect(),
+            strike: rec.you_strike,
+        };
+        (turn, rec.bot_white.map(Into::into))
+    } else {
+        let turn = Turn {
+            marks: rec
+                .bot_white
+                .iter()
+                .chain(rec.bot_colour.iter())
+                .map(|&q| q.into())
+                .collect(),
+            strike: rec.bot_strike,
+        };
+        (turn, rec.you.first().map(|&q| q.into()))
+    }
+}
+
 /// One roll from `pos` (its dice ignored): the record, the position after,
 /// and the final points if the game ended. Rejects illegal and
 /// non-canonical actions.
@@ -212,25 +258,7 @@ pub(crate) fn replay_roll(
     if canonical_action(&r, &o, dice, &turn, other) != Some(action) {
         return Err(format!("action {action} isn't written the canonical way"));
     }
-    let mut after = pos.clone();
-    after.dice = None;
-    after.roller = if you_roll { Roller::Opponent } else { Roller::You };
-    {
-        let (rs, os) = if you_roll {
-            (&mut after.you, &mut after.opponent)
-        } else {
-            (&mut after.opponent, &mut after.you)
-        };
-        for &m in &turn.marks {
-            rs.mark(m.into());
-        }
-        if turn.strike {
-            rs.strikes += 1;
-        }
-        if let Some(m) = other {
-            os.mark(m.into());
-        }
-    }
+    let after = applied(pos, &turn, other);
     let (y, b, locked_after) = states(&after);
     let locked: Vec<usize> = (0..4).filter(|&r| locked_after[r] && !locked_before[r]).collect();
     let (rw, rc) = (action / 45 > 0, action / 5 % 9 > 0);

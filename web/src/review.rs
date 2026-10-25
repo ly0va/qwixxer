@@ -4,10 +4,10 @@
 //! choice cost. Every value is your (the player's) P(win).
 
 use crate::explorer::{legal_turns, predict_opp_white, states, Explorer, Position, Roller, Turn, WHITE_PAIRS};
-use crate::gamecode::ReviewGame;
-use crate::selection::n_locked;
-use crate::session::{SheetSnap, Sq, Who};
-use qwixxer::state::Mark;
+use crate::gamecode::{applied, turn_of_record, ReviewGame};
+use crate::selection::{n_locked, union};
+use crate::session::{Sq, Who};
+use qwixxer::state::{Mark, State};
 use serde::Serialize;
 
 /// A move of yours and the position it leaves (everything else as it happened).
@@ -35,30 +35,6 @@ pub struct RollAnalysis {
     pub you_best: BestMove,
     /// What the bot's choice this roll cost it (in your favour).
     pub bot_cost: f32,
-}
-
-/// `pos` (dice dropped, the next roller) after the roller's `turn` and the
-/// other player's white-sum mark `other`.
-fn applied(pos: &Position, turn: &Turn, other: Option<Mark>) -> Position {
-    let you_roll = pos.roller == Roller::You;
-    let mut after = pos.clone();
-    after.dice = None;
-    after.roller = if you_roll { Roller::Opponent } else { Roller::You };
-    let (rs, os): (&mut SheetSnap, &mut SheetSnap) = if you_roll {
-        (&mut after.you, &mut after.opponent)
-    } else {
-        (&mut after.opponent, &mut after.you)
-    };
-    for &m in &turn.marks {
-        rs.mark(m.into());
-    }
-    if turn.strike {
-        rs.strikes += 1;
-    }
-    if let Some(m) = other {
-        os.mark(m.into());
-    }
-    after
 }
 
 impl Explorer {
@@ -113,6 +89,43 @@ impl Explorer {
         Ok(self.one_ply(&applied(pos, &turn, opp_white)))
     }
 
+    /// The roller's turn `played` (white-sum mark `white`) if it is legal
+    /// with the other player's white-sum mark `other`. Otherwise that mark
+    /// closed the row of its colour mark or ended the game after phase 1:
+    /// phase 1 is simultaneous, so its white-sum mark stays, and phase 2 is
+    /// its best legal finish (the explorer's static value; none once the
+    /// game is over).
+    pub(crate) fn played_given(
+        &self,
+        r: &State,
+        o: &State,
+        dice: [u8; 6],
+        played: &Turn,
+        white: Option<Mark>,
+        other: Option<Mark>,
+    ) -> Turn {
+        let legal = legal_turns(r, o, dice, Roller::You, other);
+        if legal.iter().any(|t| t.key() == played.key()) {
+            return played.clone();
+        }
+        let (mut r1, mut o1) = (*r, *o);
+        if let Some(m) = white {
+            r1.apply_mark(m);
+        }
+        if let Some(m) = other {
+            o1.apply_mark(m);
+        }
+        let ended = n_locked(union(r1.locked(), o1.locked())) >= 2;
+        let most = white.is_some() as usize + !ended as usize;
+        let fits: Vec<Turn> = legal
+            .into_iter()
+            .filter(|t| white.is_none_or(|w| t.marks.contains(&w)) && t.marks.len() <= most)
+            .collect();
+        let (_, vals) = self.turn_values(r, o, &fits, Roller::You, other, dice);
+        let top = (0..fits.len()).fold(0, |a, j| if vals[j] > vals[a] { j } else { a });
+        fits[top].clone()
+    }
+
     /// Spec "The numbers" for roll `k` of `game`.
     pub fn review_roll(&self, game: &ReviewGame, k: usize) -> Result<RollAnalysis, String> {
         let roll = game.rolls.get(k).ok_or_else(|| format!("no roll {}", k + 1))?;
@@ -131,79 +144,49 @@ impl Explorer {
         let (you, bot, _) = states(before);
         let you_roll = rec.roller == Who::You;
         let (r, o) = if you_roll { (you, bot) } else { (bot, you) };
-        let played = if you_roll {
-            Turn {
-                marks: rec.you.iter().map(|&q| q.into()).collect(),
-                strike: rec.you_strike,
-            }
-        } else {
-            Turn {
-                marks: rec
-                    .bot_white
-                    .iter()
-                    .chain(rec.bot_colour.iter())
-                    .map(|&q| q.into())
-                    .collect(),
-                strike: rec.bot_strike,
-            }
-        };
-        let other: Option<Mark> = if you_roll {
-            rec.bot_white.map(Into::into)
-        } else {
-            rec.you.first().map(|&q| q.into())
-        };
+        let (played, other) = turn_of_record(rec);
 
-        // The roller: the static top 3 (against the other's actual white
-        // mark) plus the played turn, each by its 1-ply value.
+        // The roller: the static top 3 (and any tied with the third, as the
+        // explorer takes them) against the other's actual white mark, plus
+        // the played turn, each by its 1-ply value.
         let turns = legal_turns(&r, &o, dice, Roller::You, other);
         let (_, vals) = self.turn_values(&r, &o, &turns, Roller::You, other, dice);
         let mut ix: Vec<usize> = (0..turns.len()).collect();
         ix.sort_by(|&a, &b| vals[b].total_cmp(&vals[a]));
-        let mut cands: Vec<Turn> = ix.iter().take(3).map(|&i| turns[i].clone()).collect();
+        let third = ix.get(2).map_or(f32::MIN, |&i| vals[i]);
+        let mut cands: Vec<Turn> = ix
+            .iter()
+            .take_while(|&&i| vals[i] >= third)
+            .map(|&i| turns[i].clone())
+            .collect();
         if !cands.iter().any(|t| t.key() == played.key()) {
             cands.push(played.clone());
         }
-        let mut seen: Vec<(Position, f32)> = vec![];
         let valued: Vec<(Turn, Position, f32)> = cands
             .into_iter()
             .map(|t| {
                 let pos = applied(before, &t, other);
                 let v = if t.key() == played.key() {
                     after_move
-                } else if let Some((_, v)) = seen
-                    .iter()
-                    .find(|(p, _)| p.you == pos.you && p.opponent == pos.opponent)
-                {
-                    *v
                 } else {
-                    let v = self.one_ply(&pos);
-                    seen.push((pos.clone(), v));
-                    v
+                    self.one_ply(&pos)
                 };
                 (t, pos, v)
             })
             .collect();
+        // The roller's best by 1-ply; on a tie the played turn, then the
+        // static order.
         let better = |a: f32, b: f32| if you_roll { a > b } else { a < b };
+        let played_ix = valued.iter().position(|c| c.0.key() == played.key()).unwrap();
         let best = valued
             .iter()
-            .fold(&valued[0], |acc, c| if better(c.2, acc.2) { c } else { acc });
-        let roller_cost = (best.2 - after_move).abs();
-
-        // The other player's white-sum mark, as the explorer ranks it.
-        let passive_cost = |me, them| {
-            let (turns, vals) = self.move_values(me, them, dice, Roller::Opponent);
-            let want = Turn {
-                marks: other.into_iter().collect(),
-                strike: false,
-            }
-            .key();
-            let i = turns
-                .iter()
-                .position(|t| t.key() == want)
-                .expect("the played mark is legal");
-            let top = (0..turns.len()).fold(0, |a, j| if vals[j] > vals[a] { j } else { a });
-            (vals[top] - vals[i], turns[top].clone())
+            .fold(&valued[played_ix], |acc, c| if better(c.2, acc.2) { c } else { acc });
+        let roller_cost = if you_roll {
+            best.2 - after_move
+        } else {
+            after_move - best.2
         };
+        debug_assert!(roller_cost >= 0.0);
 
         let (you_cost, you_best, bot_cost) = if you_roll {
             // The bot's white-sum mark, against the prediction luck priced
@@ -219,25 +202,28 @@ impl Explorer {
             };
             (roller_cost, mv, bot_cost)
         } else {
-            let (you_cost, mine) = passive_cost(&you, &bot);
-            // Your best mark with the bot's turn as played; a colour mark in
-            // a row your mark has just closed is dropped.
-            let mut after = applied(before, &played, mine.marks.first().copied());
-            if let Some(c) = rec.bot_colour {
-                let closed = mine
-                    .marks
-                    .first()
-                    .is_some_and(|m| m.row == c.row && m.number == if c.row < 2 { 12 } else { 2 });
-                if closed {
-                    after.opponent.marks[c.row][crate::session::cell_index(c.row, c.n)] = false;
-                }
-            }
-            let mv = BestMove {
-                marks: mine.marks.iter().map(|&m| Sq::from(m)).collect(),
+            // Your white-sum mark, as the explorer ranks it; on a tie the played one.
+            let (turns, vals) = self.move_values(&you, &bot, dice, Roller::Opponent);
+            let want = Turn {
+                marks: other.into_iter().collect(),
                 strike: false,
-                after,
+            }
+            .key();
+            let i = turns
+                .iter()
+                .position(|t| t.key() == want)
+                .expect("the played mark is legal");
+            let top = (0..turns.len()).fold(i, |a, j| if vals[j] > vals[a] { j } else { a });
+            let mine = turns[top].marks.first().copied();
+            // Your best mark with the bot's turn as played, or as far as it
+            // stays legal with your mark.
+            let theirs = self.played_given(&bot, &you, dice, &played, rec.bot_white.map(Into::into), mine);
+            let mv = BestMove {
+                marks: mine.iter().map(|&m| Sq::from(m)).collect(),
+                strike: false,
+                after: applied(before, &theirs, mine),
             };
-            (you_cost, mv, roller_cost)
+            (vals[top] - vals[i], mv, roller_cost)
         };
         Ok(RollAnalysis {
             start,
@@ -546,5 +532,122 @@ mod tests {
         ))
         .unwrap();
         assert_eq!(ex.review_roll(&g2, k).unwrap().you_cost, 0.0);
+    }
+
+    #[test]
+    fn on_a_tie_the_played_move_is_the_best() {
+        // A self-played game: on roll 18 red 11 + red 12 and red 11 alone
+        // both win; you played the pair, so it is the best, not red 11.
+        let ex = Explorer::new();
+        let g = replay("1DKeHoSEqnPtFiLBmTThGOkIu7HqBUTfjhEjFiTm3QOqinavx8bc4tNwEOLsa6Xu3EBAP9m2Kf").unwrap();
+        let a = ex.review_roll(&g, 17).unwrap();
+        assert_eq!(a.you_cost, 0.0);
+        let mut best = a.you_best.marks.clone();
+        best.sort_by_key(|q| (q.row, q.n));
+        assert_eq!(best, vec![Sq { row: 0, n: 11 }, Sq { row: 0, n: 12 }]);
+    }
+
+    #[test]
+    fn on_a_tie_your_played_white_mark_is_the_best() {
+        // A self-played game: on the bot's roll 15 your green 3 and blue 3
+        // tie; you marked blue 3, so it is the best.
+        let ex = Explorer::new();
+        let g = replay("1DLC7QCVa6kfXAN0YvXg18QX4FcFksNIPLPD6tirMXY_vNT_XRViGXl5q_CHg9j2_VD7L8").unwrap();
+        let a = ex.review_roll(&g, 14).unwrap();
+        assert_eq!(a.you_cost, 0.0);
+        assert_eq!(a.you_best.marks, vec![Sq { row: 3, n: 3 }]);
+    }
+
+    fn snap(rows: [&[usize]; 4], strikes: u8) -> crate::session::SheetSnap {
+        let mut s = crate::session::SheetSnap {
+            marks: [[false; 11]; 4],
+            strikes,
+        };
+        for (r, idx) in rows.iter().enumerate() {
+            for &i in *idx {
+                s.marks[r][i] = true;
+            }
+        }
+        s
+    }
+
+    fn mk(row: usize, number: u8) -> Mark {
+        Mark { row, number }
+    }
+
+    #[test]
+    fn the_bots_colour_mark_goes_when_your_best_mark_ends_the_game() {
+        // Green is closed; you have five reds. White 6+6: your red 12 closes
+        // a second row, so the game ends after phase 1 and the bot's blue 7
+        // (white 6 + blue 1) never happens.
+        let ex = Explorer::new();
+        let (bot, you) = (
+            snap([&[], &[], &[], &[]], 0),
+            snap([&[0, 1, 2, 3, 4], &[], &[], &[]], 0),
+        );
+        let pos = Position {
+            you,
+            opponent: bot,
+            locked: [false, false, true, false],
+            dice: None,
+            roller: Roller::Opponent,
+        };
+        let (y, b, _) = states(&pos);
+        let dice = [6, 6, 1, 1, 1, 1];
+        let played = Turn {
+            marks: vec![mk(3, 7)],
+            strike: false,
+        };
+        let t = ex.played_given(&b, &y, dice, &played, None, Some(mk(0, 12)));
+        assert_eq!(t.key(), (vec![], false));
+        // Without your mark it stands.
+        assert_eq!(ex.played_given(&b, &y, dice, &played, None, None), played);
+    }
+
+    #[test]
+    fn the_bots_strike_goes_when_your_best_mark_ends_the_game() {
+        let ex = Explorer::new();
+        let pos = Position {
+            you: snap([&[0, 1, 2, 3, 4], &[], &[], &[]], 0),
+            opponent: snap([&[], &[], &[], &[]], 2),
+            locked: [false, false, true, false],
+            dice: None,
+            roller: Roller::Opponent,
+        };
+        let (y, b, _) = states(&pos);
+        let played = Turn {
+            marks: vec![],
+            strike: true,
+        };
+        let t = ex.played_given(&b, &y, [6, 6, 1, 1, 1, 1], &played, None, Some(mk(0, 12)));
+        assert_eq!(t.key(), (vec![], false));
+    }
+
+    #[test]
+    fn the_bots_colour_mark_in_a_row_you_close_becomes_its_best_legal_finish() {
+        // You close red with white 6+6; the bot played its white 12 in green
+        // and red 7 (white 6 + red 1). Red is gone, so its colour mark is
+        // another legal one (or none), the green 12 staying.
+        let ex = Explorer::new();
+        let pos = Position {
+            you: snap([&[0, 1, 2, 3, 4], &[], &[], &[]], 0),
+            opponent: snap([&[], &[], &[], &[]], 0),
+            locked: [false; 4],
+            dice: None,
+            roller: Roller::Opponent,
+        };
+        let (y, b, _) = states(&pos);
+        let dice = [6, 6, 1, 2, 3, 4];
+        let played = Turn {
+            marks: vec![mk(2, 12), mk(0, 7)],
+            strike: false,
+        };
+        assert_eq!(ex.played_given(&b, &y, dice, &played, Some(mk(2, 12)), None), played);
+        let t = ex.played_given(&b, &y, dice, &played, Some(mk(2, 12)), Some(mk(0, 12)));
+        assert!(t.marks.contains(&mk(2, 12)), "{t:?}");
+        assert!(t.marks.iter().all(|m| m.row != 0), "{t:?}");
+        assert!(legal_turns(&b, &y, dice, Roller::You, Some(mk(0, 12)))
+            .iter()
+            .any(|l| l.key() == t.key()));
     }
 }

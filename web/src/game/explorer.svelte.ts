@@ -48,7 +48,7 @@ export class ExplorerController {
     luck = $state<{ key: string; value: Luck } | null>(null);
     /** The current answer and the position it was asked for (null once an edit outdates it): what 1-ply values belong to. */
     private answered = $state.raw<{ seq: number; pos: Position } | null>(null);
-    /** 1-ply values of an answer's top REFINE_TOP moves, in static order (null: the engine failed). */
+    /** 1-ply values of an answer's top `refineCount` moves, in static order (null: the engine failed). */
     private onePly = $state.raw<{ seq: number; values: number[] | null } | null>(null);
 
     private engine: Engine;
@@ -108,7 +108,7 @@ export class ExplorerController {
         if (luck) void this.askLuck();
     }
 
-    /** The move list as shown: on your roll the top REFINE_TOP re-ranked by 1-ply once their values are in. */
+    /** The move list as shown: on your roll the top `refineCount` re-ranked by 1-ply once their values are in. */
     get ranked(): RankedMove[] {
         const moves = this.answer?.moves;
         if (!moves) return [];
@@ -269,7 +269,7 @@ export class ExplorerController {
 
     /**
      * Spec "Explorer" (`2026-10-24-game-review-design.md`): on your roll,
-     * the answer's top REFINE_TOP moves' 1-ply values, asked one at a time
+     * the answer's top `refineCount` moves' 1-ply values, asked one at a time
      * so an edit's `explore` waits at most one. They show only once all
      * are in; an edit drops them and the next answer starts over.
      */
@@ -287,7 +287,7 @@ export class ExplorerController {
                 if (!at || !moves || this.answer?.over || at.pos.roller !== 'you') break;
                 let values: number[] | null = [];
                 try {
-                    for (const m of moves.slice(0, P.REFINE_TOP)) {
+                    for (const m of moves.slice(0, P.refineCount(moves))) {
                         if (this.refineDirty) break;
                         values.push(await this.engine.onePly(at.pos, m.marks, m.strike));
                     }

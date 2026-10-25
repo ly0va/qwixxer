@@ -3,7 +3,7 @@ import type { MoveOut, View } from '../engine/protocol';
 import {
     clearSheet, closedRows, emptyPosition, exploreSheet, fromView, marginText, nextUnsetDie, overText, percent, randomDice,
     setDie, sheetTotal, swapSides, tapStrike, toEngine, toggleLock, toggleSquare,
-    addAnalysis, analysisKey, analysisMargin, chanceText, gamesText, isOver, luckText, moveChance, rankMoves, winChance, ZERO_ANALYSIS,
+    addAnalysis, analysisKey, analysisMargin, chanceText, gamesText, isOver, luckText, moveChance, rankMoves, refineCount, winChance, ZERO_ANALYSIS,
 } from './position';
 
 const markRed = (idx: number[]) => idx.reduce((p, i) => toggleSquare(p, 'you', 0, i), emptyPosition());
@@ -189,6 +189,15 @@ describe('rankMoves', () => {
         expect(s[0].bots).toEqual(['student']);
         expect(s.map((m) => m.marks[0].n)).toEqual([3, 4, 2, 5, 6]);
         expect(s[2].bots).toEqual(['master_plus', 'master']);
+    });
+
+    it('takes the moves tied with the third too, as the review does', () => {
+        const tied = [mv(2, 0.5), mv(3, 0.45), mv(4, 0.4), mv(5, 0.4), mv(6, 0.39)];
+        expect(refineCount(tied)).toBe(4);
+        expect(refineCount(list)).toBe(3);
+        expect(refineCount([mv(2, 0.5)])).toBe(1);
+        const r = rankMoves(tied, [0.3, 0.3, 0.3, 0.6]);
+        expect(r.map((m) => [m.marks[0].n, m.refined])).toEqual([[5, true], [2, true], [3, true], [4, true], [6, false]]);
     });
 
     it('handles fewer than 3 moves', () => {
