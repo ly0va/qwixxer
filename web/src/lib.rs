@@ -135,6 +135,15 @@ impl WasmExplorer {
         self.inner.move_one_ply(&pos, &marks, strike).map_err(js)
     }
 
+    /// The position after playing your move (`marks` as JSON, or a strike)
+    /// with the opponent's predicted part, as JSON.
+    pub fn play(&self, position: &str, marks: &str, strike: bool) -> Result<String, JsError> {
+        let pos: explorer::Position = serde_json::from_str(position).map_err(js)?;
+        let marks: Vec<Sq> = serde_json::from_str(marks).map_err(js)?;
+        let played = self.inner.play(&pos, &marks, strike).map_err(js)?;
+        Ok(serde_json::to_string(&played).unwrap())
+    }
+
     /// The game a code describes, replayed (spec
     /// `2026-10-24-game-review-design.md`), as JSON; an error for a code
     /// that is malformed or breaks the rules.

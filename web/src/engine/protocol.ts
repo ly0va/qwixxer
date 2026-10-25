@@ -30,8 +30,12 @@ export type Roller = 'you' | 'opponent';
 export interface SheetSnap { marks: boolean[][]; strikes: number }
 /** Mirrors explorer.rs `Position`. `locked` = rows closed by tapping their lock. */
 export interface Position { you: SheetSnap; opponent: SheetSnap; locked: boolean[]; dice: number[] | null; roller: Roller }
-/** The win net's view of the position: P(you win) for whoever rolls next, and the expected final difference. */
-export interface Eval { p_win: number; margin: number }
+/** One side's expected final marks per row (red, yellow, green, blue) and strikes. */
+export interface Ends { marks: number[]; strikes: number }
+/** The win net's view of the position: P(you win) for whoever rolls next, the expected final difference, and each side's expected final marks and strikes. */
+export interface Eval { p_win: number; margin: number; expected: { you: Ends; opponent: Ends } }
+/** Mirrors explorer.rs `Played`: the position after your move and the opponent's predicted part (roll handed over, dice cleared). */
+export interface Played { position: Position; opponent: Sq[]; opponent_strike: boolean }
 /** `note` (only on Master+'s move when it isn't ranked first): why Master+ still plays it. */
 export interface MoveOut { marks: Sq[]; strike: boolean; pass: boolean; p_win: number; bots: BotKind[]; note: 'rolled_out' | 'rule' | null }
 /** The rolling opponent's predicted turn: white-sum mark, then colour mark or a strike (neither if the game ends first). */
@@ -89,6 +93,8 @@ export interface Engine {
     luck(position: Position, first: number, count: number): Promise<Luck>;
     /** Your move's 1-ply value on your roll: the next roll's luck average after it. */
     onePly(position: Position, marks: Sq[], strike: boolean): Promise<number>;
+    /** Plays your move with the opponent's predicted part: the next position, roll handed over and dice cleared. */
+    play(position: Position, marks: Sq[], strike: boolean): Promise<Played>;
     /** The finished game's code (rejects for a game saved before rolls were recorded). */
     gameCode(): Promise<string>;
     /** Replays a game code; rejects a malformed or illegal one. */

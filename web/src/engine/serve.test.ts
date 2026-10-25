@@ -33,6 +33,11 @@ class FakeExplorer {
         if (JSON.parse(json).roller !== 'you') throw new Error('1-ply values are for your roll');
         return JSON.parse(marks).length / 10 + (strike ? 0.5 : 0);
     }
+    play(json: string, marks: string, strike: boolean) {
+        const p = JSON.parse(json);
+        if (!p.dice) throw new Error('no dice');
+        return JSON.stringify({ position: { roller: p.roller === 'you' ? 'opponent' : 'you' }, opponent: JSON.parse(marks), opponent_strike: strike });
+    }
     review_game(code: string) {
         if (code === 'bad') throw new Error('bad code');
         return JSON.stringify({ bot: 'master', bot_first: true, rolls: [], over: null, echo: code });
@@ -110,6 +115,14 @@ describe('engine worker handler', () => {
         const { send } = setup(0);
         expect(await send(1, 'onePly', [{ roller: 'you' }, [{ row: 0, n: 2 }, { row: 1, n: 3 }], true])).toEqual({ id: 1, ok: true, result: 0.7 });
         expect(await send(2, 'onePly', [{ roller: 'opponent' }, [], false])).toMatchObject({ ok: false, error: '1-ply values are for your roll' });
+    });
+    it('play passes the position, the marks and the strike to the explorer', async () => {
+        const { send } = setup(0);
+        const marks = [{ row: 0, n: 2 }];
+        expect(await send(1, 'play', [{ roller: 'you', dice: [1, 2, 3, 4, 5, 6] }, marks, true])).toEqual({
+            id: 1, ok: true, result: { position: { roller: 'opponent' }, opponent: marks, opponent_strike: true },
+        });
+        expect(await send(2, 'play', [{ roller: 'you', dice: null }, [], false])).toMatchObject({ ok: false, error: 'no dice' });
     });
     it('gameCode asks the game', async () => {
         const { send } = setup(0);

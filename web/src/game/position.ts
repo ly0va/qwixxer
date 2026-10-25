@@ -92,6 +92,12 @@ export function toEngine(p: ExPosition): Position {
     return { you: q.you, opponent: q.opponent, locked: q.locked, dice, roller: q.roller };
 }
 
+/** An engine position as the explorer's (no dice: every die unset). */
+export const fromEngine = (p: Position): ExPosition => ({
+    you: p.you, opponent: p.opponent, locked: [...p.locked],
+    dice: p.dice ? [...p.dice] : Array(6).fill(null), roller: p.roller,
+});
+
 /**
  * Spec "Explore this position": the game's boards (You → You, Bot →
  * Opponent) before the current roll's marks; while a roll is being

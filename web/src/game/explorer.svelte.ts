@@ -1,4 +1,4 @@
-import type { Analysis, Answer, Engine, Luck, Position, Roller, View } from '../engine/protocol';
+import type { Analysis, Answer, Engine, Luck, MoveOut, Position, Roller, Sq, View } from '../engine/protocol';
 import type { Store } from './controller.svelte';
 import { decode, encode } from './link';
 import * as P from './position';
@@ -31,6 +31,9 @@ const WHITE_PAIRS = 21;
 /** The whole position, dice and roller included: what roll luck belongs to. */
 export const luckKey = (p: ExPosition) => encode(p);
 
+/** A played move: yours and the opponent's predicted part. */
+export interface PlayedMove { marks: Sq[]; strike: boolean; opponent: Sq[]; opponentStrike: boolean }
+
 /** Spec "Web: state explorer": the position being explored and its answer. */
 export class ExplorerController {
     pos = $state<ExPosition>(P.emptyPosition());
@@ -44,6 +47,8 @@ export class ExplorerController {
     analysis = $state<{ key: string; totals: Analysis } | null>(null);
     /** A batch loop is running. */
     analysing = $state(false);
+    /** Moves played from the move list, newest last, each with the position before it: what Undo steps back through. */
+    private plays = $state.raw<(PlayedMove & { before: ExPosition })[]>([]);
     /** Roll luck and the position (dice included) it belongs to. */
     luck = $state<{ key: string; value: Luck } | null>(null);
     /** The current answer and the position it was asked for (null once an edit outdates it): what 1-ply values belong to. */
@@ -140,18 +145,19 @@ export class ExplorerController {
             this.flash(BAD_LINK);
             return false;
         }
-        this.set(p);
+        this.set(p, []);
         return true;
     }
 
-    loadView(v: View) { this.set(P.fromView(v)); }
+    loadView(v: View) { this.set(P.fromView(v), []); }
 
-    tapSquare(who: Who, row: number, i: number) { this.set(P.toggleSquare(this.pos, who, row, i)); }
-    tapStrike(who: Who, k: number) { this.set(P.tapStrike(this.pos, who, k)); }
-    tapLock(row: number) { this.set(P.toggleLock(this.pos, row)); }
-    clear(who: Who) { this.set(P.clearSheet(this.pos, who)); }
-    clearAll() { this.set(P.clearSheets(this.pos)); }
-    swap() { this.set(P.swapSides(this.pos)); }
+    // Editing the sheets drops the plays; the dice and whose roll keep them.
+    tapSquare(who: Who, row: number, i: number) { this.set(P.toggleSquare(this.pos, who, row, i), []); }
+    tapStrike(who: Who, k: number) { this.set(P.tapStrike(this.pos, who, k), []); }
+    tapLock(row: number) { this.set(P.toggleLock(this.pos, row), []); }
+    clear(who: Who) { this.set(P.clearSheet(this.pos, who), []); }
+    clearAll() { this.set(P.clearSheets(this.pos), []); }
+    swap() { this.set(P.swapSides(this.pos), []); }
     setRoller(r: Roller) { this.set(P.setRoller(this.pos, r)); }
     openPicker(i: number) { this.picker = this.picker === i ? null : i; }
     pickFace(v: number) {
@@ -162,6 +168,36 @@ export class ExplorerController {
     }
     random() { this.picker = null; this.set(P.randomDice(this.pos)); }
     clearDice() { this.picker = null; this.set(P.clearDice(this.pos)); }
+
+    /** The last move played from the move list (null once the position is edited by hand). */
+    get lastPlay(): PlayedMove | null {
+        const p = this.plays.at(-1);
+        return p ? { marks: p.marks, strike: p.strike, opponent: p.opponent, opponentStrike: p.opponentStrike } : null;
+    }
+
+    /**
+     * Plays a move from the list: yours with the opponent's predicted part,
+     * the roll handed over and the dice cleared. Dropped if the position
+     * changes before the engine answers.
+     */
+    async play(m: MoveOut) {
+        const before = this.pos;
+        const key = JSON.stringify(before);
+        try {
+            const r = await this.engine.play(P.toEngine(before), m.marks, m.strike);
+            if (JSON.stringify(this.pos) !== key) return;
+            const played = { marks: m.marks, strike: m.strike, opponent: r.opponent, opponentStrike: r.opponent_strike };
+            this.set(P.fromEngine(r.position), [...this.plays, { ...played, before }]);
+        } catch {
+            if (JSON.stringify(this.pos) === key) this.flash('Couldn’t play that move');
+        }
+    }
+
+    /** Steps back one played move. */
+    undo() {
+        const last = this.plays.at(-1);
+        if (last) this.set(last.before, this.plays.slice(0, -1));
+    }
 
     linkFor(base: string) { return `${base}#/explore?p=${encode(this.pos)}`; }
 
@@ -180,8 +216,10 @@ export class ExplorerController {
         this.later(() => { if (this.noticeId === id) this.notice = ''; }, 3000);
     }
 
-    private set(p: ExPosition) {
+    /** Every change of position, with the plays it keeps (by default all of them). */
+    private set(p: ExPosition, plays = this.plays) {
         this.pos = p;
+        this.plays = plays;
         this.showAll = false;
         this.answered = null;
         if (this.refineInflight) this.refineDirty = true;

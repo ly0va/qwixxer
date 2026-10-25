@@ -6,7 +6,7 @@
 
 use crate::bots::{make_bot, master_plus, win, BotKind};
 use crate::selection::{active_options, n_locked, passive_options, union};
-use crate::session::{SheetSnap, Sq};
+use crate::session::{cell_index, SheetSnap, Sq};
 use qwixxer::dqn::win::WinStrategy;
 use qwixxer::state::{post_state_dominates, Mark, State};
 use qwixxer::strategy::bot_impl::{
@@ -63,6 +63,34 @@ pub struct Eval {
     pub p_win: f32,
     /// Expected final score difference, you − opponent (the net's aux head).
     pub margin: f32,
+    /// Each side's expected final marks per row and strikes (the net's
+    /// other aux heads).
+    pub expected: Expected,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Expected {
+    pub you: Ends,
+    pub opponent: Ends,
+}
+
+/// One side's expected marks per row (red, yellow, green, blue) and
+/// strikes at the end of the game.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Ends {
+    pub marks: [f32; 4],
+    pub strikes: f32,
+}
+
+/// The position after a played move: your move, the opponent's predicted
+/// part (its white-sum mark on your roll; its whole turn after your mark on
+/// theirs), the roll handed over and the dice cleared.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Played {
+    pub position: Position,
+    /// The opponent's predicted marks, in the order made.
+    pub opponent: Vec<Sq>,
+    pub opponent_strike: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -422,6 +450,68 @@ impl Explorer {
         })
     }
 
+    /// The net's predicted final score difference, you − opponent.
+    fn margin(&self, you: &State, opp: &State) -> f32 {
+        self.net
+            .net
+            .aux_states(you, opp)
+            .expect("the win model has aux heads")
+            .diff
+    }
+
+    /// Plays your move (`marks` in application order, or a strike; neither
+    /// is a pass) with the opponent's predicted part as the explorer shows
+    /// it: on your roll its white-sum mark at the same time, on theirs its
+    /// whole turn as Master's lookahead predicts it after your mark. The
+    /// roll goes to the other side, the dice cleared.
+    pub fn play(&self, pos: &Position, marks: &[Sq], strike: bool) -> Result<Played, String> {
+        pos.validate()?;
+        let dice = pos.dice.ok_or("no dice")?;
+        let (you, opp, locked) = states(pos);
+        if you.strikes >= 4 || opp.strikes >= 4 || n_locked(locked) >= 2 {
+            return Err("the game is over".into());
+        }
+        let opp_white = match pos.roller {
+            Roller::You => predict_opp_white(&self.net, &you, &opp, dice),
+            Roller::Opponent => None,
+        };
+        let want = Turn {
+            marks: marks.iter().map(|&q| q.into()).collect(),
+            strike,
+        }
+        .key();
+        if !legal_turns(&you, &opp, dice, pos.roller, opp_white)
+            .iter()
+            .any(|t| t.key() == want)
+        {
+            return Err("not a legal move".into());
+        }
+        let (theirs, their_strike, roller): (Vec<Mark>, bool, Roller) = match pos.roller {
+            Roller::You => (opp_white.into_iter().collect(), false, Roller::Opponent),
+            Roller::Opponent => {
+                let mine = marks.first().map(|&q| q.into());
+                let t = passive_turn_predictions(&self.net, &you, from_ref(&opp), dice, 0, &[mine])[0].2;
+                (t.white.into_iter().chain(t.colour).collect(), t.strike, Roller::You)
+            }
+        };
+        let opponent: Vec<Sq> = theirs.into_iter().map(Sq::from).collect();
+        let mut next = pos.clone();
+        for (sheet, qs) in [(&mut next.you, marks), (&mut next.opponent, &opponent[..])] {
+            for q in qs {
+                sheet.marks[q.row][cell_index(q.row, q.n)] = true;
+            }
+        }
+        next.you.strikes += strike as u8;
+        next.opponent.strikes += their_strike as u8;
+        next.dice = None;
+        next.roller = roller;
+        Ok(Played {
+            position: next,
+            opponent,
+            opponent_strike: their_strike,
+        })
+    }
+
     /// Plays `start .. start + count` from the position before the roll (its
     /// dice ignored) for [`PLAY_OUT_TURNS`] turns, the roller first, both
     /// seats Master (the win net, batched across games) without its passive
@@ -501,19 +591,19 @@ impl Explorer {
             Roller::You => Next::Me,
             Roller::Opponent => Next::Opp,
         };
+        let aux = self.net.net.aux_states(you, opp).expect("the win model has aux heads");
+        let ends = |side: usize| Ends {
+            marks: aux.marks[4 * side..4 * side + 4].try_into().unwrap(),
+            strikes: aux.strikes[side],
+        };
         Eval {
             p_win: self.net.win_prob_multi_next(&[(you, from_ref(opp), next)])[0],
-            margin: self.margin(you, opp),
+            margin: aux.diff,
+            expected: Expected {
+                you: ends(0),
+                opponent: ends(1),
+            },
         }
-    }
-
-    /// The net's predicted final score difference, you − opponent.
-    fn margin(&self, you: &State, opp: &State) -> f32 {
-        self.net
-            .net
-            .aux_states(you, opp)
-            .expect("the win model has aux heads")
-            .diff
     }
 
     /// Spec "Moves": each legal turn of yours, your sheet after it, and the
@@ -829,6 +919,114 @@ mod tests {
         let mut k: Vec<(usize, u8)> = m.marks.iter().map(|s| (s.row, s.n)).collect();
         k.sort_unstable();
         (k, m.strike)
+    }
+
+    /// A position with a few marks on both sheets.
+    fn mid(dice: Option<[u8; 6]>, roller: Roller) -> Position {
+        let mut p = pos(dice, roller);
+        for (row, n) in [(0, 3), (0, 5), (1, 4), (2, 11)] {
+            p.you.marks[row][cell_index(row, n)] = true;
+        }
+        for (row, n) in [(0, 2), (1, 6), (3, 10), (3, 9)] {
+            p.opponent.marks[row][cell_index(row, n)] = true;
+        }
+        p.you.strikes = 1;
+        p
+    }
+    fn with(mut p: Position, marks: &[Sq], strike: bool, theirs: &[Sq], their_strike: bool) -> Position {
+        for q in marks {
+            p.you.marks[q.row][cell_index(q.row, q.n)] = true;
+        }
+        for q in theirs {
+            p.opponent.marks[q.row][cell_index(q.row, q.n)] = true;
+        }
+        p.you.strikes += strike as u8;
+        p.opponent.strikes += their_strike as u8;
+        p
+    }
+
+    #[test]
+    fn the_expected_end_comes_from_the_aux_heads_for_both_sides() {
+        let p = mid(None, Roller::You);
+        let (you, opp, _) = states(&p);
+        let e = Explorer::new().explore(&p).unwrap().eval.expected;
+        let aux = crate::bots::win().net.aux_states(&you, &opp).unwrap();
+        assert_eq!(e.you.marks, aux.marks[..4]);
+        assert_eq!(e.opponent.marks, aux.marks[4..]);
+        assert_eq!((e.you.strikes, e.opponent.strikes), (aux.strikes[0], aux.strikes[1]));
+    }
+
+    #[test]
+    fn playing_on_your_roll_applies_your_turn_and_their_predicted_white_mark() {
+        let p = mid(Some([3, 4, 2, 5, 3, 1]), Roller::You);
+        let mut ex = Explorer::new();
+        let a = ex.explore(&p).unwrap();
+        let theirs: Vec<Sq> = a.opponent_white.unwrap().mark.into_iter().collect();
+        for m in a.moves.unwrap().iter().take(3) {
+            let played = ex.play(&p, &m.marks, m.strike).unwrap();
+            let mut next = with(p.clone(), &m.marks, m.strike, &theirs, false);
+            next.dice = None;
+            next.roller = Roller::Opponent;
+            assert_eq!(played.position, next, "{m:?}");
+            assert_eq!(
+                (played.opponent.clone(), played.opponent_strike),
+                (theirs.clone(), false)
+            );
+        }
+    }
+
+    #[test]
+    fn playing_a_strike_adds_a_strike() {
+        let p = mid(Some([3, 4, 2, 5, 3, 1]), Roller::You);
+        let mut ex = Explorer::new();
+        let strike = ex
+            .explore(&p)
+            .unwrap()
+            .moves
+            .unwrap()
+            .into_iter()
+            .find(|m| m.strike)
+            .unwrap();
+        assert_eq!(ex.play(&p, &strike.marks, true).unwrap().position.you.strikes, 2);
+    }
+
+    #[test]
+    fn playing_on_their_roll_applies_your_mark_and_their_turn_predicted_after_it() {
+        let dice = [3, 4, 2, 5, 3, 1];
+        let p = mid(Some(dice), Roller::Opponent);
+        let mut ex = Explorer::new();
+        let a = ex.explore(&p).unwrap();
+        let (you, opp, _) = states(&p);
+        let net = crate::bots::win();
+        for (i, m) in a.moves.as_ref().unwrap().iter().enumerate() {
+            let mine: Option<Mark> = m.marks.first().map(|&q| q.into());
+            let t = passive_turn_predictions(&net, &you, from_ref(&opp), dice, 0, &[mine])[0].2;
+            if i == 0 {
+                let shown = a.opponent_turn.clone().unwrap();
+                assert_eq!(
+                    (shown.white, shown.colour, shown.strike),
+                    (t.white.map(Sq::from), t.colour.map(Sq::from), t.strike)
+                );
+            }
+            let theirs: Vec<Sq> = t.white.into_iter().chain(t.colour).map(Sq::from).collect();
+            let played = ex.play(&p, &m.marks, false).unwrap();
+            let mut next = with(p.clone(), &m.marks, false, &theirs, t.strike);
+            next.dice = None;
+            next.roller = Roller::You;
+            assert_eq!(played.position, next, "{m:?}");
+            assert_eq!((played.opponent, played.opponent_strike), (theirs, t.strike));
+        }
+    }
+
+    #[test]
+    fn play_refuses_an_illegal_move_no_dice_and_a_finished_game() {
+        let ex = Explorer::new();
+        let p = mid(Some([3, 4, 2, 5, 3, 1]), Roller::You);
+        assert!(ex.play(&p, &[Sq { row: 0, n: 12 }], false).is_err());
+        assert!(ex.play(&mid(None, Roller::You), &[], true).is_err());
+        let mut over = p.clone();
+        over.you.strikes = 4;
+        assert!(ex.play(&over, &[], true).is_err());
     }
 
     #[test]

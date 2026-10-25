@@ -1,6 +1,6 @@
 import type { Position, ReviewGame, RollAnalysis, Sq } from '../engine/protocol';
 import { encode } from './link';
-import { closesRow, exploreSheet, type ExPosition, type Who } from './position';
+import { closesRow, exploreSheet, fromEngine, type ExPosition, type Who } from './position';
 import { chipsFor, type Chip, type RowModel } from './rules';
 
 /**
@@ -86,11 +86,6 @@ export function botTile(bot: number, name: string) {
 
 /** The summary's progress line while the analysis runs; nothing once it's done. */
 export const progress = (t: { done: number }, n: number) => (t.done < n ? `Analysing… ${t.done} of ${n}` : '');
-
-export const fromEngine = (p: Position): ExPosition => ({
-    you: p.you, opponent: p.opponent, locked: [...p.locked],
-    dice: p.dice ? [...p.dice] : Array(6).fill(null), roller: p.roller,
-});
 
 /** Below this a cost rounds to 0.0 points. */
 export const TIE = 0.0005;

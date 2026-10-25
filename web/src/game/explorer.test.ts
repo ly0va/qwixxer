@@ -5,7 +5,8 @@ import { BAD_LINK, ExplorerController, LUCK_CHUNK, luckKey, MAX_BATCH, MAX_GAMES
 import { encode } from './link';
 import { analysisKey, emptyPosition, toggleSquare } from './position';
 
-const answer = (p_win: number): Answer => ({ over: null, eval: { p_win, margin: 0 }, moves: null, opponent_white: null, opponent_turn: null });
+const ends = { marks: [0, 0, 0, 0], strikes: 0 };
+const answer = (p_win: number): Answer => ({ over: null, eval: { p_win, margin: 0, expected: { you: ends, opponent: ends } }, moves: null, opponent_white: null, opponent_turn: null });
 function memStore(init: Record<string, string> = {}): Store & { data: Record<string, string> } {
     const data = { ...init };
     return { data, get: (k) => data[k] ?? null, set: (k, v) => { data[k] = v; } };
@@ -611,5 +612,106 @@ describe('ExplorerController 1-ply', () => {
         await flush();
         expect(x.refining).toBe(false);
         expect(x.ranked.map((m) => m.refined)).toEqual([false, false, false, false]);
+    });
+});
+
+describe('ExplorerController play', () => {
+    type Call = { kind: string; args: any[]; resolve: (v: any) => void; reject: (e: Error) => void };
+    const mv = (n: number): MoveOut => ({ marks: [{ row: 0, n }], strike: false, pass: false, p_win: 0.5, bots: [], note: null });
+    function setup() {
+        const calls: Call[] = [];
+        const push = (kind: string) => (...args: any[]) =>
+            new Promise((resolve, reject) => calls.push({ kind, args: JSON.parse(JSON.stringify(args)), resolve, reject }));
+        const engine = { explore: vi.fn(push('explore')), luck: vi.fn(push('luck')), onePly: vi.fn(push('onePly')), play: vi.fn(push('play')) } as unknown as Engine;
+        const x = new ExplorerController(engine, memStore());
+        x.init();
+        const of = (kind: string) => calls.filter((c) => c.kind === kind);
+        return { x, of };
+    }
+    /** The engine's next position: your red n marked, the opponent's yellow 7, their roll, no dice. */
+    const next = (from: Position, n: number): Position => {
+        const p: Position = JSON.parse(JSON.stringify(from));
+        p.you.marks[0][n - 2] = true;
+        p.opponent.marks[1][5] = true;
+        return { ...p, dice: null, roller: from.roller === 'you' ? 'opponent' : 'you' };
+    };
+    async function playOne(x: ExplorerController, of: (k: string) => Call[], n: number) {
+        const before = JSON.parse(JSON.stringify(x.pos));
+        const done = x.play(mv(n));
+        const call = of('play').at(-1)!;
+        expect(call.args.slice(1)).toEqual([[{ row: 0, n }], false]);
+        call.resolve({ position: next(call.args[0], n), opponent: [{ row: 1, n: 7 }], opponent_strike: false });
+        await done;
+        return { before, sent: call.args[0] as Position };
+    }
+
+    it('plays a move: the next position, what was played, and undo brings the position back', async () => {
+        const { x, of } = setup();
+        x.random();
+        const { before, sent } = await playOne(x, of, 4);
+        expect(sent.dice).toEqual(before.dice);
+        expect(x.pos.you.marks[0][2]).toBe(true);
+        expect(x.pos.opponent.marks[1][5]).toBe(true);
+        expect(x.pos.roller).toBe('opponent');
+        expect(x.pos.dice).toEqual(Array(6).fill(null));
+        expect(x.lastPlay).toEqual({ marks: [{ row: 0, n: 4 }], strike: false, opponent: [{ row: 1, n: 7 }], opponentStrike: false });
+        x.undo();
+        expect(x.pos).toEqual(before);
+        expect(x.lastPlay).toBeNull();
+    });
+
+    it('undo steps back through every play, showing the one before', async () => {
+        const { x, of } = setup();
+        x.random();
+        const first = await playOne(x, of, 4);
+        x.random();
+        const second = await playOne(x, of, 5);
+        expect(x.lastPlay?.marks).toEqual([{ row: 0, n: 5 }]);
+        x.undo();
+        expect(x.pos).toEqual(second.before);
+        expect(x.lastPlay?.marks).toEqual([{ row: 0, n: 4 }]);
+        x.undo();
+        expect(x.pos).toEqual(first.before);
+        expect(x.lastPlay).toBeNull();
+    });
+
+    it('editing the sheets clears the plays; the dice and whose roll keep them', async () => {
+        const { x, of } = setup();
+        x.random();
+        await playOne(x, of, 4);
+        x.random();
+        x.setRoller('you');
+        x.clearDice();
+        expect(x.lastPlay?.marks).toEqual([{ row: 0, n: 4 }]);
+        for (const edit of [() => x.tapSquare('you', 3, 0), () => x.tapStrike('you', 0), () => x.tapLock(2), () => x.clear('you'), () => x.clearAll(), () => x.swap()]) {
+            x.random();
+            await playOne(x, of, 6);
+            edit();
+            expect(x.lastPlay).toBeNull();
+        }
+    });
+
+    it('a failed play leaves the position and says so', async () => {
+        const { x, of } = setup();
+        x.random();
+        const before = JSON.parse(JSON.stringify(x.pos));
+        const done = x.play(mv(4));
+        of('play')[0].reject(new Error('not a legal move'));
+        await done;
+        expect(x.pos).toEqual(before);
+        expect(x.lastPlay).toBeNull();
+        expect(x.notice).toBe('Couldn’t play that move');
+    });
+
+    it('a play answered after an edit is dropped', async () => {
+        const { x, of } = setup();
+        x.random();
+        const done = x.play(mv(4));
+        x.tapSquare('you', 3, 0);
+        const edited = JSON.parse(JSON.stringify(x.pos));
+        of('play')[0].resolve({ position: next(of('play')[0].args[0], 4), opponent: [], opponent_strike: false });
+        await done;
+        expect(x.pos).toEqual(edited);
+        expect(x.lastPlay).toBeNull();
     });
 });
