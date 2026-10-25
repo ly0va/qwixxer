@@ -121,3 +121,7 @@ Qwixx is a dice game for 2–5 players. Each turn the active player rolls 6 dice
 ## Disclaimer
 
 An unofficial fan project. Qwixx is a trademark of Nürnberger-Spielkarten-Verlag GmbH, published in North America by Gamewright. This project is not affiliated with or endorsed by either.
+
+## License
+
+Copyright (C) 2026 Lev Potomkin. Licensed under the [GNU Affero General Public License v3.0](LICENSE) or later. That covers the code and the trained networks; it grants no rights in Qwixx itself.
