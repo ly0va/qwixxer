@@ -48,6 +48,7 @@
         {#if roll?.before.dice}
             <div class="dice">
                 {#each FACES as f, i}<Die value={roll.before.dice[i]} face={f[0]} pip={f[1]} size={compact ? 38 : 34} label="{f[2]} die, {roll.before.dice[i]}" />{/each}
+                {#if compact && r.game}<a class="open explore" href={explorerHref(r.game, k)}>Explore</a>{/if}
             </div>
         {:else if !compact}
             <div class="dice ghost" aria-hidden="true">
@@ -68,17 +69,13 @@
                 {#if played.length === 0}<span class="none">nothing</span>{/if}
                 <b class="cost" class:best={shown && shown.grade !== 'cost'}>{cost}</b>
             </button>
-            <!-- The phone's Explore link sits over the Best row, not inside its button. -->
-            <div class="bestrow">
-                <button type="button" role="radio" aria-checked={side === 'best'} class:on={side === 'best'} onclick={() => pick('best')}>
-                    <span class="lab">Best</span>
-                    {#if best}
-                        {#each best as ch}<ChipView chip={ch} size={24} />{/each}
-                        {#if best.length === 0}<span class="none">nothing</span>{/if}
-                    {:else}<span class="none">working it out…</span>{/if}
-                </button>
-                {#if compact && r.game}<a class="explore" href={explorerHref(r.game, k)}>Explore</a>{/if}
-            </div>
+            <button type="button" role="radio" aria-checked={side === 'best'} class:on={side === 'best'} onclick={() => pick('best')}>
+                <span class="lab">Best</span>
+                {#if best}
+                    {#each best as ch}<ChipView chip={ch} size={24} />{/each}
+                    {#if best.length === 0}<span class="none">nothing</span>{/if}
+                {:else}<span class="none">working it out…</span>{/if}
+            </button>
         </div>
     {/if}
     {#if !compact}
@@ -103,7 +100,7 @@
     .title { display: flex; align-items: center; gap: 8px; min-height: 26px; }
     .title b { font-family: var(--cond); font-weight: 700; font-size: 19px; }
     .whose { font-size: 13px; color: var(--muted); }
-    .dice { display: flex; gap: 5px; }
+    .dice { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; }
     .compact .dice { gap: 6px; }
     .luck { height: 24px; padding: 0 9px; border-radius: 12px; display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; font-weight: 700; font-size: 13px; }
     .luck b { font-family: var(--cond); font-weight: 800; font-size: 16px; }
@@ -129,7 +126,6 @@
     .open { height: 32px; padding: 0 12px; border-radius: 9px; background: var(--ground); color: var(--ink); display: inline-flex; align-items: center; font-size: 13px; font-weight: 600; text-decoration: none; white-space: nowrap; }
     .open:hover { background: color-mix(in srgb, var(--ink) 10%, var(--ground)); }
     .open:focus-visible { outline: 2px solid var(--ink); outline-offset: 1px; }
-    .bestrow { position: relative; display: flex; flex-direction: column; }
-    .compact .bestrow button { padding-right: 72px; }
-    .explore { position: absolute; right: 10px; top: 50%; transform: translateY(-50%); font-size: 13px; font-weight: 600; color: var(--soft); text-underline-offset: 3px; }
+    /* Phone: the explorer button ends the dice row. */
+    .explore { margin-left: auto; height: 34px; }
 </style>
