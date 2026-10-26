@@ -10,16 +10,21 @@ strikes. The explorer shows what each side is expected to *add*, in pencil,
 so it never reads as points:
 
 - **Rows:** "+N ✕" with N = round(expected − marks now), at the end of each
-  row on desktop and under each column on the phone. None for a closed row or
-  when N < 1.
+  row on desktop and under each column on the phone. The expected total is
+  capped at what the row can still reach (its marks, the squares right of the
+  last one, then the end number and its lock if that makes five). None for a
+  closed row or when N < 1.
 - **Strikes:** "+x.x ✕" to one decimal (strike counts are small), after the
-  strike boxes on desktop and on its own line under them on the phone. None
-  below 0.1 or with four strikes.
+  strike boxes on desktop and on its own line under them on the phone,
+  capped at four in all. None below 0.1 or with four strikes.
 - **Explanation:** a tooltip on each badge (hover, focus or tap), e.g. "About
   3 more yellow marks by the end of the game (an estimate)". No
   heading or legend. On the phone the tooltip spans the sheet.
-- The badges dim while a new answer is pending and disappear once the game
-  is over. The desktop sheet column is 666 px so a row and its badge fit.
+- The badges are worked out against the position the shown answer is for, so
+  they never mix two positions: after an edit they keep the old numbers,
+  dimmed, until the new answer arrives. They disappear once the position is
+  a finished game. The desktop sheet column is 666 px so a row and its
+  widest badge ("+12") fit.
 
 ## Play
 
@@ -31,7 +36,9 @@ Each move in the list has a "→ Play" button (filled for the top move). Play:
 - hands the roll to the other side and clears the dice.
 
 The engine does this (`Explorer::play`), rejecting an illegal move, a
-position without dice and a finished game.
+position without dice and a finished game. Play is enabled only while the
+list is the answer for the position on screen (not an older one kept after an
+edit or a failed call) and no other Play is under way.
 
 A line at the top of the Roll card shows the last play: "Played [chips] ·
 opponent marked [chips]" (or "passed" / "took a strike") with **Undo**. Undo

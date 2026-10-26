@@ -1,6 +1,6 @@
 <script lang="ts">
     import type { ExplorerController } from '../game/explorer.svelte';
-    import { exploreSheet, moreBadges, rowPoints, sheetTotal, type Who } from '../game/position';
+    import { exploreSheet, rowPoints, sheetTotal, type Who } from '../game/position';
     import { cellIndex } from '../game/rules';
     import MoreBadge from './MoreBadge.svelte';
     import SheetRows from './SheetRows.svelte';
@@ -11,7 +11,7 @@
     const rows = $derived(exploreSheet(x.pos, who));
     const breakdown = $derived(rowPoints(s).join(' + ') + (s.strikes ? ` − ${5 * s.strikes}` : ''));
     // What the net expects this side to add by the end (none once the game is over).
-    const more = $derived(x.answer && !x.answer.over ? moreBadges(x.pos, who, x.answer.eval.expected[who]) : null);
+    const more = $derived(x.more(who));
 </script>
 
 <section class="card" aria-label="{name} sheet">
@@ -22,12 +22,12 @@
         <div class="right">
             <span class="label">Strikes</span>
             <StrikeBoxes count={s.strikes} label={name} onTap={(k) => x.tapStrike(who, k)} />
-            {#if more?.strikes}<MoreBadge badge={more.strikes} stale={x.pending} />{/if}
+            {#if more?.strikes}<MoreBadge badge={more.strikes} stale={more.stale} />{/if}
             <button type="button" class="clear" onclick={() => x.clear(who)}>Clear</button>
         </div>
     </div>
     <SheetRows {rows} size={42} onTap={(cell) => x.tapSquare(who, cell.sq.row, cellIndex(cell.sq.row, cell.sq.n))} onLock={(r) => x.tapLock(r)}>
-        {#snippet after(r)}{#if more?.rows[r]}<MoreBadge badge={more.rows[r]} stale={x.pending} />{/if}{/snippet}
+        {#snippet after(r)}{#if more?.rows[r]}<MoreBadge badge={more.rows[r]} stale={more.stale} />{/if}{/snippet}
     </SheetRows>
 </section>
 

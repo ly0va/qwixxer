@@ -67,7 +67,7 @@
                             <span class="bar"><span style="width: {m.p_win * 100}%"></span></span>
                         </div>
                     </div>
-                    <button type="button" class="play" disabled={x.pending} aria-label="Play this move" onclick={() => x.play(m)}>
+                    <button type="button" class="play" disabled={!x.canPlay} aria-label="Play this move" onclick={() => x.play(m)}>
                         <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"></path></svg>
                         Play
                     </button>

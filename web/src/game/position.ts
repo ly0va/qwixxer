@@ -145,6 +145,17 @@ export function exploreSheet(p: ExPosition, who: Who): RowModel[] {
     });
 }
 
+/**
+ * The most marks an open row can end with: its marks, every square right of
+ * the last one but the end number, then the end number and its lock if that
+ * makes five before it.
+ */
+function reachable(row: boolean[]): number {
+    const marks = row.filter(Boolean).length;
+    const open = 9 - row.lastIndexOf(true, 9);
+    return marks + open + (marks + open >= 5 ? 2 : 0);
+}
+
 /** A pencil badge: the text ("+2") and what it means, in words. */
 export interface Badge { text: string; tip: string }
 
@@ -160,8 +171,8 @@ export function moreBadges(p: ExPosition, who: Who, e: Ends): { rows: (Badge | n
     const s = p[who];
     const closed = closedRows(p);
     const rows = [0, 1, 2, 3].map((r) => {
-        // The marks head is unbounded too: a row holds twelve with its lock.
-        const n = Math.round(Math.min(e.marks[r], 12) - s.marks[r].filter(Boolean).length);
+        // The marks head is unbounded: cap it at what the row can still take.
+        const n = Math.round(Math.min(e.marks[r], reachable(s.marks[r])) - s.marks[r].filter(Boolean).length);
         if (closed[r] || n < 1) return null;
         return { text: `+${n}`, tip: estimate(`${n} more ${NAME[r].toLowerCase()} mark${n === 1 ? '' : 's'}`) };
     });

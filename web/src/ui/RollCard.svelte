@@ -31,8 +31,7 @@
     const luck = $derived(x.luck ? luckText(x.luck.value) : null);
     const luckStale = $derived(!!x.luck && x.luck.key !== luckKey(x.pos));
     // The last move played from the list, and Undo.
-    const played = $derived(x.lastPlay);
-    const theirs = $derived(!played ? '' : played.opponentStrike ? 'took a strike' : played.opponent.length ? 'marked' : 'passed');
+    const theirs = $derived(!x.lastPlay ? '' : x.lastPlay.opponentStrike ? 'took a strike' : x.lastPlay.opponent.length ? 'marked' : 'passed');
     // A click outside the picker closes it; a die button toggles it itself.
     // (closest, not contains: a picked face may already have left the DOM.)
     function outside(e: MouseEvent) {
@@ -43,7 +42,8 @@
 <svelte:document onclick={outside} />
 
 <section class="card" class:compact aria-label="Roll">
-    {#if played}
+    {#if x.lastPlay}
+        {@const played = x.lastPlay}
         <div class="played" role="status">
             <span class="what">{played.marks.length || played.strike ? 'Played' : 'Passed'}</span>
             {#each chipsFor(played.marks, played.strike) as ch}<ChipView chip={ch} size={24} />{/each}

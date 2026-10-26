@@ -635,7 +635,17 @@ describe('ExplorerController play', () => {
         p.opponent.marks[1][5] = true;
         return { ...p, dice: null, roller: from.roller === 'you' ? 'opponent' : 'you' };
     };
+    /** The answer for the position as it stands, so its moves can be played. */
+    async function answered(x: ExplorerController, of: (k: string) => Call[]) {
+        // An answer for an outdated position is dropped and asked again: answer until one lands.
+        for (let i = 0; i < 5 && !x.canPlay; i++) {
+            of('explore').at(-1)!.resolve(answer(0.5));
+            await flush();
+        }
+        expect(x.canPlay).toBe(true);
+    }
     async function playOne(x: ExplorerController, of: (k: string) => Call[], n: number) {
+        await answered(x, of);
         const before = JSON.parse(JSON.stringify(x.pos));
         const done = x.play(mv(n));
         const call = of('play').at(-1)!;
@@ -654,7 +664,7 @@ describe('ExplorerController play', () => {
         expect(x.pos.opponent.marks[1][5]).toBe(true);
         expect(x.pos.roller).toBe('opponent');
         expect(x.pos.dice).toEqual(Array(6).fill(null));
-        expect(x.lastPlay).toEqual({ marks: [{ row: 0, n: 4 }], strike: false, opponent: [{ row: 1, n: 7 }], opponentStrike: false });
+        expect(x.lastPlay).toMatchObject({ marks: [{ row: 0, n: 4 }], strike: false, opponent: [{ row: 1, n: 7 }], opponentStrike: false });
         x.undo();
         expect(x.pos).toEqual(before);
         expect(x.lastPlay).toBeNull();
@@ -694,6 +704,7 @@ describe('ExplorerController play', () => {
     it('a failed play leaves the position and says so', async () => {
         const { x, of } = setup();
         x.random();
+        await answered(x, of);
         const before = JSON.parse(JSON.stringify(x.pos));
         const done = x.play(mv(4));
         of('play')[0].reject(new Error('not a legal move'));
@@ -706,6 +717,7 @@ describe('ExplorerController play', () => {
     it('a play answered after an edit is dropped', async () => {
         const { x, of } = setup();
         x.random();
+        await answered(x, of);
         const done = x.play(mv(4));
         x.tapSquare('you', 3, 0);
         const edited = JSON.parse(JSON.stringify(x.pos));
@@ -713,5 +725,70 @@ describe('ExplorerController play', () => {
         await done;
         expect(x.pos).toEqual(edited);
         expect(x.lastPlay).toBeNull();
+    });
+});
+
+describe('ExplorerController play guards and badges', () => {
+    type Call = { kind: string; args: any[]; resolve: (v: any) => void; reject: (e: Error) => void };
+    const mv: MoveOut = { marks: [{ row: 0, n: 4 }], strike: false, pass: false, p_win: 0.5, bots: [], note: null };
+    const red = (n: number) => ({ marks: [n, 0, 0, 0], strikes: 0 });
+    const withEnds = (n: number): Answer => ({ ...answer(0.5), eval: { p_win: 0.5, margin: 0, expected: { you: red(n), opponent: red(0) } }, moves: [mv] });
+    function setup() {
+        const calls: Call[] = [];
+        const push = (kind: string) => (...args: any[]) =>
+            new Promise((resolve, reject) => calls.push({ kind, args: JSON.parse(JSON.stringify(args)), resolve, reject }));
+        const engine = { explore: vi.fn(push('explore')), luck: vi.fn(push('luck')), onePly: vi.fn(push('onePly')), play: vi.fn(push('play')) } as unknown as Engine;
+        const x = new ExplorerController(engine, memStore());
+        x.init();
+        const of = (kind: string) => calls.filter((c) => c.kind === kind);
+        return { x, of };
+    }
+
+    it('plays only from an answer for this position', async () => {
+        const { x, of } = setup();
+        x.random();
+        expect(x.canPlay).toBe(false); // no answer yet
+        void x.play(mv);
+        expect(of('play')).toHaveLength(0);
+        of('explore')[0].resolve(withEnds(3));
+        await flush();
+        expect(x.canPlay).toBe(true);
+        x.tapSquare('you', 3, 0); // the list now belongs to the old position…
+        of('explore')[1].reject(new Error('engine was reset')); // …and stays after a failed explore
+        await flush();
+        expect(x.answer?.moves).toHaveLength(1);
+        expect(x.canPlay).toBe(false);
+        void x.play(mv);
+        expect(of('play')).toHaveLength(0);
+    });
+
+    it('plays one move at a time', async () => {
+        const { x, of } = setup();
+        x.random();
+        of('explore')[0].resolve(withEnds(3));
+        await flush();
+        void x.play(mv);
+        expect(x.canPlay).toBe(false);
+        void x.play(mv);
+        expect(of('play')).toHaveLength(1);
+        of('play')[0].reject(new Error('not a legal move'));
+        await flush();
+        expect(x.canPlay).toBe(true);
+    });
+
+    it('shows the badges of the position the answer is for, dimmed until the next one, and none once the game is over', async () => {
+        const { x, of } = setup();
+        x.refresh();
+        of('explore')[0].resolve(withEnds(3));
+        await flush();
+        expect(x.more('you')).toEqual({ rows: [expect.objectContaining({ text: '+3' }), null, null, null], strikes: null, stale: false });
+        x.tapSquare('you', 0, 0); // red 2: the old answer still says three more from an empty row
+        expect(x.more('you')).toMatchObject({ rows: [{ text: '+3' }, null, null, null], stale: true });
+        of('explore')[1].resolve(withEnds(3));
+        await flush();
+        expect(x.more('you')).toMatchObject({ rows: [{ text: '+2' }, null, null, null], stale: false });
+        for (const k of [0, 1, 2, 3]) x.tapStrike('you', k);
+        expect(x.pos.you.strikes).toBe(4);
+        expect(x.more('you')).toBeNull();
     });
 });

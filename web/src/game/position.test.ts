@@ -233,6 +233,13 @@ describe('moreBadges', () => {
         const ten = markRed([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]); // red 2–11
         expect(moreBadges(ten, 'you', { marks: [12.7, 0, 0, 0], strikes: 0 }).rows[0]?.text).toBe('+2');
     });
+    it('never expects more than the row can still take', () => {
+        const at = (idx: number[], n: number) => moreBadges(markRed(idx), 'you', { marks: [n, 0, 0, 0], strikes: 0 }).rows[0]?.text ?? null;
+        expect(at([0, 9], 4.6)).toBeNull(); // red 2 and 11: only 12 is left, and it needs five marks
+        expect(at([0, 1, 2, 7], 9)).toBe('+4'); // 2 3 4 9: then 10, 11 (six marks), 12 and its lock: 8 at most
+        expect(at([0, 1, 2, 7], 7.4)).toBe('+3');
+        expect(at([5], 12)).toBe('+6'); // 7: 8 9 10 11 (five marks), then 12 and its lock
+    });
     it('never expects more than four strikes in all', () => {
         const three = tapStrike(emptyPosition(), 'you', 2);
         expect(moreBadges(three, 'you', { marks: [0, 0, 0, 0], strikes: 4.4 }).strikes?.text).toBe('+1.0');

@@ -2,7 +2,7 @@
     import type { ExplorerController } from '../game/explorer.svelte';
     import type { GameController } from '../game/controller.svelte';
     import { explorerPhoneSize } from '../game/layout';
-    import { exploreSheet, moreBadges, sheetTotal, type Who } from '../game/position';
+    import { exploreSheet, sheetTotal, type Who } from '../game/position';
     import { cellIndex } from '../game/rules';
     import Menu from './Menu.svelte';
     import MoreBadge from './MoreBadge.svelte';
@@ -19,8 +19,6 @@
     const strikeSize = $derived(Math.min(34, Math.floor((4 * size + 41 - 15) / 4)));
     const base = () => location.origin + location.pathname;
     const sides: { who: Who; name: string }[] = [{ who: 'you', name: 'You' }, { who: 'opponent', name: 'Opponent' }];
-    // What the net expects each side to add by the end (none once the game is over).
-    const more = (who: Who) => (x.answer && !x.answer.over ? moreBadges(x.pos, who, x.answer.eval.expected[who]) : null);
 </script>
 
 <svelte:window bind:innerWidth={w} />
@@ -39,14 +37,14 @@
     <div class="sheets">
         {#each sides as sd (sd.who)}
             {@const rows = exploreSheet(x.pos, sd.who)}
-            {@const m = more(sd.who)}
+            {@const m = x.more(sd.who)}
             <section class="side" aria-label="{sd.name} sheet">
                 <div class="name"><h2>{sd.name}</h2><b>{sheetTotal(x.pos[sd.who])}</b></div>
                 <SheetColumns {rows} {size} compact onTap={(cell) => x.tapSquare(sd.who, cell.sq.row, cellIndex(cell.sq.row, cell.sq.n))} onLock={(r) => x.tapLock(r)}>
-                    {#snippet below(r)}{#if m?.rows[r]}<MoreBadge badge={m.rows[r]} wide stale={x.pending} />{/if}{/snippet}
+                    {#snippet below(r)}{#if m?.rows[r]}<MoreBadge badge={m.rows[r]} wide stale={m.stale} />{/if}{/snippet}
                 </SheetColumns>
                 <StrikeBoxes count={x.pos[sd.who].strikes} size={strikeSize} label={sd.name} onTap={(k) => x.tapStrike(sd.who, k)} />
-                {#if m?.strikes}<MoreBadge badge={m.strikes} wide stale={x.pending} />{/if}
+                {#if m?.strikes}<MoreBadge badge={m.strikes} wide stale={m.stale} />{/if}
             </section>
         {/each}
     </div>

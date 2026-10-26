@@ -47,6 +47,10 @@ export class ExplorerController {
     analysis = $state<{ key: string; totals: Analysis } | null>(null);
     /** A batch loop is running. */
     analysing = $state(false);
+    /** The position the current answer is for: kept across edits, so its badges stay consistent until the next answer. */
+    private shown = $state.raw<Position | null>(null);
+    /** A Play is waiting for the engine. */
+    private playing = $state(false);
     /** Moves played from the move list, newest last, each with the position before it: what Undo steps back through. */
     private plays = $state.raw<(PlayedMove & { before: ExPosition })[]>([]);
     /** Roll luck and the position (dice included) it belongs to. */
@@ -170,9 +174,21 @@ export class ExplorerController {
     clearDice() { this.picker = null; this.set(P.clearDice(this.pos)); }
 
     /** The last move played from the move list (null once the position is edited by hand). */
-    get lastPlay(): PlayedMove | null {
-        const p = this.plays.at(-1);
-        return p ? { marks: p.marks, strike: p.strike, opponent: p.opponent, opponentStrike: p.opponentStrike } : null;
+    get lastPlay(): PlayedMove | null { return this.plays.at(-1) ?? null; }
+
+    /** The move list is for this position (not an older one kept after an edit or a failed call) and no Play is under way. */
+    get canPlay() { return this.answered !== null && !this.playing; }
+
+    /**
+     * What the net expects a side to add by the end (spec
+     * `2026-10-26-explorer-expected-and-play-design.md`): worked out against
+     * the position the answer is for, `stale` until the answer for this one
+     * arrives; none once the game is over.
+     */
+    more(who: Who): (ReturnType<typeof P.moreBadges> & { stale: boolean }) | null {
+        const a = this.answer;
+        if (!a || !this.shown || a.over || P.isOver(this.pos)) return null;
+        return { ...P.moreBadges(P.fromEngine(this.shown), who, a.eval.expected[who]), stale: this.answered === null };
     }
 
     /**
@@ -181,8 +197,10 @@ export class ExplorerController {
      * changes before the engine answers.
      */
     async play(m: MoveOut) {
+        if (!this.canPlay) return;
         const before = this.pos;
         const key = JSON.stringify(before);
+        this.playing = true;
         try {
             const r = await this.engine.play(P.toEngine(before), m.marks, m.strike);
             if (JSON.stringify(this.pos) !== key) return;
@@ -190,6 +208,8 @@ export class ExplorerController {
             this.set(P.fromEngine(r.position), [...this.plays, { ...played, before }]);
         } catch {
             if (JSON.stringify(this.pos) === key) this.flash('Couldn’t play that move');
+        } finally {
+            this.playing = false;
         }
     }
 
@@ -250,6 +270,7 @@ export class ExplorerController {
                     const a = await this.engine.explore(pos);
                     if (!this.dirty) {
                         this.answer = a;
+                        this.shown = pos;
                         this.error = '';
                         this.answered = { seq: ++this.seq, pos };
                         void this.refine();
