@@ -49,7 +49,7 @@
 
 <svelte:window bind:innerWidth={w} bind:innerHeight={h} />
 
-<div class="phone" class:short={L.short} class:scroll={L.scroll}>
+<div class="phone" class:short={L.short} class:scroll={L.scroll} style:--vh="{h}px">
     <div class="main" inert={drawer}>
     <header class="head">
         <div class="word">Qwixxer</div>
@@ -112,9 +112,11 @@
 </div>
 
 <style>
-    .phone { max-width: 430px; height: 100dvh; margin: 0 auto; overflow: hidden; }
+    /* --vh is window.innerHeight, the height the layout sizes the squares for: an
+       installed app can report 100dvh taller than that, leaving blank space to scroll. */
+    .phone { max-width: 430px; height: var(--vh, 100dvh); margin: 0 auto; overflow: hidden; }
     /* Too short even for 28 px squares: grow and let the page scroll rather than clip the sheet. */
-    .phone.scroll { height: auto; min-height: 100dvh; overflow: visible; }
+    .phone.scroll { height: auto; min-height: var(--vh, 100dvh); overflow: visible; }
     .main { height: 100%; box-sizing: border-box; padding: 12px 12px 16px; display: flex; flex-direction: column; gap: 10px; }
     .short .main { gap: 8px; padding-bottom: 12px; }
     .head { display: flex; align-items: center; justify-content: space-between; height: 44px; }
