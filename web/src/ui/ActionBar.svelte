@@ -29,8 +29,7 @@
             <div class="tip" role="alert">Something went wrong: {c.error}</div>
         {:else if result}
             <div class="result" role="status"><b>{result.title}</b><span class="score">{v?.you.score} – {v?.bot.score}</span>
-                {#if c.lastCode}{@const code = c.lastCode}<button type="button" class="analyze" onclick={() => (location.hash = gameHref(code))}>Analyze</button>{/if}
-                <span class="next">{c.nextBotFirst ? 'Bot rolls' : 'You roll'} first next game</span></div>
+                {#if c.lastCode}{@const code = c.lastCode}<button type="button" class="analyze" onclick={() => (location.hash = gameHref(code))}>Analyze</button>{/if}</div>
         {:else if c.tip}
             <div class="tip" role="alert">{c.tip}</div>
         {/if}
@@ -49,7 +48,6 @@
     .tip { display: flex; align-items: center; gap: 8px; background: var(--paper); border-radius: 10px; padding: 6px 12px; font-size: 13px; line-height: 1.3; max-height: 64px; overflow: hidden; box-shadow: inset 0 0 0 2px var(--ink); max-width: 460px; }
     .result { display: flex; align-items: center; gap: 12px; }
     .result b { font-family: var(--cond); font-weight: 800; font-size: 28px; }
-    .next { margin-left: auto; font-size: 13px; color: var(--muted); }
     .score { font-family: var(--cond); font-weight: 700; font-size: 22px; }
     /* Fixed width so the bar doesn't shift as the label changes (Mark 1, Strike, New game…). */
     .confirm { width: 136px; min-height: 48px; padding: 0; border: none; border-radius: 12px; font-weight: 700; font-size: 17px; cursor: not-allowed; background: var(--btn-muted-bg); color: var(--btn-muted-fg); }
