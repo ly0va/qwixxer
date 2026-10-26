@@ -33,11 +33,11 @@
     <header class="head">
         <div class="word">Qwixxer</div>
         <div class="right">
+            {#if r.notice}<span class="notice" role="status">{r.notice}</span>{/if}
             {#if r.game}<button type="button" class="icon" aria-label="Share game" onclick={() => r.share()}><Icon name="link" size={20} /></button>{/if}
             <Menu {c} {nav} />
         </div>
     </header>
-    {#if r.notice}<div class="notice" role="status">{r.notice}</div>{/if}
     <ReviewSummary {r} compact />
     {#if r.game && at}
         <GraphCard {r} game={r.game} width={graphW} height={120} compact />
@@ -69,9 +69,9 @@
     .rphone { max-width: 430px; margin: 0 auto; box-sizing: border-box; padding: 12px 12px 96px; display: flex; flex-direction: column; gap: 10px; }
     .head { display: flex; align-items: center; justify-content: space-between; height: 44px; }
     .word { font-family: var(--cond); font-weight: 800; font-size: 26px; letter-spacing: 0.5px; }
-    .right { display: flex; align-items: center; gap: 8px; }
+    .right { display: flex; align-items: center; gap: 8px; min-width: 0; }
     .icon { width: 44px; height: 44px; border-radius: 12px; border: none; background: var(--paper); box-shadow: 0 1px 0 var(--edge); color: var(--ink); display: flex; align-items: center; justify-content: center; padding: 0; cursor: pointer; }
-    .notice { font-size: 13px; color: var(--soft); }
+    .notice { font-size: 13px; line-height: 1.2; color: var(--soft); text-align: right; }
     .sheets { display: flex; gap: 8px; justify-content: center; }
     .log { display: flex; }
     .pinned { position: fixed; left: 0; right: 0; bottom: 0; z-index: 5; background: var(--paper); box-shadow: 0 -1px 0 var(--edge), 0 -8px 24px var(--shadow); }

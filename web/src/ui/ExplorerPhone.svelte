@@ -26,13 +26,13 @@
     <header class="head">
         <div class="word">Explorer</div>
         <div class="right">
+            {#if x.notice}<span class="notice" role="status">{x.notice}</span>{/if}
             <button type="button" class="icon" aria-label="Copy link to this position" onclick={() => x.copyLink(base())}>
                 <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1"></path><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"></path></svg>
             </button>
             <Menu {c} {nav} />
         </div>
     </header>
-    {#if x.notice}<div class="notice" role="status">{x.notice}</div>{/if}
     <PositionCard {x} compact />
     <div class="sheets">
         {#each sides as sd (sd.who)}
@@ -61,9 +61,9 @@
     .xphone { max-width: 430px; margin: 0 auto; box-sizing: border-box; padding: 12px 12px 20px; display: flex; flex-direction: column; gap: 10px; }
     .head { display: flex; align-items: center; justify-content: space-between; height: 44px; }
     .word { font-family: var(--cond); font-weight: 800; font-size: 26px; letter-spacing: 0.5px; }
-    .right { display: flex; align-items: center; gap: 8px; }
+    .right { display: flex; align-items: center; gap: 8px; min-width: 0; }
     .icon { width: 44px; height: 44px; border-radius: 12px; border: none; background: var(--paper); box-shadow: 0 1px 0 var(--edge); color: var(--ink); display: flex; align-items: center; justify-content: center; padding: 0; cursor: pointer; }
-    .notice { font-size: 13px; color: var(--soft); }
+    .notice { font-size: 13px; line-height: 1.2; color: var(--soft); text-align: right; }
     .sheets { display: flex; gap: 8px; justify-content: center; }
     .side { position: relative; display: flex; flex-direction: column; align-items: center; gap: 6px; }
     .name { align-self: stretch; display: flex; align-items: baseline; justify-content: space-between; padding: 0 4px; }
