@@ -5,7 +5,7 @@
 
 use crate::dqn::win::WinStrategy;
 use crate::dqn::win_arm::{bce, entropy, noise_floor};
-use crate::dqn::win_data::{DecisionData, Sample, Split};
+use crate::dqn::win_data::{decision_entries, DecisionData, Sample, Split};
 use crate::state::State;
 use crate::strategy::search::WinProb;
 use rand::rngs::SmallRng;
@@ -47,6 +47,15 @@ fn own_error(sq: f64, var: f64, pairs: f64) -> f64 {
     ((sq - var) / pairs).max(0.0).sqrt()
 }
 
+/// Whether values `p` pick the candidate that labels `y` value best for
+/// the player deciding, and the label value lost where they do not.
+fn pick(d: &DecisionData, y: &[f32], p: &[f32]) -> (bool, f64) {
+    let mine = |v: &[f32], i: usize| if d.swapped { 1.0 - v[i] } else { v[i] };
+    let best = |v: &[f32]| (1..v.len()).fold(0, |b, i| if mine(v, i) > mine(v, b) { i } else { b });
+    let (want, got) = (best(y), best(p));
+    (want == got, (mine(y, want) - mine(y, got)) as f64)
+}
+
 /// The report for predictions `turn_p` (one per turn end) and `dec_p` (one
 /// per candidate of each decision), with labels from `k_turn` / `k_cand`
 /// rollouts.
@@ -82,11 +91,9 @@ pub fn bench_stats(
             var += d.pair_var[i - 1] as f64 / k_cand as f64;
         }
         per.push((sq, var, (y.len() - 1) as f64));
-        let mine = |v: &[f32], i: usize| if d.swapped { 1.0 - v[i] } else { v[i] };
-        let best = |v: &[f32]| (1..v.len()).fold(0, |b, i| if mine(v, i) > mine(v, b) { i } else { b });
-        let (want, got) = (best(&y), best(p));
-        agree += (want == got) as usize;
-        regret += (mine(&y, want) - mine(&y, got)) as f64;
+        let (hit, lost) = pick(d, &y, p);
+        agree += hit as usize;
+        regret += lost;
     }
     let sum = |rows: &mut dyn Iterator<Item = &(f64, f64, f64)>| {
         rows.fold((0.0, 0.0, 0.0), |a, r| (a.0 + r.0, a.1 + r.1, a.2 + r.2))
@@ -125,6 +132,120 @@ pub fn bench_stats(
     }
 }
 
+/// A second, independent labelling `b` of decisions `a` (the same rollout
+/// count): how often it picks `a`'s best candidate is what a labeller
+/// exactly as good as `a`'s rollouts scores on the benchmark, and a
+/// perfect predictor's agreement with `a` lies between that share and its
+/// square root.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Ceiling {
+    pub decisions: usize,
+    /// `b`'s picks scored against `a`'s labels.
+    pub agree: f64,
+    pub regret: f64,
+    /// The model's picks scored against `b`'s labels.
+    pub net_agree: f64,
+    pub net_regret: f64,
+}
+
+pub fn ceiling_stats(a: &[DecisionData], b: &[DecisionData], dec_p: &[Vec<f32>]) -> Ceiling {
+    assert_eq!(a.len(), b.len());
+    let (mut agree, mut regret, mut net_agree, mut net_regret) = (0usize, 0.0f64, 0usize, 0.0f64);
+    for ((da, db), p) in a.iter().zip(b).zip(dec_p) {
+        let wins = |d: &DecisionData| d.samples.iter().map(|s| s.win).collect::<Vec<f32>>();
+        let (ya, yb) = (wins(da), wins(db));
+        let (hit, lost) = pick(da, &ya, &yb);
+        agree += hit as usize;
+        regret += lost;
+        let (hit, lost) = pick(db, &yb, p);
+        net_agree += hit as usize;
+        net_regret += lost;
+    }
+    let n = a.len().max(1) as f64;
+    Ceiling {
+        decisions: a.len(),
+        agree: agree as f64 / n,
+        regret: regret / n,
+        net_agree: net_agree as f64 / n,
+        net_regret: net_regret / n,
+    }
+}
+
+/// The decisions in one slice of a [`breakdown`] (indices into the split)
+/// and their report.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Slice {
+    pub name: &'static str,
+    pub members: Vec<usize>,
+    pub report: BenchReport,
+}
+
+/// Which slice of a group a decision falls in, from its entries (the
+/// player deciding first) and whether it was made on the other's roll.
+type Slicer = fn(&[(Vec<State>, bool)], bool) -> usize;
+
+/// The groups a [`breakdown`] reports: name, slice names, slicer.
+const GROUPS: [(&str, &[&str], Slicer); 4] = [
+    ("side", &["active", "passive"], |_, passive| passive as usize),
+    ("choice", &["marks", "strike", "lock"], |e, _| {
+        let differ = |f: fn(&State) -> u8| e.iter().any(|x| f(&x.0[0]) != f(&e[0].0[0]));
+        if differ(|s| s.strikes) {
+            1
+        } else if differ(|s| s.count_locked()) {
+            2
+        } else {
+            0
+        }
+    }),
+    ("stage", &["0-9 marks", "10-24", "25-39", "40+"], |e, _| {
+        let marks: u32 = e[0].0.iter().flat_map(|s| s.row_totals()).map(u32::from).sum();
+        match marks {
+            0..=9 => 0,
+            10..=24 => 1,
+            25..=39 => 2,
+            _ => 3,
+        }
+    }),
+    ("margin", &["0-5 points", "6-15", "16-30", "31+"], |e, _| {
+        match (e[0].0[0].count_points() - e[0].0[1].count_points()).unsigned_abs() {
+            0..=5 => 0,
+            6..=15 => 1,
+            16..=30 => 2,
+            _ => 3,
+        }
+    }),
+];
+
+/// The benchmark of decisions `decs` (predictions `dec_p`, labels from
+/// `k_cand` rollouts) split by side (on my roll or the other's), by what
+/// the candidates differ in (a strike, else a lock, else marks only), by
+/// game stage (marks on both boards) and by the score margin, all of the
+/// best-valued candidate. Each slice's report is [`bench_stats`] of its
+/// own decisions.
+pub fn breakdown(decs: &[DecisionData], dec_p: &[Vec<f32>], k_cand: usize) -> Vec<(&'static str, Vec<Slice>)> {
+    let keys: Vec<(Vec<(Vec<State>, bool)>, bool)> = decs.iter().map(|d| (decision_entries(d).0, d.swapped)).collect();
+    GROUPS
+        .iter()
+        .map(|&(group, names, slicer)| {
+            let mut members = vec![Vec::new(); names.len()];
+            for (i, (e, passive)) in keys.iter().enumerate() {
+                members[slicer(e, *passive)].push(i);
+            }
+            let slices = names
+                .iter()
+                .zip(members)
+                .map(|(&name, members)| {
+                    let d: Vec<DecisionData> = members.iter().map(|&i| decs[i].clone()).collect();
+                    let p: Vec<Vec<f32>> = members.iter().map(|&i| dec_p[i].clone()).collect();
+                    let report = bench_stats(&[], &[], &d, &p, k_cand, k_cand);
+                    Slice { name, members, report }
+                })
+                .collect();
+            (group, slices)
+        })
+        .collect()
+}
+
 /// P(win) for each sample's `me`, `opp` to move next.
 fn predict(net: &WinStrategy, samples: &[&Sample]) -> Vec<f32> {
     samples
@@ -136,18 +257,23 @@ fn predict(net: &WinStrategy, samples: &[&Sample]) -> Vec<f32> {
         .collect()
 }
 
+/// `net`'s P(win) for every candidate of every decision of `split`.
+pub fn decision_predictions(net: &WinStrategy, split: &Split) -> Vec<Vec<f32>> {
+    let cands: Vec<&Sample> = split.decisions.iter().flat_map(|d| &d.samples).collect();
+    let mut flat = predict(net, &cands).into_iter();
+    split
+        .decisions
+        .iter()
+        .map(|d| flat.by_ref().take(d.samples.len()).collect())
+        .collect()
+}
+
 /// `net` measured on `split`, whose labels come from `k_turn` / `k_cand`
 /// rollouts.
 pub fn bench(net: &WinStrategy, split: &Split, k_turn: usize, k_cand: usize) -> BenchReport {
     let turns: Vec<&Sample> = split.turns.iter().collect();
     let turn_p = predict(net, &turns);
-    let cands: Vec<&Sample> = split.decisions.iter().flat_map(|d| &d.samples).collect();
-    let mut flat = predict(net, &cands).into_iter();
-    let dec_p: Vec<Vec<f32>> = split
-        .decisions
-        .iter()
-        .map(|d| flat.by_ref().take(d.samples.len()).collect())
-        .collect();
+    let dec_p = decision_predictions(net, split);
     bench_stats(&split.turns, &turn_p, &split.decisions, &dec_p, k_turn, k_cand)
 }
 
@@ -233,6 +359,101 @@ mod tests {
         assert_eq!((r.diff_rmse, r.own, r.own_se), (0.0, 0.0, 0.0));
         assert_eq!((r.agree, r.regret, r.bias), (1.0, 0.0, 0.0));
         assert!(r.excess.abs() < 1e-9 && r.floor > 0.0);
+    }
+
+    #[test]
+    fn a_hand_worked_ceiling() {
+        // A: the first labels pick 0 (0.6), the second pick 1 (0.58), so
+        // the second labelling loses 0.1 of the first's value; the net picks
+        // 1, the second labels' best. B (swapped): both labellings pick 1
+        // (0.3 / 0.2 for the mover's opponent), the net picks 0 and loses
+        // (1 − 0.2) − (1 − 0.35) = 0.15 of the second labels' value.
+        let a = [dec(&[0.6, 0.5], &[0.1], false), dec(&[0.4, 0.3], &[0.1], true)];
+        let b = [dec(&[0.55, 0.58], &[0.1], false), dec(&[0.35, 0.2], &[0.1], true)];
+        let dec_p = [vec![0.50, 0.53], vec![0.36, 0.42]];
+        let c = ceiling_stats(&a, &b, &dec_p);
+        assert_eq!(c.decisions, 2);
+        assert!(close(c.agree, 0.5) && close(c.regret, 0.05), "{} {}", c.agree, c.regret);
+        assert!(
+            close(c.net_agree, 0.5) && close(c.net_regret, 0.075),
+            "{} {}",
+            c.net_agree,
+            c.net_regret
+        );
+        let same = ceiling_stats(&a, &a, &dec_p);
+        assert_eq!((same.agree, same.regret), (1.0, 0.0));
+    }
+
+    /// A decision whose candidates are `cands` (the mover first) against `opp`.
+    fn board_dec(cands: &[State], opp: State, wins: &[f32], swapped: bool) -> DecisionData {
+        let samples = cands
+            .iter()
+            .zip(wins)
+            .map(|(&me, &w)| {
+                let x = Sample { me, opp, ..s(w, 0.2) };
+                if swapped {
+                    x.swapped()
+                } else {
+                    x
+                }
+            })
+            .collect();
+        DecisionData {
+            samples,
+            pair_var: vec![0.02; cands.len() - 1],
+            swapped,
+        }
+    }
+
+    #[test]
+    fn each_slice_is_the_benchmark_of_its_own_decisions() {
+        use crate::state::Mark;
+        let mark =
+            |s: &mut State, row: usize, ns: &[u8]| ns.iter().for_each(|&n| s.apply_mark(Mark { row, number: n }));
+        let mut early = State::default();
+        mark(&mut early, 0, &[2]);
+        let mut struck = State::default();
+        struck.apply_strike();
+        let mut late = State::default();
+        mark(&mut late, 0, &[2, 3, 4, 5, 6, 7, 8]);
+        mark(&mut late, 1, &[2, 3, 4, 5, 6, 7, 8]);
+        mark(&mut late, 2, &[12, 11, 10, 9, 8, 7]);
+        let mut locked = late;
+        mark(&mut locked, 1, &[12]);
+        assert_eq!((locked.count_locked(), late.count_locked()), (1, 0));
+        let mut ahead = late;
+        mark(&mut ahead, 3, &[12, 11, 10, 9, 8, 7, 6, 5, 4, 3]);
+        let decs = vec![
+            board_dec(&[early, struck], State::default(), &[0.5, 0.4], false),
+            board_dec(&[late, locked], late, &[0.6, 0.7], false),
+            board_dec(&[early, State::default()], late, &[0.3, 0.35], true),
+            board_dec(&[ahead, late], State::default(), &[0.9, 0.8], false),
+        ];
+        let dec_p = vec![vec![0.45, 0.5], vec![0.65, 0.6], vec![0.33, 0.3], vec![0.85, 0.83]];
+        let groups = breakdown(&decs, &dec_p, 64);
+        let names: Vec<&str> = groups.iter().map(|g| g.0).collect();
+        assert_eq!(names, ["side", "choice", "stage", "margin"]);
+        let want = |g: &str| -> Vec<(&str, usize)> {
+            let slices = &groups.iter().find(|x| x.0 == g).unwrap().1;
+            slices.iter().map(|s| (s.name, s.report.decisions)).collect()
+        };
+        assert_eq!(want("side"), [("active", 3), ("passive", 1)]);
+        assert_eq!(want("choice"), [("marks", 2), ("strike", 1), ("lock", 1)]);
+        assert_eq!(
+            want("stage"),
+            [("0-9 marks", 1), ("10-24", 1), ("25-39", 1), ("40+", 1)]
+        );
+        assert_eq!(
+            want("margin"),
+            [("0-5 points", 2), ("6-15", 0), ("16-30", 0), ("31+", 2)]
+        );
+        for (_, slices) in &groups {
+            for sl in slices {
+                let (d, p): (Vec<DecisionData>, Vec<Vec<f32>>) =
+                    sl.members.iter().map(|&i| (decs[i].clone(), dec_p[i].clone())).unzip();
+                assert_eq!(sl.report, bench_stats(&[], &[], &d, &p, 64, 64), "{}", sl.name);
+            }
+        }
     }
 
     #[test]

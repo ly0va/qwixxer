@@ -711,6 +711,10 @@ enum Commands {
         /// win-data dir (a benchmark: --holdout 1, many rollouts)
         #[arg(long)]
         data: String,
+        /// Also label every held-out decision a second time with fresh rollouts (as many as the data's, by the
+        /// data's player): the agreement a perfect predictor could reach. Costs about as much as making the labels
+        #[arg(long)]
+        ceiling: bool,
     },
 }
 
@@ -1402,7 +1406,7 @@ fn main() {
             }
         }
         #[cfg(feature = "dqn")]
-        Some(Commands::WinEval { model, data }) => {
+        Some(Commands::WinEval { model, data, ceiling }) => {
             let fail = |e: String| -> ! {
                 eprintln!("win-eval: {e}");
                 std::process::exit(2);
@@ -1434,6 +1438,50 @@ fn main() {
                 "  win excess {:.5} (floor {:.5}); turn-end bias {:+.4}",
                 r.excess, r.floor, r.bias
             );
+            let dec_p = dqn::win_bench::decision_predictions(&net, &ds.heldout);
+            println!("  by slice:            decisions   own error         picks   regret");
+            for (group, slices) in dqn::win_bench::breakdown(&ds.heldout.decisions, &dec_p, kc) {
+                for (i, sl) in slices.iter().enumerate() {
+                    let r = &sl.report;
+                    println!(
+                        "    {:<7}{:<12}{:>10}   {:.4} ± {:.4}   {:>5.1}%   {:.4}",
+                        if i == 0 { group } else { "" },
+                        sl.name,
+                        r.decisions,
+                        r.own,
+                        r.own_se,
+                        100.0 * r.agree,
+                        r.regret
+                    );
+                }
+            }
+            if ceiling {
+                let player = dqn::win::WinStrategy::load(&ds.meta.player);
+                let decs = &ds.heldout.decisions;
+                let start = std::time::Instant::now();
+                let second = dqn::win_data::relabel_all(&|| player.clone(), decs, ds.meta.seed, kc, &mut |done| {
+                    eprint!(
+                        "\r  relabelling with {kc} rollouts by {}: {done}/{} decisions, {}s",
+                        ds.meta.player,
+                        decs.len(),
+                        start.elapsed().as_secs()
+                    );
+                });
+                eprintln!();
+                let c = dqn::win_bench::ceiling_stats(decs, &second, &dec_p);
+                println!(
+                    "  ceiling: a second {kc}-rollout labelling picks the best-labelled candidate in {:.1}% (regret {:.4});",
+                    100.0 * c.agree,
+                    c.regret
+                );
+                println!(
+                    "    a perfect predictor would pick it in {:.1}%..{:.1}%; the model picks the second labels' best in {:.1}% (regret {:.4})",
+                    100.0 * c.agree,
+                    100.0 * c.agree.sqrt(),
+                    100.0 * c.net_agree,
+                    c.net_regret
+                );
+            }
         }
         #[cfg(feature = "dqn")]
         Some(Commands::WinGate {

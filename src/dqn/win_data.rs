@@ -176,6 +176,66 @@ pub fn label_decision_full(bot: &impl Bot, d: &CandDecision, k: usize) -> Decisi
     }
 }
 
+/// The entries a labelled decision was rolled out from and the seat that
+/// took the first rollout turn, rebuilt from its samples.
+pub fn decision_entries(d: &DecisionData) -> (Vec<(Vec<State>, bool)>, usize) {
+    let entries = d
+        .samples
+        .iter()
+        .map(|s| {
+            let s = if d.swapped { s.swapped() } else { *s };
+            let all = vec![s.me, s.opp];
+            let ended = SimGame::game_over(&all);
+            (all, ended)
+        })
+        .collect();
+    (entries, if d.swapped { 0 } else { 1 })
+}
+
+/// `d` labelled again with `k` CRN rollouts by `bot` from `seed`: a fresh
+/// seed gives labels independent of the stored ones.
+pub fn relabel(bot: &impl Bot, d: &DecisionData, seed: u64, k: usize) -> DecisionData {
+    let (entries, first_active) = decision_entries(d);
+    label_decision_full(
+        bot,
+        &CandDecision {
+            entries,
+            first_active,
+            seed,
+        },
+        k,
+    )
+}
+
+/// The rollout seed [`relabel_all`] gives decision `i`.
+pub fn relabel_seed(seed: u64, i: usize) -> u64 {
+    splitmix64(seed ^ splitmix64(i as u64 ^ 0xCE11_0003))
+}
+
+/// Every decision of `decs` relabelled in parallel ([`relabel`], seeded
+/// [`relabel_seed`]), in order, telling `progress` how many are done after
+/// each chunk.
+pub fn relabel_all<P: Bot + Clone + 'static>(
+    player: &(dyn Fn() -> P + Sync),
+    decs: &[DecisionData],
+    seed: u64,
+    k: usize,
+    progress: &mut dyn FnMut(usize),
+) -> Vec<DecisionData> {
+    let chunk = batch_cap() as usize;
+    let mut out = Vec::with_capacity(decs.len());
+    for start in (0..decs.len()).step_by(chunk) {
+        let end = (start + chunk).min(decs.len());
+        let part: Vec<DecisionData> = (start..end)
+            .into_par_iter()
+            .map_init(player, |p, i| relabel(&*p, &decs[i], relabel_seed(seed, i), k))
+            .collect();
+        out.extend(part);
+        progress(end);
+    }
+    out
+}
+
 /// One side of the split: turn ends and labelled decisions, in game order.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Split {
@@ -836,6 +896,60 @@ mod tests {
             let want = if first_active == 0 { plain.swapped() } else { plain };
             assert_eq!(full.samples[0], want);
         }
+    }
+
+    #[test]
+    fn a_decision_rebuilt_from_its_samples_relabels_exactly() {
+        let bot = PairStrategy::load("pair_model");
+        let opp = State::default();
+        let mut marked = State::default();
+        marked.apply_mark(Mark { row: 0, number: 2 });
+        let mut done = State::default();
+        for _ in 0..4 {
+            done.apply_strike();
+        }
+        let live = vec![
+            phase2_entry(State::default(), &[opp]),
+            phase2_entry(done, &[opp]),
+            phase2_entry(marked, &[opp]),
+        ];
+        let me_next = vec![phase2_entry(marked, &[opp]), phase2_entry(State::default(), &[opp])];
+        for (entries, first_active) in [(live, 1), (me_next, 0)] {
+            let c = CandDecision {
+                entries,
+                first_active,
+                seed: 9,
+            };
+            let d = label_decision_full(&bot, &c, 8);
+            let (entries, first) = decision_entries(&d);
+            assert_eq!(first, first_active);
+            assert_eq!(entries.len(), c.entries.len());
+            for ((a, x), (b, y)) in entries.iter().zip(&c.entries) {
+                assert_eq!(x, y);
+                assert!(a.iter().zip(b).all(|(s, t)| s.to_bytes() == t.to_bytes()));
+            }
+            assert_eq!(relabel(&bot, &d, 9, 8), d);
+            assert_ne!(relabel(&bot, &d, 10, 8), d, "a new seed rolls new games");
+        }
+    }
+
+    #[test]
+    fn relabel_all_gives_each_decision_its_own_seed_in_order() {
+        let bot = PairStrategy::load("pair_model");
+        let ds = generate(&cfg(40, 1.0, 5), &|| PairStrategy::load("pair_model"));
+        let decs = &ds.heldout.decisions;
+        assert!(decs.len() > 2);
+        let mut seen = Vec::new();
+        let all = relabel_all(&|| PairStrategy::load("pair_model"), decs, 77, 4, &mut |done| {
+            seen.push(done)
+        });
+        let one: Vec<DecisionData> = decs
+            .iter()
+            .enumerate()
+            .map(|(i, d)| relabel(&bot, d, relabel_seed(77, i), 4))
+            .collect();
+        assert_eq!(all, one);
+        assert_eq!(seen.last(), Some(&decs.len()));
     }
 
     fn tmp(name: &str) -> String {
