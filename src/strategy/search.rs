@@ -616,6 +616,20 @@ pub(crate) fn rollout_final_states(
     first_active: usize,
     stratify: bool,
 ) -> Vec<Vec<Vec<State>>> {
+    rollout_finals_and_turns(bot, entries, seed, k, first_active, stratify).0
+}
+
+/// [`rollout_final_states`] and the turns each rollout took to end (one 0
+/// for an ended entry), in the same layout.
+#[allow(clippy::type_complexity)]
+pub(crate) fn rollout_finals_and_turns(
+    bot: &impl Bot,
+    entries: &[(Vec<State>, bool)],
+    seed: u64,
+    k: usize,
+    first_active: usize,
+    stratify: bool,
+) -> (Vec<Vec<Vec<State>>>, Vec<Vec<u16>>) {
     let n = entries[0].0.len();
     let mut sims: Vec<SimGame> = Vec::new();
     let mut sim_owner: Vec<usize> = Vec::new();
@@ -636,11 +650,21 @@ pub(crate) fn rollout_final_states(
         }
     }
     let mut driver = BatchedRollouts::new(bot, sims);
-    let mut turns = 0;
+    let (mut turns, mut lasted) = (0, vec![0u16; sim_owner.len()]);
     while !driver.all_over() {
+        for (t, sim) in lasted.iter_mut().zip(&driver.sims) {
+            *t += !sim.over as u16;
+        }
         driver.step_turn();
         turns += 1;
         assert!(turns <= 200, "rollout exceeded 200 turns — game-end invariant violated");
+    }
+    let mut counts: Vec<Vec<u16>> = entries
+        .iter()
+        .map(|(_, ended)| if *ended { vec![0] } else { Vec::with_capacity(k) })
+        .collect();
+    for (&owner, &t) in sim_owner.iter().zip(&lasted) {
+        counts[owner].push(t);
     }
     let mut out: Vec<Vec<Vec<State>>> = entries
         .iter()
@@ -655,7 +679,7 @@ pub(crate) fn rollout_final_states(
     for (i, sim) in driver.sims.iter().enumerate() {
         out[sim_owner[i]].push(sim.states.clone());
     }
-    out
+    (out, counts)
 }
 
 /// Blended score of candidate `i` minus candidate `j` from their CRN-paired
@@ -2146,6 +2170,46 @@ mod tests {
                     s2.iter().map(|s| s.count_points()).collect::<Vec<_>>()
                 );
             }
+        }
+    }
+
+    #[test]
+    fn rollouts_count_the_turns_each_game_lasted() {
+        let bot = test_bot();
+        let b = State::default();
+        let mut done = State::default();
+        for _ in 0..4 {
+            done.apply_strike();
+        }
+        let entries = vec![phase2_entry(State::default(), &[b]), phase2_entry(done, &[b])];
+        let (finals, turns) = rollout_finals_and_turns(&bot, &entries, 7, 8, 1, false);
+        let bytes = |f: &Vec<Vec<Vec<State>>>| -> Vec<Vec<u8>> {
+            f.iter().flatten().flatten().map(|s| s.to_bytes().to_vec()).collect()
+        };
+        assert_eq!(
+            bytes(&finals),
+            bytes(&rollout_final_states(&bot, &entries, 7, 8, 1, false))
+        );
+        assert_eq!(turns[1], vec![0], "an ended entry has no turns left");
+        assert_eq!(turns[0].len(), 8);
+        // Each count is the turns one sim takes on its own to reach its end.
+        for (s, &t) in turns[0].iter().enumerate() {
+            let sim = SimGame {
+                states: entries[0].0.clone(),
+                active: 1,
+                rngs: (0..2)
+                    .map(|p| SmallRng::seed_from_u64(rollout_seed(false, 7, s, p)))
+                    .collect(),
+                over: false,
+            };
+            let mut driver = BatchedRollouts::new(&bot, vec![sim]);
+            let mut n = 0u16;
+            while !driver.all_over() {
+                driver.step_turn();
+                n += 1;
+            }
+            assert_eq!(t, n, "rollout {s}");
+            assert!(n >= 4, "a whole game from the start took {n} turns");
         }
     }
 

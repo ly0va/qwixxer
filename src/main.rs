@@ -640,6 +640,12 @@ enum Commands {
         /// Tempo head: the value of moving next (saved to tempo.mpk, used in play)
         #[arg(long)]
         tempo: bool,
+        /// Each row's points in its tokens (needs --thermo)
+        #[arg(long)]
+        points: bool,
+        /// Game-end clock head: the turns left, fitted alongside and not saved (needs data with that label)
+        #[arg(long)]
+        clock: bool,
         #[arg(long, default_value = "10")]
         epochs: usize,
         /// Peak learning rate (cosine decay to 0)
@@ -654,6 +660,9 @@ enum Commands {
         /// Aux loss weights: marks,strikes,difference
         #[arg(long, value_delimiter = ',', default_value = "1.0,0.5,0.5")]
         aux_weights: Vec<f32>,
+        /// The clock head's loss weight
+        #[arg(long, default_value = "0.5")]
+        clock_weight: f32,
         /// Width of a from-scratch net
         #[arg(long, default_value = "64")]
         width: usize,
@@ -1372,11 +1381,14 @@ fn main() {
             thermo,
             aux,
             tempo,
+            points,
+            clock,
             epochs,
             lr,
             wd,
             ema,
             aux_weights,
+            clock_weight,
             width,
             seed,
             legacy_fit,
@@ -1388,11 +1400,14 @@ fn main() {
                 thermo,
                 aux,
                 tempo,
+                points,
+                clock,
                 epochs,
                 lr,
                 wd,
                 ema,
                 aux_weights,
+                clock_weight,
                 width,
                 seed,
                 legacy: legacy_fit,

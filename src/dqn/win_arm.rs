@@ -4,10 +4,7 @@
 //!
 //! Design: docs/superpowers/specs/2026-10-19-win-thermo-aux-design.md
 
-use crate::dqn::win::{
-    flat_tensor, sigmoid, swap_input, swap_thermo, thermo_input, win_input, AuxHeads, WinModel, WIN_INPUTS,
-    WIN_INPUTS_T,
-};
+use crate::dqn::win::{flat_tensor, sigmoid, AuxHeads, Encoding, WinModel};
 use crate::dqn::win::{load_tempo, save_aux, save_tempo, widen_to_thermo, zero_tempo, WinModelConfig};
 use crate::dqn::win_data::{self, Dataset};
 use crate::dqn::win_data::{DecisionData, Sample, Split};
@@ -21,7 +18,12 @@ use burn::{
     module::AutodiffModule,
     optim::{AdamConfig, AdamWConfig, GradientsParams, Optimizer},
 };
-use burn::{module::Param, nn::Linear, prelude::*, tensor::TensorData};
+use burn::{
+    module::Param,
+    nn::{Linear, LinearConfig},
+    prelude::*,
+    tensor::TensorData,
+};
 use rand::{rngs::SmallRng, seq::SliceRandom, SeedableRng};
 use std::path::Path;
 
@@ -34,16 +36,29 @@ pub struct ArmModel<B: Backend> {
     pub aux: Option<AuxHeads<B>>,
     /// The tempo head when the arm has one; saved to `tempo.mpk`.
     pub tempo: Option<Linear<B>>,
+    /// The game-end clock head when the arm has one: [h(x) | h(swap x)]
+    /// (2W) → turns left / [`CLOCK_SCALE`]. Fitted alongside, not saved.
+    pub clock: Option<Linear<B>>,
+}
+
+/// The clock head's target is the turns left divided by this.
+pub const CLOCK_SCALE: f32 = 50.0;
+
+/// A fresh clock head for a net of width `width`.
+pub fn clock_head<B: Backend>(width: usize, device: &B::Device) -> Linear<B> {
+    LinearConfig::new(2 * width, 1).with_bias(true).init(device)
 }
 
 /// Outputs for n input rows: the antisymmetric logit `[n, 1]`, and with
 /// heads the row marks `[n, 8]` (mine red…blue, then the opponent's),
-/// strikes `[n, 2]` (mine, the opponent's) and difference `[n, 1]`.
+/// strikes `[n, 2]` (mine, the opponent's) and difference `[n, 1]`, and
+/// with a clock head the scaled turns left `[n, 1]`.
 pub struct ArmOut<B: Backend> {
     pub z: Tensor<B, 2>,
     pub marks: Option<Tensor<B, 2>>,
     pub strikes: Option<Tensor<B, 2>>,
     pub diff: Option<Tensor<B, 2>>,
+    pub clock: Option<Tensor<B, 2>>,
 }
 
 /// Targets in [`ArmOut`]'s shapes.
@@ -52,6 +67,8 @@ pub struct Targets<B: Backend> {
     pub marks: Tensor<B, 2>,
     pub strikes: Tensor<B, 2>,
     pub diff: Tensor<B, 2>,
+    /// Turns left / [`CLOCK_SCALE`] (0 where a sample has no label).
+    pub turns: Tensor<B, 2>,
 }
 
 impl<B: Backend> ArmModel<B> {
@@ -69,12 +86,19 @@ impl<B: Backend> ArmModel<B> {
             }
             None => z,
         };
+        let clock = self.clock.as_ref().map(|c| {
+            c.forward(Tensor::cat(
+                vec![h.clone().narrow(0, 0, n), h.clone().narrow(0, n, n)],
+                1,
+            ))
+        });
         let Some(aux) = &self.aux else {
             return ArmOut {
                 z,
                 marks: None,
                 strikes: None,
                 diff: None,
+                clock,
             };
         };
         let w = h.dims()[1];
@@ -90,35 +114,31 @@ impl<B: Backend> ArmModel<B> {
             marks: Some(marks),
             strikes: Some(strikes),
             diff: Some(diff),
+            clock,
         }
     }
 }
 
-/// Inputs and swapped inputs of (me, opp) boards, flat, and their width.
-pub fn encode(boards: &[(&State, &State)], thermo: bool) -> (Vec<f32>, Vec<f32>, usize) {
+/// Inputs and swapped inputs of (me, opp) boards in encoding `enc`, flat,
+/// and their width.
+pub fn encode(boards: &[(&State, &State)], enc: Encoding) -> (Vec<f32>, Vec<f32>, usize) {
     let (mut x, mut s) = (Vec::new(), Vec::new());
     for &(me, opp) in boards {
-        if thermo {
-            let v = thermo_input(me, opp);
-            x.extend_from_slice(&v);
-            s.extend_from_slice(&swap_thermo(&v));
-        } else {
-            let v = win_input(me, opp);
-            x.extend_from_slice(&v);
-            s.extend_from_slice(&swap_input(&v));
-        }
+        let (v, w) = enc.input_and_swap(me, opp);
+        x.extend(v);
+        s.extend(w);
     }
-    (x, s, if thermo { WIN_INPUTS_T } else { WIN_INPUTS })
+    (x, s, enc.inputs())
 }
 
 /// Inputs, swapped inputs and targets of `samples` as tensors.
 pub fn tensors<B: Backend>(
     samples: &[&Sample],
-    thermo: bool,
+    enc: Encoding,
     device: &B::Device,
 ) -> (Tensor<B, 2>, Tensor<B, 2>, Targets<B>) {
     let boards: Vec<(&State, &State)> = samples.iter().map(|s| (&s.me, &s.opp)).collect();
-    let (x, s, d) = encode(&boards, thermo);
+    let (x, s, d) = encode(&boards, enc);
     let n = samples.len();
     let col = |f: &dyn Fn(&Sample) -> Vec<f32>, w: usize| {
         let v: Vec<f32> = samples.iter().flat_map(|s| f(s)).collect();
@@ -129,13 +149,15 @@ pub fn tensors<B: Backend>(
         marks: col(&|s| s.marks.to_vec(), 8),
         strikes: col(&|s| s.strikes.to_vec(), 2),
         diff: col(&|s| vec![s.diff], 1),
+        turns: col(&|s| vec![s.turns.unwrap_or(0.0) / CLOCK_SCALE], 1),
     };
     (flat_tensor(&x, d, device), flat_tensor(&s, d, device), t)
 }
 
 /// (total loss, win BCE): BCE(win) + w[0]·MSE(marks) + w[1]·MSE(strikes) +
-/// w[2]·MSE(difference), the last three only with heads.
-pub fn arm_loss<B: Backend>(out: ArmOut<B>, t: &Targets<B>, w: &[f32]) -> (Tensor<B, 1>, Tensor<B, 1>) {
+/// w[2]·MSE(difference), those three only with heads, + `clock_w`·MSE(turns
+/// left) with a clock head.
+pub fn arm_loss<B: Backend>(out: ArmOut<B>, t: &Targets<B>, w: &[f32], clock_w: f32) -> (Tensor<B, 1>, Tensor<B, 1>) {
     let win = bce_logits(out.z, t.win.clone());
     let mse = |p: Tensor<B, 2>, y: Tensor<B, 2>| {
         let d = p - y;
@@ -147,6 +169,9 @@ pub fn arm_loss<B: Backend>(out: ArmOut<B>, t: &Targets<B>, w: &[f32]) -> (Tenso
             + mse(m, t.marks.clone()).mul_scalar(w[0])
             + mse(s, t.strikes.clone()).mul_scalar(w[1])
             + mse(d, t.diff.clone()).mul_scalar(w[2]);
+    }
+    if let Some(c) = out.clock {
+        total = total + mse(c, t.turns.clone()).mul_scalar(clock_w);
     }
     (total, win)
 }
@@ -202,6 +227,9 @@ fn linears<B: Backend>(m: &ArmModel<B>) -> Vec<&Linear<B>> {
     if let Some(t) = &m.tempo {
         v.push(t);
     }
+    if let Some(c) = &m.clock {
+        v.push(c);
+    }
     v
 }
 
@@ -220,6 +248,9 @@ fn linears_mut<B: Backend>(m: &mut ArmModel<B>) -> Vec<&mut Linear<B>> {
     }
     if let Some(t) = &mut m.tempo {
         v.push(t);
+    }
+    if let Some(c) = &mut m.clock {
+        v.push(c);
     }
     v
 }
@@ -307,18 +338,23 @@ pub struct Preds {
     pub marks: Vec<[f32; 8]>,
     pub strikes: Vec<[f32; 2]>,
     pub diff: Vec<f32>,
+    /// Turns left, with a clock head.
+    pub clock: Vec<f32>,
 }
 
 pub fn predict(model: &ArmModel<MyBackend>, samples: &[&Sample]) -> Preds {
     let device = Default::default();
-    let thermo = model.net.is_thermo();
+    let enc = model.net.encoding();
     let mut out = Preds::default();
     let v = |t: Tensor<MyBackend, 2>| t.into_data().to_vec::<f32>().unwrap();
     for chunk in samples.chunks(4096) {
         let boards: Vec<(&State, &State)> = chunk.iter().map(|s| (&s.me, &s.opp)).collect();
-        let (x, s, d) = encode(&boards, thermo);
+        let (x, s, d) = encode(&boards, enc);
         let o = model.forward(flat_tensor(&x, d, &device), flat_tensor(&s, d, &device));
         out.p.extend(v(o.z).into_iter().map(sigmoid));
+        if let Some(c) = o.clock {
+            out.clock.extend(v(c).into_iter().map(|c| c * CLOCK_SCALE));
+        }
         if let (Some(m), Some(st), Some(df)) = (o.marks, o.strikes, o.diff) {
             out.marks
                 .extend(v(m).chunks(8).map(|c| <[f32; 8]>::try_from(c).unwrap()));
@@ -341,6 +377,8 @@ pub struct EvalReport {
     pub marks: Option<f64>,
     pub strikes: Option<f64>,
     pub diff: Option<f64>,
+    /// RMSE of the clock head's turns left, in turns.
+    pub clock: Option<f64>,
     pub diffs: Option<DiffReport>,
 }
 
@@ -365,6 +403,7 @@ pub fn evaluate(model: &ArmModel<MyBackend>, split: &Split, k_turn: usize, k_can
     let strikes =
         has_aux.then(|| mean(&|i| (0..2).map(|j| sq(all[i].strikes[j], pr.strikes[i][j])).sum::<f64>() / 2.0));
     let diff = has_aux.then(|| mean(&|i| sq(all[i].diff, pr.diff[i])));
+    let clock = (!pr.clock.is_empty()).then(|| mean(&|i| sq(all[i].turns.unwrap_or(f32::NAN), pr.clock[i])).sqrt());
     // The decisions' predictions follow the turn ends', in order.
     let mut at = split.turns.len();
     let mut preds: Vec<Vec<f32>> = Vec::new();
@@ -388,6 +427,7 @@ pub fn evaluate(model: &ArmModel<MyBackend>, split: &Split, k_turn: usize, k_can
         marks,
         strikes,
         diff,
+        clock,
         diffs: diff_stats_views(&preds, &views, k_cand),
     }
 }
@@ -416,7 +456,7 @@ pub const BATCH: usize = 1024;
 const TRAIN_SUBSET: usize = 50_000;
 
 pub const FIT_HEADER: &str = "epoch,train_excess,heldout_excess,heldout_floor,heldout_marks,heldout_strikes,\
-heldout_diff,diff_rmse,diff_noise,flip_share,best,elapsed_s";
+heldout_diff,diff_rmse,diff_noise,flip_share,best,elapsed_s,heldout_clock";
 
 /// `win-arm` settings.
 pub struct ArmCfg {
@@ -432,6 +472,11 @@ pub struct ArmCfg {
     pub aux: bool,
     /// Tempo head (the value of moving next).
     pub tempo: bool,
+    /// Each row's points in its tokens (needs `thermo`).
+    pub points: bool,
+    /// A game-end clock head: the turns left, fitted alongside (needs a
+    /// dataset with the turns-left label; the head is not saved).
+    pub clock: bool,
     pub epochs: usize,
     /// Peak learning rate (the constant one with `legacy`).
     pub lr: f64,
@@ -441,6 +486,8 @@ pub struct ArmCfg {
     pub ema: f32,
     /// Aux loss weights: marks, strikes, difference.
     pub aux_weights: Vec<f32>,
+    /// The clock head's loss weight.
+    pub clock_weight: f32,
     /// Width of a from-scratch net.
     pub width: usize,
     pub seed: u64,
@@ -467,8 +514,17 @@ impl ArmCfg {
         if self.aux_weights.len() != 3 || self.aux_weights.iter().any(|&w| !(w >= 0.0)) {
             return Err("--aux-weights takes 3 non-negative weights: marks,strikes,difference".into());
         }
-        if self.legacy && (self.thermo || self.aux || self.tempo) {
-            return Err("--legacy-fit refits the plain net without aux heads: drop --thermo, --aux and --tempo".into());
+        if self.legacy && (self.thermo || self.aux || self.tempo || self.points || self.clock) {
+            return Err(
+                "--legacy-fit refits the plain net without aux heads: drop --thermo, --aux, --tempo, --points and --clock"
+                    .into(),
+            );
+        }
+        if self.points && !self.thermo {
+            return Err("--points needs --thermo".into());
+        }
+        if !(self.clock_weight >= 0.0) {
+            return Err("--clock-weight must be at least 0".into());
         }
         for f in ["meta.json", "data.bin"] {
             if !Path::new(&format!("{}/{f}", self.data)).exists() {
@@ -489,6 +545,13 @@ impl ArmCfg {
                 }
                 if c.is_tempo() && !self.tempo {
                     return Err(format!("--init {init} has a tempo head: add --tempo"));
+                }
+                if c.has_points() != self.points {
+                    return Err(if self.points {
+                        format!("--init {init} is not a points net: drop --points, or fit from scratch")
+                    } else {
+                        format!("--init {init} is a points net: add --points")
+                    });
                 }
             }
             None if self.width == 0 => return Err("--width must be at least 1".into()),
@@ -527,6 +590,20 @@ pub fn fit(cfg: &ArmCfg) -> Result<FitSummary, String> {
     if ds.train.turns.is_empty() && ds.train.decisions.is_empty() {
         return Err(format!("--data {}: no training games", cfg.data));
     }
+    if cfg.clock {
+        let labelled = [&ds.train, &ds.heldout].iter().all(|sp| {
+            sp.turns
+                .iter()
+                .chain(sp.decisions.iter().flat_map(|d| &d.samples))
+                .all(|s| s.turns.is_some())
+        });
+        if !labelled {
+            return Err(format!(
+                "--data {}: --clock needs the turns-left label (make the data with this build's win-data)",
+                cfg.data
+            ));
+        }
+    }
     let device = Default::default();
     <Ad as Backend>::seed(&device, cfg.seed);
     let net: WinModel<Ad> = match &cfg.init {
@@ -541,6 +618,7 @@ pub fn fit(cfg: &ArmCfg) -> Result<FitSummary, String> {
         None => WinModelConfig::new()
             .with_width(cfg.width)
             .with_thermo(cfg.thermo.then_some(true))
+            .with_points(cfg.points.then_some(true))
             .init(&device),
     };
     let width = net.row1.weight.shape().dims[1];
@@ -555,12 +633,14 @@ pub fn fit(cfg: &ArmCfg) -> Result<FitSummary, String> {
     let mcfg = WinModelConfig::new()
         .with_width(width)
         .with_thermo(net.is_thermo().then_some(true))
+        .with_points((net.encoding() == Encoding::Points).then_some(true))
         .with_aux(cfg.aux.then_some(true))
         .with_tempo(cfg.tempo.then_some(true));
     let model = ArmModel {
         net,
         aux: cfg.aux.then(|| AuxHeads::new(width, &device)),
         tempo,
+        clock: cfg.clock.then(|| clock_head(width, &device)),
     };
     std::fs::create_dir_all(&cfg.out).map_err(|e| format!("{}: {e}", cfg.out))?;
     if cfg.legacy {
@@ -592,7 +672,7 @@ fn run<O: Optimizer<ArmModel<Ad>, Ad>>(
         .iter()
         .chain(ds.train.decisions.iter().flat_map(|d| &d.samples))
         .collect();
-    let thermo = model.net.is_thermo();
+    let enc = model.net.encoding();
     let total = cfg.epochs * samples.len().div_ceil(BATCH);
     let mut ema = Ema::new(&model, if cfg.legacy { 0.0 } else { cfg.ema });
     let train_sub = subset(&ds.train, TRAIN_SUBSET);
@@ -605,8 +685,8 @@ fn run<O: Optimizer<ArmModel<Ad>, Ad>>(
         order.shuffle(&mut SmallRng::seed_from_u64(cfg.seed.wrapping_add(epoch as u64)));
         for chunk in order.chunks(BATCH) {
             let batch: Vec<&Sample> = chunk.iter().map(|&i| samples[i]).collect();
-            let (x, s, t) = tensors::<Ad>(&batch, thermo, &device);
-            let (loss, _) = arm_loss(model.forward(x, s), &t, &cfg.aux_weights);
+            let (x, s, t) = tensors::<Ad>(&batch, enc, &device);
+            let (loss, _) = arm_loss(model.forward(x, s), &t, &cfg.aux_weights, cfg.clock_weight);
             let grads = GradientsParams::from_grads(loss.backward(), &model);
             let lr = if cfg.legacy {
                 cfg.lr
@@ -633,7 +713,7 @@ fn run<O: Optimizer<ArmModel<Ad>, Ad>>(
         let opt = |v: Option<f64>| v.map(|v| format!("{v:.6}")).unwrap_or_default();
         let d = held.diffs.as_ref();
         let row = format!(
-            "{},{train_excess:.6},{:.6},{:.6},{},{},{},{},{},{},{},{}",
+            "{},{train_excess:.6},{:.6},{:.6},{},{},{},{},{},{},{},{},{}",
             epoch + 1,
             held.excess,
             held.floor,
@@ -644,7 +724,8 @@ fn run<O: Optimizer<ArmModel<Ad>, Ad>>(
             opt(d.map(|d| d.diff_noise as f64)),
             opt(d.map(|d| d.flip_share as f64)),
             is_best as u8,
-            start.elapsed().as_secs()
+            start.elapsed().as_secs(),
+            opt(held.clock)
         );
         {
             use std::io::Write;
@@ -655,11 +736,14 @@ fn run<O: Optimizer<ArmModel<Ad>, Ad>>(
             writeln!(f, "{row}").map_err(|e| format!("{log_path}: {e}"))?;
         }
         println!(
-            "Epoch {:>2}: train excess {train_excess:.5}, held-out excess {:.5} (floor {:.5}){}{}, {}s",
+            "Epoch {:>2}: train excess {train_excess:.5}, held-out excess {:.5} (floor {:.5}){}{}{}, {}s",
             epoch + 1,
             held.excess,
             held.floor,
             d.map(|d| format!(", diff RMSE {:.4} (noise {:.4})", d.diff_rmse, d.diff_noise))
+                .unwrap_or_default(),
+            held.clock
+                .map(|c| format!(", clock RMSE {c:.2} turns"))
                 .unwrap_or_default(),
             if is_best { " → best" } else { "" },
             start.elapsed().as_secs()
@@ -683,7 +767,7 @@ fn run<O: Optimizer<ArmModel<Ad>, Ad>>(
 mod tests {
     use super::*;
     use crate::dqn::pair::PairStrategy;
-    use crate::dqn::win::{save_tempo, zero_tempo, WinModelConfig, TOKEN, T_TOKEN};
+    use crate::dqn::win::{save_tempo, win_input, zero_tempo, WinModelConfig, TOKEN, T_TOKEN, WIN_INPUTS};
     use crate::dqn::win::{AuxPred, ManualWinNet, WinStrategy};
     use crate::dqn::win_data::{generate, load, save, DataCfg};
     use crate::dqn::win_distill::sample_var;
@@ -709,6 +793,7 @@ mod tests {
             net,
             aux: aux.then(|| AuxHeads::new(8, &device)),
             tempo: None,
+            clock: None,
         }
     }
 
@@ -757,8 +842,8 @@ mod tests {
             let m = random_arm(31, thermo, true);
             let run =
                 |x: &[f32], s: &[f32], d: usize| m.forward(flat_tensor(x, d, &device), flat_tensor(s, d, &device));
-            let (x, s, d) = encode(&[(&a, &b)], thermo);
-            let (xr, sr, _) = encode(&[(&b, &a)], thermo);
+            let (x, s, d) = encode(&[(&a, &b)], m.net.encoding());
+            let (xr, sr, _) = encode(&[(&b, &a)], m.net.encoding());
             let (o, r) = (run(&x, &s, d), run(&xr, &sr, d));
             let (zo, zr) = (
                 o.z.into_data().to_vec::<f32>().unwrap(),
@@ -798,25 +883,33 @@ mod tests {
             marks: Some(t2(vec![0.0; 8], 8)),
             strikes: Some(t2(vec![0.0; 2], 2)),
             diff: Some(t2(vec![0.0], 1)),
+            clock: None,
         };
         let t = Targets {
             win: t2(vec![1.0], 1),
             marks: t2(vec![0.5; 8], 8),
             strikes: t2(vec![1.0; 2], 2),
             diff: t2(vec![0.2], 1),
+            turns: t2(vec![0.4], 1),
         };
         let scalar = |x: Tensor<MyBackend, 1>| x.into_scalar().elem::<f32>();
-        let (total, win) = arm_loss(out(), &t, &[1.0, 0.5, 0.5]);
+        let (total, win) = arm_loss(out(), &t, &[1.0, 0.5, 0.5], 2.0);
         let ln2 = std::f32::consts::LN_2;
         assert!((scalar(win) - ln2).abs() < 1e-6);
         assert!((scalar(total) - (ln2 + 0.25 + 0.5 + 0.02)).abs() < 1e-6);
+        let clocked = ArmOut {
+            clock: Some(t2(vec![0.0], 1)),
+            ..out()
+        };
+        let (total, _) = arm_loss(clocked, &t, &[1.0, 0.5, 0.5], 2.0);
+        assert!((scalar(total) - (ln2 + 0.25 + 0.5 + 0.02 + 2.0 * 0.16)).abs() < 1e-6);
         let plain = ArmOut {
             marks: None,
             strikes: None,
             diff: None,
             ..out()
         };
-        assert!((scalar(arm_loss(plain, &t, &[1.0, 0.5, 0.5]).0) - ln2).abs() < 1e-6);
+        assert!((scalar(arm_loss(plain, &t, &[1.0, 0.5, 0.5], 2.0).0) - ln2).abs() < 1e-6);
     }
 
     #[test]
@@ -881,7 +974,7 @@ mod tests {
         ema.update(&m);
         let back = ema.apply(m.clone());
         let (a, b) = boards();
-        let (x, s, d) = encode(&[(&a, &b)], true);
+        let (x, s, d) = encode(&[(&a, &b)], Encoding::Thermo);
         let device = Default::default();
         let z = |m: &ArmModel<MyBackend>| {
             m.forward(flat_tensor(&x, d, &device), flat_tensor(&s, d, &device))
@@ -907,6 +1000,7 @@ mod tests {
                 marks: [0.0; 8],
                 strikes: [0.0; 2],
                 diff: 0.0,
+                turns: Some(20.0),
             })
             .collect();
         let refs: Vec<&Sample> = raw.iter().collect();
@@ -1004,11 +1098,14 @@ mod tests {
             thermo: false,
             aux: false,
             tempo: false,
+            points: false,
+            clock: false,
             epochs: 2,
             lr: 3e-4,
             wd: 1e-4,
             ema: 0.999,
             aux_weights: vec![1.0, 0.5, 0.5],
+            clock_weight: 1.0,
             width: 4,
             seed: 42,
             legacy: false,
@@ -1070,7 +1167,7 @@ mod tests {
         let rows: Vec<Vec<&str>> = log.lines().skip(1).map(|l| l.split(',').collect()).collect();
         assert_eq!(rows.len(), 2);
         for r in &rows {
-            assert_eq!(r.len(), 12);
+            assert_eq!(r.len(), 13);
             assert!(
                 r[4..10].iter().all(|v| !v.is_empty()),
                 "aux and diff columns filled: {r:?}"
@@ -1105,6 +1202,66 @@ mod tests {
         })
         .unwrap();
         assert!(WinStrategy::load(&out).net.is_thermo());
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn a_points_arm_fits_and_saves_a_points_net() {
+        let base = tmp("points");
+        let (data, _) = tiny(&base);
+        let out = format!("{base}/arm");
+        fit(&ArmCfg {
+            thermo: true,
+            aux: true,
+            tempo: true,
+            points: true,
+            epochs: 1,
+            ..arm(&data, out.clone(), None)
+        })
+        .unwrap();
+        assert!(WinModelConfig::load(format!("{out}/config.json")).unwrap().has_points());
+        let bot = WinStrategy::load(&out);
+        assert_eq!(bot.net.encoding(), Encoding::Points);
+        let (a, b) = (State::default(), State::default());
+        assert!(bot.net.aux_states(&a, &b).is_some() && bot.net.has_tempo());
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn a_clock_arm_fits_and_reports_the_clock_error() {
+        let base = tmp("clock");
+        let (data, _) = tiny(&base);
+        let out = format!("{base}/arm");
+        fit(&ArmCfg {
+            thermo: true,
+            aux: true,
+            clock: true,
+            epochs: 1,
+            ..arm(&data, out.clone(), None)
+        })
+        .unwrap();
+        let log = std::fs::read_to_string(format!("{out}/fit.csv")).unwrap();
+        let row: Vec<&str> = log.lines().nth(1).unwrap().split(',').collect();
+        assert_eq!(row.len(), 13);
+        assert!(row[12].parse::<f64>().unwrap() > 0.0, "clock RMSE in turns: {row:?}");
+        assert!(WinStrategy::load(&out).net.is_thermo());
+        // Data without the label is refused.
+        let mut ds = load(&data).unwrap();
+        for sp in [&mut ds.train, &mut ds.heldout] {
+            sp.turns.iter_mut().for_each(|s| s.turns = None);
+            for d in &mut sp.decisions {
+                d.samples.iter_mut().for_each(|s| s.turns = None);
+            }
+        }
+        let bare = format!("{base}/bare");
+        save(&bare, &ds).unwrap();
+        let err = fit(&ArmCfg {
+            thermo: true,
+            clock: true,
+            ..arm(&bare, format!("{base}/arm2"), None)
+        })
+        .unwrap_err();
+        assert!(err.contains("turns-left label"), "{err}");
         std::fs::remove_dir_all(&base).unwrap();
     }
 
@@ -1172,6 +1329,17 @@ mod tests {
             ..base_cfg()
         })
         .contains("add --thermo"));
+        assert!(err(ArmCfg {
+            points: true,
+            ..base_cfg()
+        })
+        .contains("--points needs --thermo"));
+        assert!(err(ArmCfg {
+            thermo: true,
+            points: true,
+            ..base_cfg()
+        })
+        .contains("not a points net"));
         // A dataset without held-out games is refused when the fit loads it.
         let mut ds = load(&data).unwrap();
         ds.heldout = Split::default();
@@ -1192,7 +1360,7 @@ mod tests {
         for thermo in [false, true] {
             let m = random_arm(35, thermo, true);
             let net = ManualWinNet::from_model(&m.net).with_aux(m.aux.as_ref().unwrap());
-            let (x, s, d) = encode(&[(&a, &b)], thermo);
+            let (x, s, d) = encode(&[(&a, &b)], m.net.encoding());
             let o = m.forward(flat_tensor(&x, d, &device), flat_tensor(&s, d, &device));
             let (marks, strikes, diff) = (values(o.marks), values(o.strikes), values(o.diff));
             let got: AuxPred = net.aux_states(&a, &b).unwrap();
@@ -1253,6 +1421,7 @@ mod tests {
                 marks: [0.0; 8],
                 strikes: [0.0; 2],
                 diff: 0.0,
+                turns: Some(20.0),
             })
             .collect()
     }
@@ -1283,6 +1452,25 @@ mod tests {
                 assert!((p - q).abs() < 1e-5, "aux {aux}: burn {p} vs manual {q}");
             }
         }
+    }
+
+    #[test]
+    fn the_weight_average_covers_the_clock_head() {
+        let plain = random_arm(75, true, true);
+        let clocked = ArmModel {
+            clock: Some(clock_head(8, &Default::default())),
+            ..plain.clone()
+        };
+        assert_eq!(
+            weights(&clocked).len(),
+            weights(&plain).len() + 2,
+            "clock weight and bias"
+        );
+        let s = some_samples();
+        let refs: Vec<&Sample> = s.iter().collect();
+        let (a, b) = (predict(&plain, &refs), predict(&clocked, &refs));
+        assert_eq!(a.p, b.p, "the clock head leaves the win logit alone");
+        assert!(a.clock.is_empty() && b.clock.len() == s.len());
     }
 
     #[test]
@@ -1373,6 +1561,7 @@ mod tests {
             marks: [0.0; 8],
             strikes: [0.0; 2],
             diff: 0.0,
+            turns: Some(20.0),
         };
         let mut split = || {
             let mut turns = Vec::new();

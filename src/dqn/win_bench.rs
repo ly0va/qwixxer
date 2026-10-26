@@ -291,6 +291,7 @@ mod tests {
             marks: [0.0; 8],
             strikes: [0.0; 2],
             diff: 0.0,
+            turns: None,
         }
     }
 

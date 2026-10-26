@@ -122,6 +122,116 @@ pub fn thermo_input(me: &State, opp: &State) -> [f32; WIN_INPUTS_T] {
     x
 }
 
+/// Points row half: the thermometer half, then the row's points / 78.
+pub const P_HALF: usize = T_HALF + 1;
+/// Points row token: my half, then the opponent's.
+pub const P_TOKEN: usize = 2 * P_HALF;
+/// Full points input: the thermometer globals after the tokens.
+pub const WIN_INPUTS_P: usize = 4 * P_TOKEN + T_GLOBALS;
+
+/// [`thermo_input`] with each row half's points (marks·(marks + 1)/2 / 78,
+/// the lock bonus counted) after its bits: the score each row stands at,
+/// which the mark bits give only as a weighted sum.
+pub fn points_input(me: &State, opp: &State) -> [f32; WIN_INPUTS_P] {
+    let t = thermo_input(me, opp);
+    let totals = [me.row_totals(), opp.row_totals()];
+    let mut x = [0.0f32; WIN_INPUTS_P];
+    for r in 0..4 {
+        for side in 0..2 {
+            let half = &mut x[P_TOKEN * r + P_HALF * side..][..P_HALF];
+            half[..T_HALF].copy_from_slice(&t[T_TOKEN * r + T_HALF * side..][..T_HALF]);
+            let m = totals[side][r] as f32;
+            half[T_HALF] = m * (m + 1.0) / 2.0 / 78.0;
+        }
+    }
+    x[4 * P_TOKEN..].copy_from_slice(&t[4 * T_TOKEN..]);
+    x
+}
+
+/// [`swap_thermo`] for [`points_input`].
+pub fn swap_points(x: &[f32; WIN_INPUTS_P]) -> [f32; WIN_INPUTS_P] {
+    let mut s = *x;
+    for r in 0..4 {
+        let t = P_TOKEN * r;
+        s[t..t + P_HALF].copy_from_slice(&x[t + P_HALF..t + P_TOKEN]);
+        s[t + P_HALF..t + P_TOKEN].copy_from_slice(&x[t..t + P_HALF]);
+    }
+    let g = 4 * P_TOKEN;
+    let mut t = [0.0f32; WIN_INPUTS_T];
+    t[4 * T_TOKEN..].copy_from_slice(&x[g..]);
+    s[g..].copy_from_slice(&swap_thermo(&t)[4 * T_TOKEN..]);
+    s
+}
+
+/// A net's input encoding, told apart by its row encoder's width.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Encoding {
+    /// [`win_input`].
+    Plain,
+    /// [`thermo_input`].
+    Thermo,
+    /// [`points_input`].
+    Points,
+}
+
+impl Encoding {
+    pub fn of_token(token: usize) -> Encoding {
+        match token {
+            TOKEN => Encoding::Plain,
+            T_TOKEN => Encoding::Thermo,
+            P_TOKEN => Encoding::Points,
+            _ => panic!("no win-net input has {token}-wide row tokens"),
+        }
+    }
+
+    pub fn token(self) -> usize {
+        match self {
+            Encoding::Plain => TOKEN,
+            Encoding::Thermo => T_TOKEN,
+            Encoding::Points => P_TOKEN,
+        }
+    }
+
+    pub fn globals(self) -> usize {
+        match self {
+            Encoding::Plain => GLOBALS,
+            Encoding::Thermo | Encoding::Points => T_GLOBALS,
+        }
+    }
+
+    /// The full input width.
+    pub fn inputs(self) -> usize {
+        4 * self.token() + self.globals()
+    }
+
+    /// The input for `me` against `opp`.
+    pub fn input(self, me: &State, opp: &State) -> Vec<f32> {
+        match self {
+            Encoding::Plain => win_input(me, opp).to_vec(),
+            Encoding::Thermo => thermo_input(me, opp).to_vec(),
+            Encoding::Points => points_input(me, opp).to_vec(),
+        }
+    }
+
+    /// The input and its swap (the players exchanged) for `me` against `opp`.
+    pub fn input_and_swap(self, me: &State, opp: &State) -> (Vec<f32>, Vec<f32>) {
+        match self {
+            Encoding::Plain => {
+                let x = win_input(me, opp);
+                (x.to_vec(), swap_input(&x).to_vec())
+            }
+            Encoding::Thermo => {
+                let x = thermo_input(me, opp);
+                (x.to_vec(), swap_thermo(&x).to_vec())
+            }
+            Encoding::Points => {
+                let x = points_input(me, opp);
+                (x.to_vec(), swap_points(&x).to_vec())
+            }
+        }
+    }
+}
+
 /// [`swap_input`] for [`thermo_input`]: swap the halves of every token, the
 /// per-player globals and the strike bits; negate the difference.
 pub fn swap_thermo(x: &[f32; WIN_INPUTS_T]) -> [f32; WIN_INPUTS_T] {
@@ -173,11 +283,27 @@ pub struct WinModelConfig {
     /// next; docs/superpowers/specs/2026-10-20-win-tempo-design.md). `None`
     /// in older dirs (an `Option` for the same reason as `thermo`).
     pub tempo: Option<bool>,
+    /// Each row's points in its tokens ([`points_input`]; with `thermo`).
+    /// `None` in older dirs (an `Option` for the same reason as `thermo`).
+    pub points: Option<bool>,
 }
 
 impl WinModelConfig {
     pub fn is_thermo(&self) -> bool {
         self.thermo == Some(true)
+    }
+
+    pub fn has_points(&self) -> bool {
+        self.points == Some(true)
+    }
+
+    /// The input encoding a net of this config takes.
+    pub fn encoding(&self) -> Encoding {
+        match (self.is_thermo(), self.has_points()) {
+            (_, true) => Encoding::Points,
+            (true, false) => Encoding::Thermo,
+            (false, false) => Encoding::Plain,
+        }
     }
 
     pub fn has_aux(&self) -> bool {
@@ -190,11 +316,7 @@ impl WinModelConfig {
 
     pub fn init<B: Backend>(&self, device: &B::Device) -> WinModel<B> {
         let w = self.width;
-        let (token, globals) = if self.is_thermo() {
-            (T_TOKEN, T_GLOBALS)
-        } else {
-            (TOKEN, GLOBALS)
-        };
+        let (token, globals) = (self.encoding().token(), self.encoding().globals());
         let lin = |d_in: usize, d_out: usize| LinearConfig::new(d_in, d_out).with_bias(true).init(device);
         WinModel {
             row1: lin(token, w),
@@ -209,9 +331,14 @@ impl WinModelConfig {
 }
 
 impl<B: Backend> WinModel<B> {
-    /// Whether the net takes thermometer inputs (its row encoder's width).
+    /// The net's input encoding (its row encoder's width).
+    pub fn encoding(&self) -> Encoding {
+        Encoding::of_token(self.row1.weight.shape().dims[0])
+    }
+
+    /// Whether the net takes thermometer inputs, with or without points.
     pub fn is_thermo(&self) -> bool {
-        self.row1.weight.shape().dims[0] == T_TOKEN
+        self.encoding() != Encoding::Plain
     }
 
     /// The trunk per input row: every row's encoding e_r `[n, 4, W]` and
@@ -497,7 +624,8 @@ const CHUNK: usize = 16;
 /// match burn to a tolerance, not bit for bit.
 pub struct ManualWinNet {
     width: usize,
-    /// Row-token width: [`TOKEN`] (plain) or [`T_TOKEN`] (thermometer).
+    /// Row-token width: [`TOKEN`] (plain), [`T_TOKEN`] (thermometer) or
+    /// [`P_TOKEN`] (points).
     token: usize,
     row1: Dense,
     row2: Dense,
@@ -571,11 +699,7 @@ impl ManualWinNet {
         for &mine in &halves {
             for &theirs in &halves {
                 let (me, opp) = (board(mine), board(theirs));
-                if self.is_thermo() {
-                    self.row1.apply(&thermo_input(&me, &opp)[..T_TOKEN], &mut h, true);
-                } else {
-                    self.row1.apply(&win_input(&me, &opp)[..TOKEN], &mut h, true);
-                }
+                self.row1.apply(&self.input(&me, &opp)[..self.token], &mut h, true);
                 self.row2.apply(&h, &mut e, true);
                 table.extend_from_slice(&e);
             }
@@ -622,8 +746,13 @@ impl ManualWinNet {
         }
     }
 
+    pub fn encoding(&self) -> Encoding {
+        Encoding::of_token(self.token)
+    }
+
+    /// Whether the net takes thermometer inputs, with or without points.
     pub fn is_thermo(&self) -> bool {
-        self.token == T_TOKEN
+        self.encoding() != Encoding::Plain
     }
 
     /// The net with a tempo head.
@@ -648,12 +777,8 @@ impl ManualWinNet {
 
     /// The logit for `me` against `opp` in the net's own input encoding.
     pub fn logit_states(&self, me: &State, opp: &State) -> f32 {
-        if self.is_thermo() {
-            let x = thermo_input(me, opp);
-            Self::combine(self.g_t(&x), self.g_t(&swap_thermo(&x)))
-        } else {
-            self.logit(&win_input(me, opp))
-        }
+        let (x, s) = self.encoding().input_and_swap(me, opp);
+        Self::combine(self.g_t(&x), self.g_t(&s))
     }
 
     /// [`ManualWinNet::logit_states`] for many positions at once, bit for
@@ -665,16 +790,12 @@ impl ManualWinNet {
 
     /// The full input for `me` against `opp` in the net's encoding.
     fn input(&self, me: &State, opp: &State) -> Vec<f32> {
-        if self.is_thermo() {
-            thermo_input(me, opp).to_vec()
-        } else {
-            win_input(me, opp).to_vec()
-        }
+        self.encoding().input(me, opp)
     }
 
     fn logit_chunk(&self, pairs: &[(&State, &State)]) -> Vec<f32> {
         let (w, t) = (self.width, self.token);
-        let g_len = if self.is_thermo() { T_GLOBALS } else { GLOBALS };
+        let g_len = self.encoding().globals();
         // Input 2k is position k, input 2k + 1 its swap; padded to whole
         // lanes. Only the globals are built: the row tokens are looked up.
         let m = (2 * pairs.len()).next_multiple_of(LANES);
@@ -790,13 +911,7 @@ impl ManualWinNet {
     /// without heads.
     pub fn aux_states(&self, me: &State, opp: &State) -> Option<AuxPred> {
         let aux = self.aux.as_ref()?;
-        let (x, s): (Vec<f32>, Vec<f32>) = if self.is_thermo() {
-            let x = thermo_input(me, opp);
-            (x.to_vec(), swap_thermo(&x).to_vec())
-        } else {
-            let x = win_input(me, opp);
-            (x.to_vec(), swap_input(&x).to_vec())
-        };
+        let (x, s) = self.encoding().input_and_swap(me, opp);
         let ((ex, hx), (es, hs)) = (self.trunk(&x), self.trunk(&s));
         let one = |d: &Dense, v: &[f32]| {
             let mut o = Vec::with_capacity(1);
@@ -1436,6 +1551,99 @@ mod tests {
             let zm = net.logit_states(me, opp);
             assert!((zb - zm).abs() < 1e-4, "burn {zb} vs manual {zm}");
         }
+    }
+
+    fn random_points(seed: u64, width: usize) -> WinModel<MyBackend> {
+        let device = Default::default();
+        <MyBackend as burn::tensor::backend::Backend>::seed(&device, seed);
+        WinModelConfig::new()
+            .with_width(width)
+            .with_thermo(Some(true))
+            .with_points(Some(true))
+            .init::<MyBackend>(&device)
+    }
+
+    #[test]
+    fn points_input_adds_each_rows_points_to_the_thermometer_input() {
+        for (a, b) in pairs() {
+            let (t, p) = (thermo_input(&a, &b), points_input(&a, &b));
+            for r in 0..4 {
+                for (side, board) in [&a, &b].into_iter().enumerate() {
+                    let half = &p[P_TOKEN * r + P_HALF * side..][..P_HALF];
+                    assert_eq!(&half[..T_HALF], &t[T_TOKEN * r + T_HALF * side..][..T_HALF]);
+                    let total = board.row_totals()[r] as f32;
+                    assert_eq!(half[T_HALF], total * (total + 1.0) / 2.0 / 78.0);
+                }
+            }
+            assert_eq!(&p[4 * P_TOKEN..], &t[4 * T_TOKEN..]);
+            assert_eq!(swap_points(&p), points_input(&b, &a));
+        }
+        let c = pairs()[2].0;
+        let x = points_input(&c, &State::default());
+        assert_eq!(x[T_HALF], 28.0 / 78.0, "6 marks and the lock bonus: 28 points");
+    }
+
+    #[test]
+    fn a_points_net_is_antisymmetric_colour_invariant_and_matches_burn() {
+        let model = random_points(23, 16);
+        assert_eq!(model.encoding(), Encoding::Points);
+        let net = ManualWinNet::from_model(&model);
+        assert_eq!(net.encoding(), Encoding::Points);
+        let ps = random_pairs(9, 11);
+        let device = Default::default();
+        let burn = |ps: &[(State, State)]| {
+            let x: Vec<f32> = ps.iter().flat_map(|(a, b)| points_input(a, b)).collect();
+            let s: Vec<f32> = ps.iter().flat_map(|(a, b)| points_input(b, a)).collect();
+            let z = model.forward(
+                flat_tensor::<MyBackend>(&x, WIN_INPUTS_P, &device),
+                flat_tensor(&s, WIN_INPUTS_P, &device),
+            );
+            z.into_data().to_vec::<f32>().unwrap()
+        };
+        let refs: Vec<(&State, &State)> = ps.iter().map(|(a, b)| (a, b)).collect();
+        let batch = net.logit_batch(&refs);
+        for (((a, b), zb), zc) in ps.iter().zip(burn(&ps)).zip(batch) {
+            let zm = net.logit_states(a, b);
+            assert!((zb - zm).abs() < 1e-4, "burn {zb} vs manual {zm}");
+            assert_eq!(zc.to_bits(), zm.to_bits(), "the batch path, bit for bit");
+            assert!((zm + net.logit_states(b, a)).abs() < 1e-5, "antisymmetric");
+        }
+        // Colour relabellings permute the tokens: a board mirrored red ↔
+        // yellow values the same.
+        let mirror = |s: &State| {
+            let (t, f) = (s.row_totals(), s.row_free_values());
+            State::from_parts(s.strikes, [(t[1], f[1]), (t[0], f[0]), (t[2], f[2]), (t[3], f[3])])
+        };
+        for (a, b) in &ps {
+            let (z, zr) = (net.logit_states(a, b), net.logit_states(&mirror(a), &mirror(b)));
+            assert!((z - zr).abs() < 1e-5, "{z} vs {zr}");
+        }
+    }
+
+    #[test]
+    fn a_points_dir_round_trips() {
+        let dir = std::env::temp_dir().join(format!("qwixxer-win-points-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let dir = dir.to_string_lossy().into_owned();
+        let model = random_points(28, 8);
+        model
+            .clone()
+            .save_file(format!("{dir}/model"), &CompactRecorder::new())
+            .unwrap();
+        let cfg = WinModelConfig::new()
+            .with_width(8)
+            .with_thermo(Some(true))
+            .with_points(Some(true));
+        cfg.save(format!("{dir}/config.json")).unwrap();
+        assert!(WinModelConfig::load(format!("{dir}/config.json")).unwrap().has_points());
+        let loaded = WinStrategy::load(&dir);
+        assert_eq!(loaded.net.encoding(), Encoding::Points);
+        let (a, b) = boards();
+        let want = ManualWinNet::from_model(&model).logit_states(&a, &b);
+        let got = loaded.net.logit_states(&a, &b);
+        assert!((want - got).abs() < 0.05, "{want} vs {got}");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// Random legal positions: random marks (rows lock when they finish),

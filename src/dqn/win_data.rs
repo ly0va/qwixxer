@@ -9,7 +9,7 @@ use crate::dqn::win_train::TurnEnds;
 use crate::game::{Game, Player};
 use crate::state::State;
 use crate::strategy::search::splitmix64;
-use crate::strategy::search::{phase2_entry, rollout_final_states, GATE_MARGIN};
+use crate::strategy::search::{phase2_entry, rollout_finals_and_turns, GATE_MARGIN};
 use crate::strategy::sim::SimGame;
 use crate::strategy::Bot;
 use burn::prelude::*;
@@ -38,20 +38,27 @@ pub struct Sample {
     pub strikes: [f32; 2],
     /// Final (my − opponent's) points / 100.
     pub diff: f32,
+    /// Mean turns (either player's) left until the game ends. `None` in
+    /// datasets written before it was recorded (version 2).
+    pub turns: Option<f32>,
 }
 
 /// Exact equality: the boards byte for byte (`State`'s own `==` is a
 /// dominance test) and every label.
 impl PartialEq for Sample {
     fn eq(&self, o: &Self) -> bool {
-        self.me.to_bytes() == o.me.to_bytes() && self.opp.to_bytes() == o.opp.to_bytes() && self.floats() == o.floats()
+        self.me.to_bytes() == o.me.to_bytes()
+            && self.opp.to_bytes() == o.opp.to_bytes()
+            && self.floats() == o.floats()
+            && self.turns == o.turns
     }
 }
 
 impl Sample {
     /// Labels from the rollouts' final boards (`finals`: one (me, opp) per
-    /// rollout; a single element for an ended position, its exact result).
-    pub fn from_finals(me: State, opp: State, finals: &[Vec<State>]) -> Sample {
+    /// rollout; a single element for an ended position, its exact result)
+    /// and the turns each took (`turns`, in the same order).
+    pub fn from_finals(me: State, opp: State, finals: &[Vec<State>], turns: &[u16]) -> Sample {
         let n = finals.len() as f32;
         let outcomes: Vec<f32> = finals.iter().map(|f| SimGame::outcome(f)).collect();
         let (mut marks, mut strikes, mut diff) = ([0.0f32; 8], [0.0f32; 2], 0.0f32);
@@ -72,6 +79,7 @@ impl Sample {
             marks,
             strikes,
             diff,
+            turns: Some(turns.iter().map(|&t| t as f32).sum::<f32>() / turns.len() as f32),
         }
     }
 
@@ -88,6 +96,7 @@ impl Sample {
             marks,
             strikes: [self.strikes[1], self.strikes[0]],
             diff: -self.diff,
+            turns: self.turns,
         }
     }
 
@@ -102,7 +111,7 @@ impl Sample {
         f
     }
 
-    /// The inverse of [`Sample::floats`].
+    /// The inverse of [`Sample::floats`], without the turns label.
     pub fn from_floats(me: State, opp: State, f: [f32; 13]) -> Sample {
         let mut marks = [0.0f32; 8];
         marks.copy_from_slice(&f[2..10]);
@@ -114,6 +123,7 @@ impl Sample {
             marks,
             strikes: [f[10], f[11]],
             diff: f[12],
+            turns: None,
         }
     }
 }
@@ -134,15 +144,15 @@ pub struct DecisionData {
 /// [`crate::dqn::win_distill::label_decision`] with every label: `k`
 /// full-game CRN rollouts by `bot` per kept candidate.
 pub fn label_decision_full(bot: &impl Bot, d: &CandDecision, k: usize) -> DecisionData {
-    let finals = rollout_final_states(bot, &d.entries, d.seed, k, d.first_active, false);
+    let (finals, turns) = rollout_finals_and_turns(bot, &d.entries, d.seed, k, d.first_active, false);
     let swapped = d.first_active == 0;
     let samples = d
         .entries
         .iter()
-        .zip(&finals)
-        .map(|((e, _), f)| {
+        .zip(finals.iter().zip(&turns))
+        .map(|((e, _), (f, t))| {
             assert_eq!(e.len(), 2, "the win net is 2-player only");
-            let s = Sample::from_finals(e[0], e[1], f);
+            let s = Sample::from_finals(e[0], e[1], f, t);
             if swapped {
                 s.swapped()
             } else {
@@ -450,10 +460,13 @@ fn game_samples<P: Bot + Clone + 'static>(player: &P, cfg: &DataCfg, g: u64) -> 
     let turns = if entries.is_empty() {
         Vec::new()
     } else {
-        rollout_final_states(player, &entries, game_seed ^ 0x5011_0075, cfg.rollouts, 1, false)
+        let (finals, turns) =
+            rollout_finals_and_turns(player, &entries, game_seed ^ 0x5011_0075, cfg.rollouts, 1, false);
+        finals
             .iter()
+            .zip(&turns)
             .zip(&entries)
-            .map(|(f, (b, _))| Sample::from_finals(b[0], b[1], f))
+            .map(|((f, t), (b, _))| Sample::from_finals(b[0], b[1], f, t))
             .collect()
     };
     let decisions = caps
@@ -576,6 +589,14 @@ pub fn write_dataset<P: Bot + Clone + 'static>(cfg: &DataCfg, player: &(dyn Fn()
     let path = format!("{dir}/data.bin");
     let mut meta = if cfg.resume {
         let meta = read_meta(dir)?;
+        let mut head = [0u8; 8];
+        File::open(&path)?.read_exact(&mut head)?;
+        let version = u32::from_le_bytes(head[4..].try_into().unwrap());
+        if version != VERSION {
+            return Err(invalid(format!(
+                "{path} is win-data version {version}, and this build writes version {VERSION}: make the dataset anew"
+            )));
+        }
         let f = OpenOptions::new().write(true).open(&path)?;
         let len = f.metadata()?.len();
         if len < meta.bytes {
@@ -602,7 +623,7 @@ pub fn write_dataset<P: Bot + Clone + 'static>(cfg: &DataCfg, player: &(dyn Fn()
     run_games(cfg, player, meta.games as u64, first, |batch, turns| {
         let mut w = BufWriter::new(&mut file);
         for (h, t, d) in &batch {
-            put_record(&mut w, *h, t, d)?;
+            put_record(&mut w, VERSION, *h, t, d)?;
             meta.add(*h, t.len(), d.len());
         }
         w.flush()?;
@@ -625,7 +646,8 @@ pub fn write_dataset<P: Bot + Clone + 'static>(cfg: &DataCfg, player: &(dyn Fn()
 }
 
 const MAGIC: &[u8; 4] = b"QWXD";
-const VERSION: u32 = 2;
+/// 3: every sample also holds the turns left.
+const VERSION: u32 = 3;
 
 fn invalid(msg: String) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, msg)
@@ -648,11 +670,16 @@ fn write_meta(dir: &str, meta: &DataMeta) -> io::Result<()> {
     std::fs::rename(&tmp, format!("{dir}/meta.json"))
 }
 
-fn put_sample(w: &mut impl Write, s: &Sample) -> io::Result<()> {
+/// A sample in file version `version`: the boards, the labels, and from
+/// version 3 the turns left (NaN for none).
+fn put_sample(w: &mut impl Write, s: &Sample, version: u32) -> io::Result<()> {
     w.write_all(&s.me.to_bytes())?;
     w.write_all(&s.opp.to_bytes())?;
     for v in s.floats() {
         w.write_all(&v.to_le_bytes())?;
+    }
+    if version >= 3 {
+        w.write_all(&s.turns.unwrap_or(f32::NAN).to_le_bytes())?;
     }
     Ok(())
 }
@@ -669,7 +696,7 @@ fn get_u32(r: &mut impl Read) -> io::Result<u32> {
     Ok(u32::from_le_bytes(b))
 }
 
-fn get_sample(r: &mut impl Read) -> io::Result<Sample> {
+fn get_sample(r: &mut impl Read, version: u32) -> io::Result<Sample> {
     let (mut me, mut opp) = ([0u8; 13], [0u8; 13]);
     r.read_exact(&mut me)?;
     r.read_exact(&mut opp)?;
@@ -677,22 +704,32 @@ fn get_sample(r: &mut impl Read) -> io::Result<Sample> {
     for v in f.iter_mut() {
         *v = get_f32(r)?;
     }
-    Ok(Sample::from_floats(State::from_bytes(me), State::from_bytes(opp), f))
+    let mut s = Sample::from_floats(State::from_bytes(me), State::from_bytes(opp), f);
+    if version >= 3 {
+        s.turns = Some(get_f32(r)?).filter(|t| !t.is_nan());
+    }
+    Ok(s)
 }
 
 /// One record: a side flag (1 = held out), then turn ends and decisions,
 /// each counted. [`write_dataset`] writes one per game.
-fn put_record(w: &mut impl Write, heldout: bool, turns: &[Sample], decisions: &[DecisionData]) -> io::Result<()> {
+fn put_record(
+    w: &mut impl Write,
+    version: u32,
+    heldout: bool,
+    turns: &[Sample],
+    decisions: &[DecisionData],
+) -> io::Result<()> {
     w.write_all(&[heldout as u8])?;
     w.write_all(&(turns.len() as u32).to_le_bytes())?;
     for t in turns {
-        put_sample(w, t)?;
+        put_sample(w, t, version)?;
     }
     w.write_all(&(decisions.len() as u32).to_le_bytes())?;
     for d in decisions {
         w.write_all(&[d.swapped as u8, d.samples.len() as u8])?;
         for t in &d.samples {
-            put_sample(w, t)?;
+            put_sample(w, t, version)?;
         }
         for v in &d.pair_var {
             w.write_all(&v.to_le_bytes())?;
@@ -703,18 +740,20 @@ fn put_record(w: &mut impl Write, heldout: bool, turns: &[Sample], decisions: &[
 
 /// Counts come from the file, so nothing is preallocated from them: a
 /// damaged count runs into the end of the data instead.
-fn get_record(r: &mut impl Read) -> io::Result<(bool, Vec<Sample>, Vec<DecisionData>)> {
+fn get_record(r: &mut impl Read, version: u32) -> io::Result<(bool, Vec<Sample>, Vec<DecisionData>)> {
     let mut flag = [0u8; 1];
     r.read_exact(&mut flag)?;
     let mut turns = Vec::new();
     for _ in 0..get_u32(r)? {
-        turns.push(get_sample(r)?);
+        turns.push(get_sample(r, version)?);
     }
     let mut decisions = Vec::new();
     for _ in 0..get_u32(r)? {
         let mut h = [0u8; 2];
         r.read_exact(&mut h)?;
-        let samples = (0..h[1]).map(|_| get_sample(r)).collect::<io::Result<Vec<_>>>()?;
+        let samples = (0..h[1])
+            .map(|_| get_sample(r, version))
+            .collect::<io::Result<Vec<_>>>()?;
         let pair_var = (1..h[1]).map(|_| get_f32(r)).collect::<io::Result<Vec<_>>>()?;
         decisions.push(DecisionData {
             samples,
@@ -728,13 +767,18 @@ fn get_record(r: &mut impl Read) -> io::Result<(bool, Vec<Sample>, Vec<DecisionD
 /// Write an in-memory dataset to `dir`: `meta.json` (its counts taken from
 /// the splits) and `data.bin` with one record per side.
 pub fn save(dir: &str, ds: &Dataset) -> io::Result<()> {
+    save_as(dir, ds, VERSION)
+}
+
+/// [`save`] in file version `version`.
+fn save_as(dir: &str, ds: &Dataset, version: u32) -> io::Result<()> {
     std::fs::create_dir_all(dir)?;
     let path = format!("{dir}/data.bin");
     let mut w = BufWriter::new(File::create(&path)?);
     w.write_all(MAGIC)?;
-    w.write_all(&VERSION.to_le_bytes())?;
-    put_record(&mut w, false, &ds.train.turns, &ds.train.decisions)?;
-    put_record(&mut w, true, &ds.heldout.turns, &ds.heldout.decisions)?;
+    w.write_all(&version.to_le_bytes())?;
+    put_record(&mut w, version, false, &ds.train.turns, &ds.train.decisions)?;
+    put_record(&mut w, version, true, &ds.heldout.turns, &ds.heldout.decisions)?;
     w.flush()?;
     drop(w);
     let meta = DataMeta {
@@ -765,12 +809,12 @@ pub fn load(dir: &str) -> io::Result<Dataset> {
         return Err(invalid(format!("{path} is not a win-data file")));
     }
     let version = get_u32(&mut r)?;
-    if version != VERSION {
+    if !(2..=VERSION).contains(&version) {
         return Err(invalid(format!("{path}: unsupported win-data version {version}")));
     }
     let (mut train, mut heldout) = (Split::default(), Split::default());
     while r.limit() > 0 {
-        let (h, t, d) = get_record(&mut r)?;
+        let (h, t, d) = get_record(&mut r, version)?;
         let side = if h { &mut heldout } else { &mut train };
         side.turns.extend(t);
         side.decisions.extend(d);
@@ -804,7 +848,7 @@ mod tests {
     use crate::dqn::win_train::{rollout_round_by, CandCfg};
     use crate::state::Mark;
     use crate::strategy::search::GATE_MARGIN;
-    use crate::strategy::search::{phase2_entry, rollout_final_states};
+    use crate::strategy::search::{phase2_entry, rollout_finals_and_turns};
 
     #[test]
     fn labels_of_an_ended_position_are_exact() {
@@ -814,8 +858,8 @@ mod tests {
         }
         let mut opp = State::default();
         opp.apply_mark(Mark { row: 0, number: 2 });
-        let s = Sample::from_finals(done, opp, &[vec![done, opp]]);
-        assert_eq!((s.win, s.win_var), (0.0, 0.0));
+        let s = Sample::from_finals(done, opp, &[vec![done, opp]], &[0]);
+        assert_eq!((s.win, s.win_var, s.turns), (0.0, 0.0, Some(0.0)));
         assert_eq!(s.marks, [0.0, 0.0, 0.0, 0.0, 1.0 / 12.0, 0.0, 0.0, 0.0]);
         assert_eq!(s.strikes, [1.0, 0.0]);
         assert_eq!(s.diff, -21.0 / 100.0);
@@ -829,8 +873,8 @@ mod tests {
         let mut b = State::default();
         b.apply_strike();
         // a: 3 points, b: −5; once each way round.
-        let s = Sample::from_finals(State::default(), State::default(), &[vec![a, b], vec![b, a]]);
-        assert_eq!((s.win, s.win_var), (0.5, 0.5));
+        let s = Sample::from_finals(State::default(), State::default(), &[vec![a, b], vec![b, a]], &[3, 6]);
+        assert_eq!((s.win, s.win_var, s.turns), (0.5, 0.5, Some(4.5)));
         assert!((s.marks[0] - 1.0 / 12.0).abs() < 1e-7 && (s.marks[4] - 1.0 / 12.0).abs() < 1e-7);
         assert!((s.strikes[0] - 0.125).abs() < 1e-7 && (s.strikes[1] - 0.125).abs() < 1e-7);
         assert!(s.diff.abs() < 1e-7);
@@ -849,14 +893,19 @@ mod tests {
             marks: [1., 2., 3., 4., 5., 6., 7., 8.],
             strikes: [0.25, 0.5],
             diff: 0.1,
+            turns: Some(12.5),
         };
         let t = s.swapped();
         assert_eq!((t.me.to_bytes(), t.opp.to_bytes()), (b.to_bytes(), a.to_bytes()));
         assert_eq!((t.win, t.win_var, t.diff), (0.25, 0.2, -0.1));
         assert_eq!(t.marks, [5., 6., 7., 8., 1., 2., 3., 4.]);
         assert_eq!(t.strikes, [0.5, 0.25]);
+        assert_eq!(t.turns, Some(12.5), "the turns left are the same from either side");
         assert_eq!(t.swapped(), s);
-        assert_eq!(Sample::from_floats(s.me, s.opp, s.floats()), s);
+        assert_eq!(
+            Sample::from_floats(s.me, s.opp, s.floats()),
+            Sample { turns: None, ..s }
+        );
     }
 
     #[test]
@@ -890,9 +939,9 @@ mod tests {
                 assert_eq!(s.win, *y);
             }
             // Every auxiliary label swaps with the players, not only win.
-            let finals = rollout_final_states(&bot, &d.entries, 9, 8, first_active, false);
             let e = &d.entries[0].0;
-            let plain = Sample::from_finals(e[0], e[1], &finals[0]);
+            let (finals, turns) = rollout_finals_and_turns(&bot, &d.entries, 9, 8, first_active, false);
+            let plain = Sample::from_finals(e[0], e[1], &finals[0], &turns[0]);
             let want = if first_active == 0 { plain.swapped() } else { plain };
             assert_eq!(full.samples[0], want);
         }
@@ -1105,6 +1154,42 @@ mod tests {
     }
 
     #[test]
+    fn every_label_counts_the_turns_left() {
+        let ds = generate(&cfg(40, 0.5, 5), &|| PairStrategy::load("pair_model"));
+        let all: Vec<&Sample> = [&ds.train, &ds.heldout]
+            .iter()
+            .flat_map(|sp| sp.turns.iter().chain(sp.decisions.iter().flat_map(|d| &d.samples)))
+            .collect();
+        assert!(all.iter().all(|s| s.turns.is_some_and(|t| t >= 0.0)));
+        assert!(all.iter().any(|s| s.turns.unwrap() >= 1.0));
+    }
+
+    #[test]
+    fn an_older_file_loads_without_the_turns_label() {
+        let dir = tmp("v2");
+        let ds = generate(&cfg(40, 0.5, 5), &|| PairStrategy::load("pair_model"));
+        save_as(&dir, &ds, 2).unwrap();
+        let back = load(&dir).unwrap();
+        let strip = |sp: &Split| {
+            let mut sp = sp.clone();
+            sp.turns.iter_mut().for_each(|s| s.turns = None);
+            for d in &mut sp.decisions {
+                d.samples.iter_mut().for_each(|s| s.turns = None);
+            }
+            sp
+        };
+        assert_eq!((back.train, back.heldout), (strip(&ds.train), strip(&ds.heldout)));
+        let c = DataCfg {
+            out: dir.clone(),
+            resume: true,
+            ..cfg(80, 0.5, 5)
+        };
+        let err = write_dataset(&c, &|| PairStrategy::load("pair_model")).unwrap_err();
+        assert!(err.to_string().contains("version 2"), "{err}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn a_damaged_file_is_an_error() {
         let dir = tmp("damaged");
         let ds = generate(&cfg(40, 0.5, 5), &|| PairStrategy::load("pair_model"));
@@ -1118,12 +1203,12 @@ mod tests {
         std::fs::write(&path, &foreign).unwrap();
         assert!(load(&dir).unwrap_err().to_string().contains("not a win-data file"));
         let mut newer = bytes.clone();
-        newer[4] = 3;
+        newer[4] = 4;
         std::fs::write(&path, &newer).unwrap();
         assert!(load(&dir)
             .unwrap_err()
             .to_string()
-            .contains("unsupported win-data version 3"));
+            .contains("unsupported win-data version 4"));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
