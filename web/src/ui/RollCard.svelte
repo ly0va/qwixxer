@@ -58,7 +58,7 @@
     <div class="top">
         {#if !compact}<h2>Roll</h2>{/if}
         <div class="seg" role="radiogroup" aria-label="Whose roll">
-            <button type="button" role="radio" aria-checked={x.pos.roller === 'you'} aria-label="Your roll" onclick={() => x.setRoller('you')}>{compact ? 'You' : 'Your roll'}</button>
+            <button type="button" role="radio" aria-checked={x.pos.roller === 'you'} aria-label="Your roll" onclick={() => x.setRoller('you')}>{compact ? 'You' : 'Yours'}</button>
             <button type="button" role="radio" aria-checked={x.pos.roller === 'opponent'} aria-label="Opponent’s roll" onclick={() => x.setRoller('opponent')}>{compact ? 'Them' : 'Opponent’s'}</button>
         </div>
         {#if luckShown}
@@ -136,7 +136,8 @@
     .undo { margin-left: auto; height: 32px; padding: 0 12px; border-radius: 8px; border: none; background: var(--paper); box-shadow: 0 1px 0 var(--edge); color: var(--ink); display: flex; align-items: center; gap: 5px; font-weight: 600; font-size: 14px; cursor: pointer; }
     .card { display: flex; flex-direction: column; gap: 10px; background: var(--paper); border-radius: 14px; padding: 12px 16px; box-shadow: 0 1px 0 var(--edge); }
     .card.compact { padding: 10px 12px; }
-    .top { display: flex; align-items: center; gap: 10px; }
+    .top { display: flex; align-items: center; gap: 8px; }
+    .tool svg { flex: none; }
     h2 { margin: 0; font-family: var(--cond); font-size: 20px; font-weight: 700; }
     .seg { display: flex; gap: 2px; padding: 3px; border-radius: 10px; background: var(--btn-muted-bg); }
     .seg button { height: 32px; padding: 0 12px; border-radius: 7px; border: none; background: transparent; color: var(--muted); font-weight: 600; font-size: 14px; cursor: pointer; white-space: nowrap; }
