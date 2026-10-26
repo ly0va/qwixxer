@@ -12,6 +12,8 @@ jobs:
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
 
       - name: Run tests
         run: cargo test --release
@@ -31,6 +33,16 @@ jobs:
 
       - name: Run web frontend tests
         run: cd web && npm test
+
+      - name: Install wasm-pack
+        uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-pack
+
+      # svelte-check needs the generated bindings (web/pkg) for the worker's
+      # imports; a dev build gives the same declarations without wasm-opt.
+      - name: Build WASM bindings
+        run: wasm-pack build web --target web --dev
 
       - name: Type-check web frontend
         run: cd web && npm run check
