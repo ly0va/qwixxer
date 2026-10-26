@@ -3,6 +3,7 @@
     import type { GameController } from '../game/controller.svelte';
     import { sheetModel } from '../game/rules';
     import SheetRows from './SheetRows.svelte';
+    import StrikeBoxes from './StrikeBoxes.svelte';
     let { c, size = 25 }: { c: GameController; size?: number } = $props();
 
     const rows = $derived(c.view ? sheetModel(c.view, 'bot', { sel: [], strikeSel: false, committing: false, fresh: c.fresh, hidden: c.hidden }) : []);
@@ -19,7 +20,8 @@
         </div>
         <span class="meta">
             {#if c.thinking}<i>thinking…</i>{/if}
-            {c.view?.bot.score ?? 0} pts · {strikes} strikes
+            {c.view?.bot.score ?? 0} pts
+            <StrikeBoxes count={strikes} size={Math.round(size * 0.8)} label="Bot's" />
         </span>
     </div>
     {#if c.nextBot !== c.bot}<p class="note">{BOT_NAMES[c.nextBot]} plays from the next game (or start one from the ⋯ menu).</p>{/if}
@@ -32,7 +34,6 @@
     .pick { display: flex; align-items: center; gap: 8px; }
     label { font-family: var(--cond); font-size: 20px; font-weight: 700; }
     select { height: 32px; border-radius: 8px; border: 2px solid var(--ink); background: var(--paper); color: var(--ink); font-weight: 600; font-size: 14px; padding: 0 8px; }
-    .meta { font-size: 13px; color: var(--muted); }
-    .meta i { margin-right: 6px; }
+    .meta { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--muted); }
     .note { margin: 0; font-size: 12px; color: var(--muted); }
 </style>
