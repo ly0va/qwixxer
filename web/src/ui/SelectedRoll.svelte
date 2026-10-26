@@ -38,7 +38,7 @@
             {#if roll}
                 <b>Roll {k + 1}</b>
                 <span class="whose">{roll.record.roller === 'you' ? 'your roll' : 'bot’s roll'}</span>
-                <LuckPill {luck} size="sm" />
+                <LuckPill {luck} size="sm" start />
                 {#if compact && r.game}<a class="open explore" href={explorerHref(r.game, k)}>Explore</a>{/if}
             {:else}
                 <b>Start</b><span class="whose">before the first roll</span>
