@@ -46,7 +46,7 @@ describe('WorkerEngine', () => {
         const w = new FakeWorker((m) => ({ ok: false, error: `bad ${m.cmd}`, kind: m.cmd === 'restore' ? 'snapshot' : 'engine' }));
         const e = new WorkerEngine(() => asWorker(w));
         await expect(e.restore('master', '{}', 1)).rejects.toMatchObject({ kind: 'snapshot', message: 'bad restore' });
-        await expect(e.start('master', 1)).rejects.toMatchObject({ kind: 'engine' });
+        await expect(e.start('master', 1, true)).rejects.toMatchObject({ kind: 'engine' });
     });
 
     it('rejects every call after the worker dies, until reset spawns a new one', async () => {
@@ -57,12 +57,12 @@ describe('WorkerEngine', () => {
             return asWorker(w);
         });
         workers[0].onerror?.({ message: 'module failed to load' });
-        const err = await e.start('master', 1).catch((x) => x);
+        const err = await e.start('master', 1, true).catch((x) => x);
         expect(err).toBeInstanceOf(EngineError);
         expect(err).toMatchObject({ kind: 'engine', message: 'module failed to load' });
         e.reset();
         expect(workers[0].terminated).toBe(true);
-        await expect(e.start('master', 1)).resolves.toBe(2);
+        await expect(e.start('master', 1, true)).resolves.toBe(2);
         expect(workers[1].seen).toHaveLength(1);
     });
 });

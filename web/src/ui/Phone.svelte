@@ -64,7 +64,10 @@
     </header>
     {#if result}
         <div class="result" role="status">
-            <div class="headline"><b>{result.title}</b><span>{result.score}</span></div>
+            <div class="said">
+                <div class="headline"><b>{result.title}</b><span>{result.score}</span></div>
+                <span class="next">{c.nextBotFirst ? 'Bot rolls' : 'You roll'} first next game</span>
+            </div>
             {#if c.lastCode}{@const code = c.lastCode}<button type="button" class="analyze" onclick={() => (location.hash = gameHref(code))}>Analyze</button>{/if}
         </div>
     {:else}
@@ -138,8 +141,10 @@
     .box.faded { opacity: 0.35; }
     .confirm { margin-top: auto; min-height: 64px; border: none; border-radius: 14px; font-weight: 700; font-size: 18px; background: var(--btn-muted-bg); color: var(--btn-muted-fg); }
     .confirm.primary { background: var(--ink); color: var(--ground); }
-    .result { height: 48px; box-sizing: border-box; padding: 0 12px; border-radius: 12px; background: var(--paper); box-shadow: 0 1px 0 var(--edge); display: flex; align-items: center; justify-content: space-between; flex-shrink: 0; }
+    .result { min-height: 48px; box-sizing: border-box; padding: 6px 12px; border-radius: 12px; background: var(--paper); box-shadow: 0 1px 0 var(--edge); display: flex; align-items: center; justify-content: space-between; flex-shrink: 0; }
     .headline { display: flex; align-items: baseline; gap: 10px; line-height: 1; }
+    .said { display: flex; flex-direction: column; gap: 3px; }
+    .next { font-size: 12px; color: var(--muted); }
     .headline b { font-family: var(--cond); font-weight: 800; font-size: 26px; }
     .headline span { font-family: var(--cond); font-weight: 700; font-size: 22px; }
     .msg { font-size: 13px; line-height: 1.3; color: var(--soft); min-height: 34px; }

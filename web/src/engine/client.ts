@@ -56,7 +56,7 @@ export class WorkerEngine implements Engine {
         });
     }
 
-    start(bot: BotKind, seed: number) { return this.call<View>('start', bot, seed); }
+    start(bot: BotKind, seed: number, botFirst: boolean) { return this.call<View>('start', bot, seed, botFirst); }
     restore(bot: BotKind, snapshot: string, seed: number) { return this.call<View>('restore', bot, snapshot, seed); }
     snapshot() { return this.call<string>('snapshot'); }
     botRoll() { return this.call<View>('botRoll'); }

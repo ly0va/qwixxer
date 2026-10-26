@@ -3,9 +3,11 @@
     import Icon from './Icon.svelte';
     import type { Nav } from './nav';
     // `tabs`: the desktop header's Play / Explore tabs already switch views.
+    // Each tap of First roll moves to the next value; it applies from the next game.
+    const FIRST_ROLL = { alternate: 'Alternate', you: 'You', bot: 'Bot' };
     let { c, nav, tabs = false }: { c: GameController; nav: Nav; tabs?: boolean } = $props();
 
-    // The "⋯" header menu (all layouts). In the game: New game. On the phone,
+    // The "⋯" header menu (all layouts). In the game: New game and First roll. On the phone,
     // the other views: Back to game, Explorer, Review last game. Then dark
     // mode, the rules PDF, the source repo and a trademark notice. Open state lives on the
     // controller so App's page-wide keys treat it as a modal.
@@ -63,6 +65,9 @@
                 <button type="button" role="menuitem" class="item" class:armed aria-disabled={c.busy} onclick={newGame}>
                     <span class="lab"><Icon name="plus" />{armed ? 'Abandon game?' : 'New game'}</span>
                 </button>
+                <button type="button" role="menuitem" class="item" aria-label="First roll: {FIRST_ROLL[c.firstRoll]}. Change" onclick={() => c.cycleFirstRoll()}>
+                    <span class="lab"><Icon name="die" />First roll</span><span class="value">{FIRST_ROLL[c.firstRoll]}</span>
+                </button>
             {/if}
             {#if !tabs}
                 {#if nav.current !== 'play'}<button type="button" role="menuitem" class="item" onclick={() => { c.menuOpen = false; nav.play(); }}><span class="lab"><Icon name="die" />Back to game</span></button>{/if}
@@ -102,6 +107,7 @@
         font-family: var(--text); font-weight: 600; font-size: 15px; text-align: left; text-decoration: none; cursor: pointer;
     }
     .lab { display: flex; align-items: center; gap: 10px; }
+    .value { font-size: 14px; color: var(--muted); }
     .legal { margin: 4px 12px 6px; max-width: 220px; font-size: 11px; line-height: 1.35; color: var(--muted); }
     .item:hover { background: var(--log-bg); }
     .item.armed { background: var(--ink); color: var(--ground); }

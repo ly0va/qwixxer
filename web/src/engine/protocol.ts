@@ -79,7 +79,8 @@ export class EngineError extends Error {
 export interface Engine {
     /** Drop the current worker and start over with a fresh one (the game in it is lost). */
     reset(): void;
-    start(bot: BotKind, seed: number): Promise<View>;
+    /** A new game; `botFirst`: the bot rolls first, else you do. */
+    start(bot: BotKind, seed: number, botFirst: boolean): Promise<View>;
     restore(bot: BotKind, snapshot: string, seed: number): Promise<View>;
     snapshot(): Promise<string>;
     botRoll(): Promise<View>;

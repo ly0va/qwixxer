@@ -10,7 +10,11 @@ export interface Store { get(key: string): string | null; set(key: string, value
 const SAVE = 'qwixxer.save.v1';
 const PREFS = 'qwixxer.prefs.v1';
 
-interface Saved { snapshot: string; log: LogEntry[]; rollNo: number; bot: BotKind; nextBot: BotKind }
+interface Saved { snapshot: string; log: LogEntry[]; rollNo: number; bot: BotKind; nextBot: BotKind; botFirst?: boolean }
+
+/** Who rolls first in a new game: take turns, or always the same side. */
+export type FirstRoll = 'alternate' | 'you' | 'bot';
+const NEXT_FIRST_ROLL: Record<FirstRoll, FirstRoll> = { alternate: 'you', you: 'bot', bot: 'alternate' };
 
 const randomDice = () => Array.from({ length: 6 }, () => 1 + Math.floor(Math.random() * 6));
 
@@ -34,6 +38,9 @@ export class GameController {
     theme = $state<'light' | 'dark'>('light');
     bot = $state<BotKind>('master_plus');
     nextBot = $state<BotKind>('master_plus');
+    firstRoll = $state<FirstRoll>('alternate');
+    /** Whether the bot rolled first in the current game (before any game: false, so the first has the bot first). */
+    botFirst = $state(false);
     /** The header "⋯" menu is open (UI state: page-wide keys treat it as a modal). */
     menuOpen = $state(false);
     /** The last finished game's code, for review (null: none, or a game saved before rolls were recorded). */
@@ -70,10 +77,11 @@ export class GameController {
 
     async init() {
         this.lastCode = this.store.get(LAST_GAME) || null;
-        const prefs = this.read<{ theme: 'light' | 'dark'; nextBot: BotKind }>(PREFS);
+        const prefs = this.read<{ theme: 'light' | 'dark'; nextBot: BotKind; firstRoll: FirstRoll }>(PREFS);
         if (prefs) {
             this.theme = prefs.theme ?? 'light';
             this.nextBot = prefs.nextBot ?? 'master_plus';
+            this.firstRoll = prefs.firstRoll in NEXT_FIRST_ROLL ? prefs.firstRoll : 'alternate';
         }
         const saved = this.read<Saved>(SAVE);
         if (saved && (await this.resume(saved, prefs?.nextBot))) return;
@@ -114,6 +122,7 @@ export class GameController {
         await this.guard(async () => {
             this.bot = saved.bot;
             this.nextBot = prefBot ?? saved.nextBot;
+            this.botFirst = saved.botFirst ?? true;
             this.log = saved.log;
             this.rollNo = saved.rollNo;
             this.view = restored;
@@ -141,8 +150,10 @@ export class GameController {
             this.tip = '';
             this.fresh = {};
             this.hidden = [];
-            this.view = await this.engine.start(this.bot, this.seed());
-            await this.botTurn();
+            const botFirst = this.nextBotFirst;
+            this.view = await this.engine.start(this.bot, this.seed(), botFirst);
+            this.botFirst = botFirst;
+            if (botFirst) await this.botTurn();
         });
     }
 
@@ -261,6 +272,17 @@ export class GameController {
         if (!this.busy) this.save();
     }
 
+    /** Whether the bot rolls first in the next new game. */
+    get nextBotFirst(): boolean {
+        return this.firstRoll === 'alternate' ? !this.botFirst : this.firstRoll === 'bot';
+    }
+
+    /** The menu's First roll row: alternate → you → bot → alternate. */
+    cycleFirstRoll() {
+        this.firstRoll = NEXT_FIRST_ROLL[this.firstRoll];
+        this.savePrefs();
+    }
+
     toggleTheme() {
         this.theme = this.theme === 'dark' ? 'light' : 'dark';
         this.savePrefs();
@@ -372,7 +394,7 @@ export class GameController {
 
     private save(rollNo = this.rollNo) {
         if (!this.view) return;
-        const meta = { log: this.log, rollNo, bot: this.bot, nextBot: this.nextBot };
+        const meta = { log: this.log, rollNo, bot: this.bot, nextBot: this.nextBot, botFirst: this.botFirst };
         this.engine
             .snapshot()
             .then((snapshot) => this.store.set(SAVE, JSON.stringify({ snapshot, ...meta })))
@@ -380,7 +402,7 @@ export class GameController {
     }
 
     private savePrefs() {
-        this.store.set(PREFS, JSON.stringify({ theme: this.theme, nextBot: this.nextBot }));
+        this.store.set(PREFS, JSON.stringify({ theme: this.theme, nextBot: this.nextBot, firstRoll: this.firstRoll }));
     }
 
     private read<T>(key: string): T | null {

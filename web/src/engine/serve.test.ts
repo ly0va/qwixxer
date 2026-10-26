@@ -127,7 +127,7 @@ describe('engine worker handler', () => {
     it('gameCode asks the game', async () => {
         const { send } = setup(0);
         expect(await send(1, 'gameCode', [])).toMatchObject({ ok: false, error: 'no game' });
-        await send(2, 'start', ['master', 1]);
+        await send(2, 'start', ['master', 1, true]);
         expect(await send(3, 'gameCode', [])).toEqual({ id: 3, ok: true, result: '1BAAAA' });
     });
     it('analyze shares the explorer and passes the batch range', async () => {

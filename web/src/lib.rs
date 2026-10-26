@@ -26,11 +26,12 @@ fn js(e: impl std::fmt::Display) -> JsError {
 
 #[wasm_bindgen]
 impl WasmGame {
+    /// A new game; `bot_first`: the bot rolls first, else you do.
     #[wasm_bindgen(constructor)]
-    pub fn new(bot: &str, seed: u32) -> Result<WasmGame, JsError> {
+    pub fn new(bot: &str, seed: u32, bot_first: bool) -> Result<WasmGame, JsError> {
         let kind = BotKind::parse(bot).map_err(js)?;
         Ok(WasmGame {
-            session: Session::new(make_bot(kind), seed as u64),
+            session: Session::start(make_bot(kind), seed as u64, bot_first),
             bot: kind,
         })
     }

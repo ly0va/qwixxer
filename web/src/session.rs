@@ -138,6 +138,13 @@ pub struct Snapshot {
     /// no code.
     #[serde(default)]
     pub history: Option<Vec<u32>>,
+    /// Who rolled first; saves from before the choice had the bot first.
+    #[serde(default = "bot_first")]
+    pub bot_first: bool,
+}
+
+fn bot_first() -> bool {
+    true
 }
 
 impl Snapshot {
@@ -210,16 +217,23 @@ pub struct Session {
 }
 
 impl Session {
+    /// A new game; the bot rolls first.
     pub fn new(strategy: Box<dyn Strategy>, seed: u64) -> Self {
+        Session::start(strategy, seed, true)
+    }
+
+    /// A new game, `bot_first` or with your roll first.
+    pub fn start(strategy: Box<dyn Strategy>, seed: u64, bot_first: bool) -> Self {
         let g = Snapshot {
             you: SheetSnap::empty(),
             bot: SheetSnap::empty(),
             locked: [false; 4],
-            phase: Phase::BotToRoll,
+            phase: if bot_first { Phase::BotToRoll } else { Phase::YouToRoll },
             dice: None,
             bot_white: None,
             over: None,
             history: Some(vec![]),
+            bot_first,
         };
         Session {
             g,
@@ -244,14 +258,20 @@ impl Session {
     }
 
     /// The game code (spec "The game code"); `Err` for a game saved before
-    /// rolls were recorded. Every game starts with the bot's roll.
+    /// rolls were recorded.
     pub fn code(&self, bot: BotKind) -> Result<String, String> {
         let h = self
             .g
             .history
             .as_ref()
             .ok_or("this game was saved before rolls were recorded")?;
-        Ok(gamecode::encode(&Header { bot_first: true, bot }, h))
+        Ok(gamecode::encode(
+            &Header {
+                bot_first: self.g.bot_first,
+                bot,
+            },
+            h,
+        ))
     }
 
     /// Appends a resolved roll to the history, from the sheets before it.
@@ -549,6 +569,7 @@ mod tests {
             bot_white,
             over: None,
             history: None,
+            bot_first: true,
         }
     }
 
@@ -562,6 +583,27 @@ mod tests {
         assert_eq!(s.view().phase, Phase::Passive);
         assert!(s.view().bot_white.is_none(), "the bot's own white sum stays hidden");
         assert!(s.bot_roll().is_err());
+    }
+
+    #[test]
+    fn you_can_roll_first_and_the_code_says_so() {
+        let mut s = Session::start(make_bot(BotKind::Student), 1, false);
+        assert_eq!(s.view().phase, Phase::YouToRoll);
+        assert!(s.bot_roll().is_err());
+        let mut rng = SmallRng::seed_from_u64(1);
+        play_out(&mut s, &mut rng);
+        let g = crate::gamecode::replay(&s.code(BotKind::Student).unwrap()).unwrap();
+        assert!(!g.bot_first);
+        let last = &g.rolls.last().unwrap().after;
+        assert_eq!((last.you, last.opponent), (s.snapshot().you, s.snapshot().bot));
+    }
+
+    #[test]
+    fn a_save_from_before_the_choice_had_the_bot_first() {
+        let mut snap = serde_json::to_value(Session::start(make_bot(BotKind::Student), 1, false).snapshot()).unwrap();
+        snap.as_object_mut().unwrap().remove("bot_first");
+        let snap: Snapshot = serde_json::from_value(snap).unwrap();
+        assert!(snap.bot_first);
     }
 
     #[test]

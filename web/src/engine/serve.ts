@@ -4,7 +4,7 @@ import type { WasmExplorer, WasmGame } from '../../pkg/qwixxer_web.js';
 export interface Wasm {
     init: () => Promise<unknown>;
     WasmGame: {
-        new (bot: string, seed: number): WasmGame;
+        new (bot: string, seed: number, botFirst: boolean): WasmGame;
         restore(bot: string, snapshot: string, seed: number): WasmGame;
     };
     WasmExplorer: { new (): WasmExplorer };
@@ -42,7 +42,7 @@ export function serve(wasm: Wasm, post: (r: Reply) => void): (req: Request) => P
     function run(cmd: string, args: any[]): unknown {
         switch (cmd) {
             case 'start':
-                return replace(new wasm.WasmGame(args[0], args[1]));
+                return replace(new wasm.WasmGame(args[0], args[1], args[2]));
             case 'restore':
                 return replace(wasm.WasmGame.restore(args[0], args[1], args[2]));
             case 'snapshot':

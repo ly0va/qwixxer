@@ -70,10 +70,58 @@ describe('GameController', () => {
         const e = fakeEngine();
         const c = new GameController(e, memStore(), instant, () => 1);
         await c.init();
-        expect(e.start).toHaveBeenCalledWith('master_plus', 1);
+        expect(e.start).toHaveBeenCalledWith('master_plus', 1, true);
         expect(e.botRoll).toHaveBeenCalledOnce();
         expect(c.view?.phase).toBe('passive');
         expect(c.rollNo).toBe(1);
+    });
+
+    it('alternates who rolls first from game to game', async () => {
+        const e = fakeEngine();
+        const c = new GameController(e, memStore(), instant, () => 1);
+        await c.init();
+        expect(c.nextBotFirst).toBe(false);
+        e.start = vi.fn(async () => v({ phase: 'you_to_roll' }));
+        await c.newGame();
+        expect(e.start).toHaveBeenLastCalledWith('master_plus', 1, false);
+        expect(e.botRoll).toHaveBeenCalledOnce(); // only the first game's
+        expect(c.view?.phase).toBe('you_to_roll');
+        expect(c.nextBotFirst).toBe(true);
+        await c.newGame();
+        expect(e.start).toHaveBeenLastCalledWith('master_plus', 1, true);
+    });
+
+    it('cycles First roll through alternate, you and bot, and persists it', async () => {
+        const store = memStore();
+        const e = fakeEngine();
+        const c = new GameController(e, store, instant, () => 1);
+        await c.init();
+        expect(c.firstRoll).toBe('alternate');
+        c.cycleFirstRoll();
+        expect(c.firstRoll).toBe('you');
+        expect(JSON.parse(store.data['qwixxer.prefs.v1']).firstRoll).toBe('you');
+        await c.newGame();
+        await c.newGame();
+        expect(e.start).toHaveBeenLastCalledWith('master_plus', 1, false);
+        c.cycleFirstRoll();
+        expect(c.firstRoll).toBe('bot');
+        await c.newGame();
+        expect(e.start).toHaveBeenLastCalledWith('master_plus', 1, true);
+        c.cycleFirstRoll();
+        expect(c.firstRoll).toBe('alternate');
+        const again = new GameController(fakeEngine(), store, instant, () => 1);
+        await again.init();
+        expect(again.firstRoll).toBe('alternate');
+    });
+
+    it('remembers who started a saved game; old saves had the bot first', async () => {
+        const save = (p: object) => memStore({ 'qwixxer.save.v1': JSON.stringify({ snapshot: '{}', log: [], rollNo: 2, bot: 'master', nextBot: 'master', ...p }) });
+        const old = new GameController(fakeEngine(), save({}), instant, () => 1);
+        await old.init();
+        expect(old.nextBotFirst).toBe(false);
+        const mine = new GameController(fakeEngine(), save({ botFirst: false }), instant, () => 1);
+        await mine.init();
+        expect(mine.nextBotFirst).toBe(true);
     });
 
     it('submits once when confirm is pressed twice while busy', async () => {
@@ -104,7 +152,7 @@ describe('GameController', () => {
         expect(c.bot).toBe('master_plus');
         expect(JSON.parse(store.data['qwixxer.prefs.v1']).nextBot).toBe('student');
         await c.newGame();
-        expect(e.start).toHaveBeenLastCalledWith('student', 1);
+        expect(e.start).toHaveBeenLastCalledWith('student', 1, false);
         expect(c.bot).toBe('student');
     });
 
