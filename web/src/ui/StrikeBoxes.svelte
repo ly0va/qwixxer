@@ -15,6 +15,6 @@
 
 <style>
     .boxes { display: flex; gap: 5px; }
-    .box { position: relative; box-sizing: border-box; width: var(--s); height: var(--s); border-radius: 7px; padding: 0; border: 2px solid var(--ink); background: var(--paper); cursor: pointer; }
+    .box { position: relative; box-sizing: border-box; width: var(--s); height: var(--s); border-radius: calc(var(--s) * 0.22); padding: 0; border: 2px solid var(--ink); background: var(--paper); cursor: pointer; }
     .box.faded { opacity: 0.45; }
 </style>
