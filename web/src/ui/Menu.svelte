@@ -72,7 +72,7 @@
                 <span class="lab"><Icon name="moon" />Dark mode</span>
                 <span class="switch" class:on={c.theme === 'dark'} aria-hidden="true"><span></span></span>
             </button>
-            <a role="menuitem" class="item" href="https://m.media-amazon.com/images/I/A1Y4fDIZZmL.pdf" target="_blank" rel="noopener noreferrer"
+            <a role="menuitem" class="item" href="https://gamewright.com/pdfs/Rules/QWIXX-01_rules.pdf" target="_blank" rel="noopener noreferrer"
                 onclick={() => (c.menuOpen = false)}>
                 <span class="lab"><Icon name="book" />Rules</span>
                 <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="var(--muted)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"></path></svg>
