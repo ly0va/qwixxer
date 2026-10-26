@@ -5,6 +5,7 @@
     import { chipsFor } from '../game/rules';
     import ChipView from './Chip.svelte';
     import Die from './Die.svelte';
+    import LuckPill from './LuckPill.svelte';
     // Spec "The page": the selected roll — its luck, dice, and your choice
     // against the best one. The Played / Best rows pick which outcome the
     // sheets show; desktop adds the step buttons.
@@ -37,9 +38,7 @@
             {#if roll}
                 <b>Roll {k + 1}</b>
                 <span class="whose">{roll.record.roller === 'you' ? 'your roll' : 'bot’s roll'}</span>
-                <span class="luck {luck?.tone ?? 'pending'}" title={luck?.detail}>
-                    {#if luck}{luck.word}{#if luck.value}<b>{luck.value}</b>{/if}{:else}Luck …{/if}
-                </span>
+                <LuckPill {luck} size="sm" />
                 {#if compact && r.game}<a class="open explore" href={explorerHref(r.game, k)}>Explore</a>{/if}
             {:else}
                 <b>Start</b><span class="whose">before the first roll</span>
@@ -102,12 +101,6 @@
     .whose { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; color: var(--muted); }
     .dice { display: flex; gap: 5px; }
     .compact .dice { gap: 6px; }
-    .luck { height: 24px; padding: 0 9px; border-radius: 12px; display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; font-weight: 700; font-size: 13px; }
-    .luck b { font-family: var(--cond); font-weight: 800; font-size: 16px; }
-    .luck.lucky { color: var(--lucky-ink); background: color-mix(in srgb, var(--lucky-ink) 14%, var(--paper)); }
-    .luck.unlucky { color: var(--unlucky-ink); background: color-mix(in srgb, var(--unlucky-ink) 14%, var(--paper)); }
-    .luck.average { color: var(--ink); background: var(--btn-muted-bg); }
-    .luck.pending { color: var(--muted); font-weight: 600; background: var(--btn-muted-bg); }
     .switch { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; padding-left: 14px; border-left: 1px solid var(--edge); }
     .compact .switch { padding-left: 0; border-left: none; }
     .switch button { display: flex; align-items: center; gap: 6px; height: 34px; padding: 0 10px; border-radius: 9px; border: none; background: var(--log-bg); color: var(--ink); cursor: pointer; text-align: left; }

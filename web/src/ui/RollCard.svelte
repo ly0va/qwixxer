@@ -4,6 +4,7 @@
     import { chipsFor, predictedTurn } from '../game/rules';
     import ChipView from './Chip.svelte';
     import Die from './Die.svelte';
+    import LuckPill from './LuckPill.svelte';
     let { x, compact = false }: { x: ExplorerController; compact?: boolean } = $props();
     const FACES = [['var(--die-face)', 'var(--die-pip)', 'White'], ['var(--die-face)', 'var(--die-pip)', 'White'],
         ['var(--red-band)', 'var(--on-band)', 'Red'], ['var(--yellow-band)', 'var(--on-yellow)', 'Yellow'],
@@ -62,14 +63,7 @@
             <button type="button" role="radio" aria-checked={x.pos.roller === 'opponent'} aria-label="Opponent’s roll" onclick={() => x.setRoller('opponent')}>{compact ? 'Them' : 'Opponent’s'}</button>
         </div>
         {#if luckShown}
-            <span class="luck {luck?.tone ?? 'pending'}" class:stale={luckStale} aria-live="polite" title={luck?.detail}>
-                {#if luck}
-                    {luck.word}{#if luck.value}<b aria-label="{luck.value} points">{luck.value}</b>{/if}
-                    <span class="sr">{luck.detail}</span>
-                {:else}
-                    Luck …
-                {/if}
-            </span>
+            <LuckPill {luck} stale={luckStale} size={compact ? 'md' : 'lg'} live />
         {/if}
         <button type="button" class="tool" aria-label="Random roll" onclick={() => x.random()}>
             <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="4"></rect><circle cx="8.5" cy="8.5" r="1.2" fill="currentColor"></circle><circle cx="15.5" cy="15.5" r="1.2" fill="currentColor"></circle><circle cx="15.5" cy="8.5" r="1.2" fill="currentColor"></circle><circle cx="8.5" cy="15.5" r="1.2" fill="currentColor"></circle></svg>
@@ -117,16 +111,6 @@
 </section>
 
 <style>
-    .luck { flex: none; height: 28px; padding: 0 11px; border-radius: 14px; display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; font-weight: 700; font-size: 14px; transition: opacity 0.15s; }
-    .luck b { font-family: var(--cond); font-weight: 800; font-size: 18px; }
-    .luck.lucky { color: var(--lucky-ink); background: color-mix(in srgb, var(--lucky-ink) 14%, var(--paper)); }
-    .luck.unlucky { color: var(--unlucky-ink); background: color-mix(in srgb, var(--unlucky-ink) 14%, var(--paper)); }
-    .luck.average { color: var(--ink); background: var(--btn-muted-bg); }
-    .luck.pending { color: var(--muted); font-weight: 600; background: var(--btn-muted-bg); }
-    .luck.stale { opacity: 0.6; }
-    .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
-    .compact .luck { height: 26px; padding: 0 9px; font-size: 13px; gap: 5px; }
-    .compact .luck b { font-size: 17px; }
     .opp { margin: 0; display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--soft); min-height: 22px; }
     .opp.stale { opacity: 0.6; }
     .opp .after { color: var(--muted); }
