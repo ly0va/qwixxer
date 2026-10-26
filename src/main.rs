@@ -631,15 +631,18 @@ enum Commands {
         /// Warm start from this win model dir (default: from scratch)
         #[arg(long)]
         init: Option<String>,
-        /// Thermometer inputs (widens a plain --init)
+        /// Plain inputs instead of the thermometer ones (thermometer inputs widen a plain --init)
         #[arg(long)]
-        thermo: bool,
-        /// Auxiliary heads: final row marks, strikes, score difference (saved to aux.mpk, never used in play)
+        no_thermo: bool,
+        /// Leave out the scalars the thermometer bits repeat (row progress and marks, strikes)
         #[arg(long)]
-        aux: bool,
-        /// Tempo head: the value of moving next (saved to tempo.mpk, used in play)
+        slim: bool,
+        /// No auxiliary heads (by default: final row marks, strikes, score difference, saved to aux.mpk, never used in play)
         #[arg(long)]
-        tempo: bool,
+        no_aux: bool,
+        /// No tempo head (by default: the value of moving next, saved to tempo.mpk, used in play)
+        #[arg(long)]
+        no_tempo: bool,
         #[arg(long, default_value = "10")]
         epochs: usize,
         /// Peak learning rate (cosine decay to 0)
@@ -659,7 +662,7 @@ enum Commands {
         width: usize,
         #[arg(long, default_value = "42")]
         seed: u64,
-        /// Today's fit as a control: Adam, constant lr, no decay or averaging, last epoch saved
+        /// Today's fit as a control: Adam, constant lr, no decay or averaging, last epoch saved; plain inputs, no heads
         #[arg(long)]
         legacy_fit: bool,
     },
@@ -1365,9 +1368,10 @@ fn main() {
             data,
             out,
             init,
-            thermo,
-            aux,
-            tempo,
+            no_thermo,
+            slim,
+            no_aux,
+            no_tempo,
             epochs,
             lr,
             wd,
@@ -1381,9 +1385,11 @@ fn main() {
                 data,
                 out,
                 init,
-                thermo,
-                aux,
-                tempo,
+                // Thermometer inputs and both heads by default; the legacy fit is the plain net.
+                thermo: !no_thermo && !legacy_fit,
+                slim,
+                aux: !no_aux && !legacy_fit,
+                tempo: !no_tempo && !legacy_fit,
                 epochs,
                 lr,
                 wd,

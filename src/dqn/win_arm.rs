@@ -34,6 +34,8 @@ pub struct ArmModel<B: Backend> {
     pub aux: Option<AuxHeads<B>>,
     /// The tempo head when the arm has one; saved to `tempo.mpk`.
     pub tempo: Option<Linear<B>>,
+    /// Reads slim thermometer inputs ([`crate::dqn::win::slim`]).
+    pub slim: bool,
 }
 
 /// Outputs for n input rows: the antisymmetric logit `[n, 1]`, and with
@@ -94,12 +96,16 @@ impl<B: Backend> ArmModel<B> {
     }
 }
 
-/// Inputs and swapped inputs of (me, opp) boards, flat, and their width.
-pub fn encode(boards: &[(&State, &State)], thermo: bool) -> (Vec<f32>, Vec<f32>, usize) {
+/// Inputs and swapped inputs of (me, opp) boards, flat, and their width;
+/// `slim` (thermometer inputs only) masks them as a slim net reads them.
+pub fn encode(boards: &[(&State, &State)], thermo: bool, slim: bool) -> (Vec<f32>, Vec<f32>, usize) {
     let (mut x, mut s) = (Vec::new(), Vec::new());
     for &(me, opp) in boards {
         if thermo {
-            let v = thermo_input(me, opp);
+            let mut v = thermo_input(me, opp);
+            if slim {
+                crate::dqn::win::slim(&mut v);
+            }
             x.extend_from_slice(&v);
             s.extend_from_slice(&swap_thermo(&v));
         } else {
@@ -115,10 +121,11 @@ pub fn encode(boards: &[(&State, &State)], thermo: bool) -> (Vec<f32>, Vec<f32>,
 pub fn tensors<B: Backend>(
     samples: &[&Sample],
     thermo: bool,
+    slim: bool,
     device: &B::Device,
 ) -> (Tensor<B, 2>, Tensor<B, 2>, Targets<B>) {
     let boards: Vec<(&State, &State)> = samples.iter().map(|s| (&s.me, &s.opp)).collect();
-    let (x, s, d) = encode(&boards, thermo);
+    let (x, s, d) = encode(&boards, thermo, slim);
     let n = samples.len();
     let col = |f: &dyn Fn(&Sample) -> Vec<f32>, w: usize| {
         let v: Vec<f32> = samples.iter().flat_map(|s| f(s)).collect();
@@ -311,12 +318,12 @@ pub struct Preds {
 
 pub fn predict(model: &ArmModel<MyBackend>, samples: &[&Sample]) -> Preds {
     let device = Default::default();
-    let thermo = model.net.is_thermo();
+    let (thermo, slim) = (model.net.is_thermo(), model.slim);
     let mut out = Preds::default();
     let v = |t: Tensor<MyBackend, 2>| t.into_data().to_vec::<f32>().unwrap();
     for chunk in samples.chunks(4096) {
         let boards: Vec<(&State, &State)> = chunk.iter().map(|s| (&s.me, &s.opp)).collect();
-        let (x, s, d) = encode(&boards, thermo);
+        let (x, s, d) = encode(&boards, thermo, slim);
         let o = model.forward(flat_tensor(&x, d, &device), flat_tensor(&s, d, &device));
         out.p.extend(v(o.z).into_iter().map(sigmoid));
         if let (Some(m), Some(st), Some(df)) = (o.marks, o.strikes, o.diff) {
@@ -428,6 +435,8 @@ pub struct ArmCfg {
     pub init: Option<String>,
     /// Thermometer inputs (a plain `init` is widened).
     pub thermo: bool,
+    /// Slim thermometer inputs: without the scalars the bits repeat.
+    pub slim: bool,
     /// Auxiliary heads.
     pub aux: bool,
     /// Tempo head (the value of moving next).
@@ -467,8 +476,11 @@ impl ArmCfg {
         if self.aux_weights.len() != 3 || self.aux_weights.iter().any(|&w| !(w >= 0.0)) {
             return Err("--aux-weights takes 3 non-negative weights: marks,strikes,difference".into());
         }
+        if self.slim && !self.thermo {
+            return Err("--slim leaves out thermometer scalars: drop --no-thermo".into());
+        }
         if self.legacy && (self.thermo || self.aux || self.tempo) {
-            return Err("--legacy-fit refits the plain net without aux heads: drop --thermo, --aux and --tempo".into());
+            return Err("--legacy-fit refits the plain net without aux or tempo heads".into());
         }
         for f in ["meta.json", "data.bin"] {
             if !Path::new(&format!("{}/{f}", self.data)).exists() {
@@ -485,10 +497,10 @@ impl ArmCfg {
                 let c = WinModelConfig::load(format!("{init}/config.json"))
                     .map_err(|e| format!("--init {init}: unreadable config.json ({e:?})"))?;
                 if c.is_thermo() && !self.thermo {
-                    return Err(format!("--init {init} is a thermometer net: add --thermo"));
+                    return Err(format!("--init {init} is a thermometer net: drop --no-thermo"));
                 }
                 if c.is_tempo() && !self.tempo {
-                    return Err(format!("--init {init} has a tempo head: add --tempo"));
+                    return Err(format!("--init {init} has a tempo head: drop --no-tempo"));
                 }
             }
             None if self.width == 0 => return Err("--width must be at least 1".into()),
@@ -556,11 +568,13 @@ pub fn fit(cfg: &ArmCfg) -> Result<FitSummary, String> {
         .with_width(width)
         .with_thermo(net.is_thermo().then_some(true))
         .with_aux(cfg.aux.then_some(true))
-        .with_tempo(cfg.tempo.then_some(true));
+        .with_tempo(cfg.tempo.then_some(true))
+        .with_slim(cfg.slim.then_some(true));
     let model = ArmModel {
         net,
         aux: cfg.aux.then(|| AuxHeads::new(width, &device)),
         tempo,
+        slim: cfg.slim,
     };
     std::fs::create_dir_all(&cfg.out).map_err(|e| format!("{}: {e}", cfg.out))?;
     if cfg.legacy {
@@ -592,7 +606,7 @@ fn run<O: Optimizer<ArmModel<Ad>, Ad>>(
         .iter()
         .chain(ds.train.decisions.iter().flat_map(|d| &d.samples))
         .collect();
-    let thermo = model.net.is_thermo();
+    let (thermo, slim) = (model.net.is_thermo(), model.slim);
     let total = cfg.epochs * samples.len().div_ceil(BATCH);
     let mut ema = Ema::new(&model, if cfg.legacy { 0.0 } else { cfg.ema });
     let train_sub = subset(&ds.train, TRAIN_SUBSET);
@@ -605,7 +619,7 @@ fn run<O: Optimizer<ArmModel<Ad>, Ad>>(
         order.shuffle(&mut SmallRng::seed_from_u64(cfg.seed.wrapping_add(epoch as u64)));
         for chunk in order.chunks(BATCH) {
             let batch: Vec<&Sample> = chunk.iter().map(|&i| samples[i]).collect();
-            let (x, s, t) = tensors::<Ad>(&batch, thermo, &device);
+            let (x, s, t) = tensors::<Ad>(&batch, thermo, slim, &device);
             let (loss, _) = arm_loss(model.forward(x, s), &t, &cfg.aux_weights);
             let grads = GradientsParams::from_grads(loss.backward(), &model);
             let lr = if cfg.legacy {
@@ -709,6 +723,7 @@ mod tests {
             net,
             aux: aux.then(|| AuxHeads::new(8, &device)),
             tempo: None,
+            slim: false,
         }
     }
 
@@ -757,8 +772,8 @@ mod tests {
             let m = random_arm(31, thermo, true);
             let run =
                 |x: &[f32], s: &[f32], d: usize| m.forward(flat_tensor(x, d, &device), flat_tensor(s, d, &device));
-            let (x, s, d) = encode(&[(&a, &b)], thermo);
-            let (xr, sr, _) = encode(&[(&b, &a)], thermo);
+            let (x, s, d) = encode(&[(&a, &b)], thermo, false);
+            let (xr, sr, _) = encode(&[(&b, &a)], thermo, false);
             let (o, r) = (run(&x, &s, d), run(&xr, &sr, d));
             let (zo, zr) = (
                 o.z.into_data().to_vec::<f32>().unwrap(),
@@ -881,7 +896,7 @@ mod tests {
         ema.update(&m);
         let back = ema.apply(m.clone());
         let (a, b) = boards();
-        let (x, s, d) = encode(&[(&a, &b)], true);
+        let (x, s, d) = encode(&[(&a, &b)], true, false);
         let device = Default::default();
         let z = |m: &ArmModel<MyBackend>| {
             m.forward(flat_tensor(&x, d, &device), flat_tensor(&s, d, &device))
@@ -1002,6 +1017,7 @@ mod tests {
             out,
             init,
             thermo: false,
+            slim: false,
             aux: false,
             tempo: false,
             epochs: 2,
@@ -1093,6 +1109,30 @@ mod tests {
     }
 
     #[test]
+    fn a_slim_arm_fits_and_saves_a_slim_net() {
+        let base = tmp("slim");
+        let (data, _) = tiny(&base);
+        let out = format!("{base}/arm");
+        let slim_arm = |out: String| ArmCfg {
+            thermo: true,
+            slim: true,
+            aux: true,
+            epochs: 1,
+            ..arm(&data, out, None)
+        };
+        fit(&slim_arm(out.clone())).unwrap();
+        assert!(WinStrategy::load(&out).net.is_slim());
+        assert!(WinModelConfig::load(format!("{out}/config.json")).unwrap().is_slim());
+        // Slim leaves out thermometer scalars: it needs the thermometer.
+        let plain = ArmCfg {
+            thermo: false,
+            ..slim_arm(format!("{base}/plain"))
+        };
+        assert!(plain.validate().unwrap_err().contains("--slim"));
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
     fn a_from_scratch_arm_fits() {
         let base = tmp("scratch");
         let (data, _) = tiny(&base);
@@ -1171,7 +1211,7 @@ mod tests {
             init: Some(thermo_init),
             ..base_cfg()
         })
-        .contains("add --thermo"));
+        .contains("drop --no-thermo"));
         // A dataset without held-out games is refused when the fit loads it.
         let mut ds = load(&data).unwrap();
         ds.heldout = Split::default();
@@ -1192,7 +1232,7 @@ mod tests {
         for thermo in [false, true] {
             let m = random_arm(35, thermo, true);
             let net = ManualWinNet::from_model(&m.net).with_aux(m.aux.as_ref().unwrap());
-            let (x, s, d) = encode(&[(&a, &b)], thermo);
+            let (x, s, d) = encode(&[(&a, &b)], thermo, false);
             let o = m.forward(flat_tensor(&x, d, &device), flat_tensor(&s, d, &device));
             let (marks, strikes, diff) = (values(o.marks), values(o.strikes), values(o.diff));
             let got: AuxPred = net.aux_states(&a, &b).unwrap();
@@ -1314,7 +1354,7 @@ mod tests {
         let err = arm(&data, format!("{base}/out"), Some(init.clone()))
             .validate()
             .unwrap_err();
-        assert!(err.contains("--tempo"), "{err}");
+        assert!(err.contains("--no-tempo"), "{err}");
         assert!(ArmCfg {
             tempo: true,
             ..arm(&data, format!("{base}/out"), Some(init))

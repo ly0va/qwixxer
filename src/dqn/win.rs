@@ -122,6 +122,24 @@ pub fn thermo_input(me: &State, opp: &State) -> [f32; WIN_INPUTS_T] {
     x
 }
 
+/// A slim net's input (docs/superpowers/specs/2026-10-26-win-slim-inputs-design.md):
+/// [`thermo_input`] without the scalars its bits repeat exactly, each row
+/// half's progress and mark count and each player's strike count. They
+/// read as zeros, which is the same as leaving them out: a zero input adds
+/// nothing and its weights get no gradient.
+pub fn slim(x: &mut [f32; WIN_INPUTS_T]) {
+    for half in x[..4 * T_TOKEN].chunks_mut(T_HALF) {
+        half[..2].fill(0.0);
+    }
+    slim_globals(&mut x[4 * T_TOKEN..]);
+}
+
+/// [`slim`] for the globals alone: each player's strike count.
+fn slim_globals(g: &mut [f32]) {
+    g[0] = 0.0;
+    g[4] = 0.0;
+}
+
 /// [`swap_input`] for [`thermo_input`]: swap the halves of every token, the
 /// per-player globals and the strike bits; negate the difference.
 pub fn swap_thermo(x: &[f32; WIN_INPUTS_T]) -> [f32; WIN_INPUTS_T] {
@@ -173,6 +191,9 @@ pub struct WinModelConfig {
     /// next; docs/superpowers/specs/2026-10-20-win-tempo-design.md). `None`
     /// in older dirs (an `Option` for the same reason as `thermo`).
     pub tempo: Option<bool>,
+    /// Slim thermometer inputs ([`slim`]). `None` in older dirs (an
+    /// `Option` for the same reason as `thermo`).
+    pub slim: Option<bool>,
 }
 
 impl WinModelConfig {
@@ -186,6 +207,10 @@ impl WinModelConfig {
 
     pub fn is_tempo(&self) -> bool {
         self.tempo == Some(true)
+    }
+
+    pub fn is_slim(&self) -> bool {
+        self.slim == Some(true)
     }
 
     pub fn init<B: Backend>(&self, device: &B::Device) -> WinModel<B> {
@@ -509,6 +534,8 @@ pub struct ManualWinNet {
     aux: Option<ManualAux>,
     /// The tempo head t: the logit gains t(x) + t(swap x) (who moves next).
     tempo: Option<Dense>,
+    /// Reads [`slim`] inputs.
+    slim: bool,
     /// The row encoder's output for every token a game can reach:
     /// `[HALVES × HALVES × width]`, my half's [`half_index`] major.
     row_codes: Vec<f32>,
@@ -547,10 +574,32 @@ impl ManualWinNet {
             out: Dense::from_linear(&model.out),
             aux: None,
             tempo: None,
+            slim: false,
             row_codes: Vec::new(),
         };
         net.row_codes = net.row_table();
         net
+    }
+
+    /// The net reading [`slim`] inputs (a thermometer net's).
+    pub fn with_slim(mut self) -> Self {
+        assert!(self.is_thermo(), "slim inputs are thermometer inputs");
+        self.slim = true;
+        self.row_codes = self.row_table();
+        self
+    }
+
+    pub fn is_slim(&self) -> bool {
+        self.slim
+    }
+
+    /// [`thermo_input`] as this net reads it: [`slim`] for a slim net.
+    fn thermo(&self, me: &State, opp: &State) -> [f32; WIN_INPUTS_T] {
+        let mut x = thermo_input(me, opp);
+        if self.slim {
+            slim(&mut x);
+        }
+        x
     }
 
     /// [`ManualWinNet::row_codes`], each entry computed as [`ManualWinNet::g`]
@@ -572,7 +621,7 @@ impl ManualWinNet {
             for &theirs in &halves {
                 let (me, opp) = (board(mine), board(theirs));
                 if self.is_thermo() {
-                    self.row1.apply(&thermo_input(&me, &opp)[..T_TOKEN], &mut h, true);
+                    self.row1.apply(&self.thermo(&me, &opp)[..T_TOKEN], &mut h, true);
                 } else {
                     self.row1.apply(&win_input(&me, &opp)[..TOKEN], &mut h, true);
                 }
@@ -649,7 +698,7 @@ impl ManualWinNet {
     /// The logit for `me` against `opp` in the net's own input encoding.
     pub fn logit_states(&self, me: &State, opp: &State) -> f32 {
         if self.is_thermo() {
-            let x = thermo_input(me, opp);
+            let x = self.thermo(me, opp);
             Self::combine(self.g_t(&x), self.g_t(&swap_thermo(&x)))
         } else {
             self.logit(&win_input(me, opp))
@@ -666,7 +715,7 @@ impl ManualWinNet {
     /// The full input for `me` against `opp` in the net's encoding.
     fn input(&self, me: &State, opp: &State) -> Vec<f32> {
         if self.is_thermo() {
-            thermo_input(me, opp).to_vec()
+            self.thermo(me, opp).to_vec()
         } else {
             win_input(me, opp).to_vec()
         }
@@ -684,6 +733,10 @@ impl ManualWinNet {
             let (a, b) = globals[2 * k * g_len..(2 * k + 2) * g_len].split_at_mut(g_len);
             fill_globals(a, (me, &gm), (opp, &go));
             fill_globals(b, (opp, &go), (me, &gm));
+            if self.slim {
+                slim_globals(a);
+                slim_globals(b);
+            }
         }
         let (mut h, mut e) = (Vec::new(), Vec::new());
         // Row encoder: looked up, or computed for a row no game reaches.
@@ -791,7 +844,7 @@ impl ManualWinNet {
     pub fn aux_states(&self, me: &State, opp: &State) -> Option<AuxPred> {
         let aux = self.aux.as_ref()?;
         let (x, s): (Vec<f32>, Vec<f32>) = if self.is_thermo() {
-            let x = thermo_input(me, opp);
+            let x = self.thermo(me, opp);
             (x.to_vec(), swap_thermo(&x).to_vec())
         } else {
             let x = win_input(me, opp);
@@ -907,6 +960,9 @@ impl WinStrategy {
             .load_file(format!("{dir}/model"), &CompactRecorder::new(), &device)
             .expect("Failed to load win model");
         let mut net = ManualWinNet::from_model(&model);
+        if cfg.is_slim() {
+            net = net.with_slim();
+        }
         if cfg.has_aux() {
             let heads = AuxHeads::<MyBackend>::new(cfg.width, &device)
                 .load_file(format!("{dir}/aux"), &CompactRecorder::new(), &device)
@@ -936,6 +992,9 @@ impl WinStrategy {
         let cfg = WinModelConfig::load_binary(config).expect("Failed to read the win model config");
         let model = cfg.init::<MyBackend>(&device).load_record(record(model, "win model"));
         let mut net = ManualWinNet::from_model(&model);
+        if cfg.is_slim() {
+            net = net.with_slim();
+        }
         if cfg.has_aux() {
             let bytes = aux.expect("the config says the net has auxiliary heads");
             net = net.with_aux(&AuxHeads::<MyBackend>::new(cfg.width, &device).load_record(record(bytes, "aux heads")));
@@ -1427,6 +1486,52 @@ mod tests {
     }
 
     #[test]
+    fn slim_zeroes_the_scalars_its_bits_repeat() {
+        let want: Vec<usize> = (0..8).flat_map(|h| [26 * h, 26 * h + 1]).chain([208, 212]).collect();
+        for (me, opp) in pairs() {
+            let x = thermo_input(&me, &opp);
+            let mut y = x;
+            slim(&mut y);
+            for i in 0..WIN_INPUTS_T {
+                if want.contains(&i) {
+                    assert_eq!(y[i], 0.0, "input {i}");
+                } else {
+                    assert_eq!(y[i], x[i], "input {i}");
+                }
+            }
+            // The mask commutes with the player swap and the colour relabellings.
+            let mut s = swap_thermo(&x);
+            slim(&mut s);
+            assert_eq!(swap_thermo(&y), s);
+            for code in 0..8u8 {
+                let mut r = relabel_t(&x, code);
+                slim(&mut r);
+                assert_eq!(relabel_t(&y, code), r, "relabelling {code}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_slim_net_reads_the_masked_inputs() {
+        let model = random_thermo(23, 16);
+        let net = ManualWinNet::from_model(&model).with_slim();
+        assert!(net.is_slim());
+        let xs: Vec<_> = pairs()
+            .iter()
+            .map(|(me, opp)| {
+                let mut x = thermo_input(me, opp);
+                slim(&mut x);
+                x
+            })
+            .collect();
+        for ((me, opp), zb) in pairs().iter().zip(model_logits_t(&model, &xs)) {
+            let zm = net.logit_states(me, opp);
+            assert!((zb - zm).abs() < 1e-4, "burn {zb} vs manual {zm}");
+        }
+        assert!(!ManualWinNet::from_model(&model).is_slim());
+    }
+
+    #[test]
     fn manual_net_matches_burn_for_a_thermometer_net() {
         let model = random_thermo(22, 16);
         let net = ManualWinNet::from_model(&model);
@@ -1631,6 +1736,32 @@ mod tests {
             assert!((want - got).abs() < 0.05, "thermo {thermo}: {want} vs {got}");
         }
         std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn slim_dirs_round_trip() {
+        let dir = std::env::temp_dir().join(format!("qwixxer-win-slim-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let dir = dir.to_string_lossy().into_owned();
+        let model = random_thermo(28, 8);
+        model
+            .clone()
+            .save_file(format!("{dir}/model"), &CompactRecorder::new())
+            .unwrap();
+        WinModelConfig::new()
+            .with_width(8)
+            .with_thermo(Some(true))
+            .with_slim(Some(true))
+            .save(format!("{dir}/config.json"))
+            .unwrap();
+        let loaded = WinStrategy::load(&dir);
+        assert!(loaded.net.is_slim());
+        let (a, b) = boards();
+        let want = ManualWinNet::from_model(&model).with_slim().logit_states(&a, &b);
+        let got = loaded.net.logit_states(&a, &b);
+        assert!((want - got).abs() < 0.05, "{want} vs {got}");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

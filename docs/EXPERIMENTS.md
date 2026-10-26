@@ -2073,7 +2073,8 @@ search's gate and blend apply unchanged (`win`, `win-search`).
    marks, strikes, score difference. 10% of games held out: 395k turn
    ends + 611k decisions to train on, 44k + 69k held out. The file
    saves after every batch and resumes a stopped run.
-2. **Fit** (`win-arm --thermo --aux --tempo --lr 1e-3 --epochs 10`, from
+2. **Fit** (`win-arm --lr 1e-3 --epochs 10`: thermometer inputs and the aux and
+   tempo heads are `win-arm`'s defaults since 2026-10-26; from
    scratch, W64; `--epochs 20` on r1-sized data): AdamW (wd 1e-4), batch 1024, 1% linear warmup then
    cosine to 0, weight average (EMA 0.999), aux loss weights 1.0 / 0.5 /
    0.5 (marks / strikes / difference). The held-out set is measured every
