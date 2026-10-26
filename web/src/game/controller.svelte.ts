@@ -81,7 +81,7 @@ export class GameController {
         if (prefs) {
             this.theme = prefs.theme ?? 'light';
             this.nextBot = prefs.nextBot ?? 'master_plus';
-            this.firstRoll = prefs.firstRoll in NEXT_FIRST_ROLL ? prefs.firstRoll : 'alternate';
+            this.firstRoll = Object.hasOwn(NEXT_FIRST_ROLL, prefs.firstRoll) ? prefs.firstRoll : 'alternate';
         }
         const saved = this.read<Saved>(SAVE);
         if (saved && (await this.resume(saved, prefs?.nextBot))) return;

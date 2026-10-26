@@ -114,6 +114,12 @@ describe('GameController', () => {
         expect(again.firstRoll).toBe('alternate');
     });
 
+    it('falls back to alternating for a First roll pref it does not know', async () => {
+        const c = new GameController(fakeEngine(), memStore({ 'qwixxer.prefs.v1': JSON.stringify({ firstRoll: 'toString' }) }), instant, () => 1);
+        await c.init();
+        expect(c.firstRoll).toBe('alternate');
+    });
+
     it('remembers who started a saved game; old saves had the bot first', async () => {
         const save = (p: object) => memStore({ 'qwixxer.save.v1': JSON.stringify({ snapshot: '{}', log: [], rollNo: 2, bot: 'master', nextBot: 'master', ...p }) });
         const old = new GameController(fakeEngine(), save({}), instant, () => 1);
