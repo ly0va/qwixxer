@@ -2,7 +2,7 @@
     import { gameHref } from '../game/review';
     import type { GameController } from '../game/controller.svelte';
     import { phoneLayout } from '../game/layout';
-    import { chipsFor, confirmState, ROWS, sheetModel, strikeOpen, type Chip, type LogEntry } from '../game/rules';
+    import { chipsFor, pendingGain, confirmState, ROWS, sheetModel, strikeOpen, type Chip, type LogEntry } from '../game/rules';
     import BotPanel from './BotPanel.svelte';
     import ChipView from './Chip.svelte';
     import DiceTray from './DiceTray.svelte';
@@ -44,6 +44,7 @@
         title: v.you.score > v.bot.score ? 'You win' : v.you.score < v.bot.score ? 'Bot wins' : 'Draw',
         score: `${v.you.score} – ${v.bot.score}`,
     } : null);
+    const gain = $derived(c.view && !c.committing ? pendingGain(c.view, c.sel, c.strikeSel) : null);
 </script>
 
 <svelte:window bind:innerWidth={w} bind:innerHeight={h} />
@@ -76,7 +77,7 @@
                 <span class="label">Score</span>
                 {#each ROWS as r, i}<span class="part" style="background: {r === 'yellow' ? 'var(--score-yellow)' : `var(--${r}-band)`}; color: {r === 'yellow' ? 'var(--on-yellow)' : 'var(--on-band)'}">{['Red', 'Yellow', 'Green', 'Blue'][i]} {v?.you.row_points[i] ?? 0}</span>{/each}
                 <span class="part strikes">Strikes −{5 * (v?.you.strikes ?? 0)}</span>
-                <b class="total">= {v?.you.score ?? 0}</b>
+                <b class="total">= {v?.you.score ?? 0}{#if gain !== null}<span class="gain" aria-label="{gain >= 0 ? 'plus' : 'minus'} {Math.abs(gain)} if confirmed">{gain >= 0 ? '+' : '−'}{Math.abs(gain)}</span>{/if}</b>
             </div>
             <div class="card">
                 <span class="label">Strikes</span>
@@ -129,6 +130,8 @@
     .label { font-size: 12px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; padding-left: 4px; }
     .part { padding: 2px 6px; border-radius: 6px; font-weight: 600; font-size: 13px; }
     .part.strikes { background: var(--btn-muted-bg); color: var(--ink); }
+    /* What the pencilled marks would add, in pencil, until they are inked. */
+    .gain { margin-left: 6px; font-family: var(--cond); font-weight: 700; font-size: 22px; color: var(--pencil); }
     .total { font-family: var(--cond); font-size: 22px; text-align: right; }
     .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; justify-items: center; }
     .box { position: relative; box-sizing: border-box; width: 40px; height: 40px; border-radius: 8px; padding: 0; border: 2px solid var(--ink); background: var(--paper); }

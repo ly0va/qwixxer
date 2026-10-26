@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { View } from '../engine/protocol';
-import { clickable, confirmState, logEntry, predictedTurn, sheetModel, strikeOpen, type SheetUi } from './rules';
+import { clickable, confirmState, logEntry, pendingGain, predictedTurn, sheetModel, strikeOpen, type SheetUi } from './rules';
 
 const empty = () => ({ marks: [0, 1, 2, 3].map(() => Array(11).fill(false)), strikes: 0, score: 0, row_points: [0, 0, 0, 0] });
 function view(p: Partial<View>): View {
@@ -134,5 +134,26 @@ describe('predictedTurn', () => {
         expect(predictedTurn({ white: null, colour: c, strike: false }).chips).toHaveLength(1);
         expect(predictedTurn({ white: null, colour: null, strike: true })).toEqual({ verb: 'takes', chips: [{ kind: 'strike' }] });
         expect(predictedTurn({ white: null, colour: null, strike: false })).toEqual({ verb: 'passes', chips: [] });
+    });
+});
+
+describe('pendingGain', () => {
+    it('is null with nothing pencilled', () => {
+        expect(pendingGain(view({}), [], false)).toBeNull();
+    });
+    it('adds each pencilled mark to its row: the third red mark is +3, a first yellow +1', () => {
+        const v = view({});
+        mark(v, 'you', 0, [0, 1]);
+        expect(pendingGain(v, [{ row: 0, n: 5 }], false)).toBe(3);
+        expect(pendingGain(v, [{ row: 0, n: 5 }, { row: 1, n: 7 }], false)).toBe(4);
+        expect(pendingGain(v, [{ row: 0, n: 5 }, { row: 0, n: 7 }], false)).toBe(3 + 4);
+    });
+    it('counts the lock of a pencilled row-ending number as a mark too', () => {
+        const v = view({});
+        mark(v, 'you', 2, [0, 1, 2, 3, 4]); // five green: 15 points
+        expect(pendingGain(v, [{ row: 2, n: 2 }], false)).toBe(28 - 15);
+    });
+    it('is −5 for a pencilled strike', () => {
+        expect(pendingGain(view({}), [], true)).toBe(-5);
     });
 });

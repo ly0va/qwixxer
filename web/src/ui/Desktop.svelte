@@ -1,7 +1,7 @@
 <script lang="ts">
     import type { GameController } from '../game/controller.svelte';
     import { DESK_H, DESK_W, deskScale } from '../game/layout';
-    import { chipsFor, ROWS, sheetModel, type LogEntry } from '../game/rules';
+    import { chipsFor, pendingGain, ROWS, sheetModel, type LogEntry } from '../game/rules';
     import ActionBar from './ActionBar.svelte';
     import BotPanel from './BotPanel.svelte';
     import DiceTray from './DiceTray.svelte';
@@ -18,6 +18,7 @@
         ? { n: c.rollNo, lines: [{ who: 'You', chips: [], empty: 'choosing…' }, { who: 'Bot', chips: chipsFor(c.view.bot_white ? [c.view.bot_white] : [], false), empty: '–' }] }
         : c.view?.phase === 'passive' ? { n: c.rollNo, lines: [{ who: 'Bot', chips: [], empty: '…' }, { who: 'You', chips: [], empty: 'choosing…' }] } : null);
     const scoreParts = $derived(c.view ? ROWS.map((r, i) => ({ r, text: `${['Red', 'Yellow', 'Green', 'Blue'][i]} ${c.view!.you.row_points[i]}` })) : []);
+    const gain = $derived(c.view && !c.committing ? pendingGain(c.view, c.sel, c.strikeSel) : null);
 </script>
 
 <svelte:window bind:innerWidth={w} bind:innerHeight={h} />
@@ -34,7 +35,7 @@
                 <div class="score">
                     {#each scoreParts as p}<span class="part" style="background: {p.r === 'yellow' ? 'var(--score-yellow)' : `var(--${p.r}-band)`}; color: {p.r === 'yellow' ? 'var(--on-yellow)' : 'var(--on-band)'}">{p.text}</span>{/each}
                     <span class="part strikes">−{5 * (c.view?.you.strikes ?? 0)} strikes</span>
-                    <b>= {c.view?.you.score ?? 0}</b>
+                    <b>= {c.view?.you.score ?? 0}{#if gain !== null}<span class="gain" aria-label="{gain >= 0 ? 'plus' : 'minus'} {Math.abs(gain)} if confirmed">{gain >= 0 ? '+' : '−'}{Math.abs(gain)}</span>{/if}</b>
                 </div>
             </section>
             <ActionBar {c} />
@@ -58,6 +59,8 @@
     .score { display: flex; gap: 8px; font-size: 14px; color: var(--soft); align-items: center; }
     .part { padding: 2px 8px; border-radius: 6px; font-weight: 600; }
     .part.strikes { background: var(--btn-muted-bg); color: var(--ink); }
+    /* What the pencilled marks would add, in pencil, until they are inked. */
+    .gain { margin-left: 6px; font-family: var(--cond); font-weight: 700; font-size: 16px; color: var(--pencil); }
     main :global(.bar) { margin-top: auto; }
     aside { width: 392px; display: flex; flex-direction: column; gap: 14px; min-height: 0; }
     .logbox { flex: 1; min-height: 0; background: var(--paper); border-radius: 14px; padding: 12px 14px; box-shadow: 0 1px 0 var(--edge); overflow: hidden; }

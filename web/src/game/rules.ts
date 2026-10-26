@@ -36,6 +36,22 @@ export function confirmState(view: View, sel: Sq[], strikeSel: boolean): { label
     return { label: 'Mark', ok: false };
 }
 
+/**
+ * The score change the pencilled marks or strike would make (a pencilled
+ * row-ending number brings its lock, counted as a mark); null with nothing
+ * pencilled.
+ */
+export function pendingGain(view: View, sel: Sq[], strikeSel: boolean): number | null {
+    if (strikeSel) return -5;
+    if (sel.length === 0) return null;
+    const tri = (n: number) => (n * (n + 1)) / 2;
+    return ROWS.reduce((sum, _, r) => {
+        const marks = view.you.marks[r];
+        const had = marks.filter(Boolean).length + (marks[10] ? 1 : 0);
+        const added = sel.filter((s) => s.row === r).reduce((k, s) => k + (isTerminal(s) ? 2 : 1), 0);
+        return sum + tri(had + added) - tri(had);
+    }, 0);
+}
 export const strikeOpen = (view: View, sel: Sq[]) => view.phase === 'active' && !!view.options?.strike && sel.length === 0;
 
 export type CellLook = 'normal' | 'legal' | 'soft' | 'skipped' | 'out';
