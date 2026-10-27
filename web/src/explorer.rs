@@ -728,8 +728,14 @@ impl Explorer {
             below: 0.0,
             above: 0.0,
         };
-        let mut visit = |w: f64, f: f64| {
-            l.average += w * f;
+        // The average sums the roller's own values as `top_sums` does (on
+        // their roll, the weight less theirs), so the review's numbers match
+        // it to the bit.
+        let theirs = pos.roller == Roller::Opponent;
+        let mut sum = 0.0;
+        let mut visit = |w: f64, v: f64| {
+            sum += w * v;
+            let f = if theirs { 1.0 - v } else { v };
             l.bins[luck_bin(f)] += w;
             if f < t - LUCK_TIE {
                 l.below += w;
@@ -737,9 +743,12 @@ impl Explorer {
                 l.above += w;
             }
         };
-        match pos.roller {
-            Roller::You => self.each_top_yours(&you, &opp, pairs, |w, f| visit(w, f)),
-            Roller::Opponent => self.each_top_yours(&opp, &you, pairs, |w, g| visit(w, 1.0 - g)),
+        if theirs {
+            self.each_top_yours(&opp, &you, pairs.clone(), &mut visit);
+            l.average = rolls_of(pairs).map(|r| r.1).sum::<f64>() - sum;
+        } else {
+            self.each_top_yours(&you, &opp, pairs, &mut visit);
+            l.average = sum;
         }
         Ok(l)
     }
