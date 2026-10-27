@@ -3,7 +3,7 @@ import type { MoveOut, View } from '../engine/protocol';
 import {
     clearSheet, closedRows, emptyPosition, exploreSheet, fromView, marginText, nextUnsetDie, overText, percent, randomDice,
     setDie, sheetTotal, swapSides, tapStrike, toEngine, toggleLock, toggleSquare,
-    addAnalysis, analysisKey, analysisMargin, chanceText, gamesText, isOver, luckText, moreBadges, moveChance, rankMoves, refineCount, winChance, ZERO_ANALYSIS,
+    addAnalysis, analysisKey, analysisMargin, chanceText, gamesText, isOver, luckHistogram, luckText, moreBadges, moveChance, rankMoves, refineCount, winChance, ZERO_ANALYSIS,
 } from './position';
 
 const markRed = (idx: number[]) => idx.reduce((p, i) => toggleSquare(p, 'you', 0, i), emptyPosition());
@@ -155,6 +155,27 @@ describe('analysis numbers', () => {
         expect(luckText({ this_roll: 0.553, average: 0.521 })).toEqual({ word: 'Lucky', value: '+3.2', tone: 'lucky', detail: 'This roll 55.3% · average 52.1%' });
         expect(luckText({ this_roll: 0.494, average: 0.521 })).toMatchObject({ word: 'Unlucky', value: '−2.7', tone: 'unlucky' });
         expect(luckText({ this_roll: 0.5212, average: 0.521 })).toMatchObject({ word: 'Average', value: '', tone: 'average' });
+    });
+
+    it('the luck histogram: bars on the luck axis, trimmed to the rolls there are', () => {
+        const bins = Array(100).fill(0);
+        bins[40] = 0.25; // 40–41%
+        bins[42] = 0.5;
+        bins[47] = 0.25;
+        const h = luckHistogram({ this_roll: 0.425, average: 0.42, bins, below: 0.25, above: 0.25 });
+        expect(h.bars.map((b) => [b.lo, b.share, b.current])).toEqual([[-2, 0.25, false], [-1, 0, false], [0, 0.5, true], [1, 0, false], [2, 0, false], [3, 0, false], [4, 0, false], [5, 0.25, false]].map(([lo, s, c]) => [expect.closeTo(lo as number), s, c]));
+        expect(h.bars.map((b) => b.tone)).toEqual(['unlucky', 'unlucky', 'lucky', 'lucky', 'lucky', 'lucky', 'lucky', 'lucky']);
+        expect(h.min).toBeCloseTo(-2);
+        expect(h.max).toBeCloseTo(6);
+        expect(h.ticks).toEqual([0, 5]);
+        expect(h.tallest).toBe(0.5);
+        expect(h.rank).toBe('Better than 25% of rolls');
+    });
+
+    it('the rank says "worse than" when more rolls beat this one', () => {
+        const h = luckHistogram({ this_roll: 0.3, average: 0.42, bins: Array(100).fill(0.01), below: 0.03, above: 0.96 });
+        expect(h.rank).toBe('Worse than 96% of rolls');
+        expect(h.ticks).toEqual([-40, -35, -30, -25, -20, -15, -10, -5, 0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55]);
     });
 
     it('a move shows P(win) as a percentage with one decimal', () => {

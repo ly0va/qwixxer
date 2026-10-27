@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { Answer, Engine, MoveOut, Position } from '../engine/protocol';
+import type { Answer, Engine, Luck, MoveOut, Position } from '../engine/protocol';
 import type { Store } from './controller.svelte';
 import { BAD_LINK, ExplorerController, LUCK_CHUNK, luckKey, MAX_BATCH, MAX_GAMES, MIN_BATCH } from './explorer.svelte';
 import { encode } from './link';
@@ -344,6 +344,9 @@ describe('ExplorerController analysis fixes', () => {
 });
 
 describe('ExplorerController luck', () => {
+    /** A luck chunk; its rolls all in bin `bin` unless `bins` says otherwise. */
+    const chunk = (this_roll: number, average: number, p: Partial<Luck> = {}): Luck =>
+        ({ this_roll, average, bins: Array(100).fill(0), below: 0, above: 0, ...p });
     type Call = { kind: string; pos: Position; first?: number; count?: number; resolve: (v: any) => void };
     function setupLuck(store = memStore()) {
         const calls: Call[] = [];
@@ -358,7 +361,10 @@ describe('ExplorerController luck', () => {
         const finish = async (this_roll: number) => {
             for (let c = luck().find((c) => !(c as any).done); c; c = luck().find((c) => !(c as any).done)) {
                 (c as any).done = true;
-                c.resolve({ this_roll, average: 0.05 * (c.count ?? 0) / 3 });
+                const share = (c.count ?? 0) / 21;
+                const bins = Array(100).fill(0);
+                bins[c.first ?? 0] = share;
+                c.resolve(chunk(this_roll, 0.05 * (c.count ?? 0) / 3, { bins, below: share / 2, above: share / 4 }));
                 await flush();
             }
         };
@@ -377,12 +383,17 @@ describe('ExplorerController luck', () => {
         expect(x.luck?.key).toBe(luckKey(x.pos));
         expect(x.luck?.value.this_roll).toBe(0.55);
         expect(x.luck?.value.average).toBeCloseTo(0.35);
+        expect(x.luck?.value.below).toBeCloseTo(0.5);
+        expect(x.luck?.value.above).toBeCloseTo(0.25);
+        expect(x.luck?.value.bins[0]).toBeCloseTo(3 / 21);
+        expect(x.luck?.value.bins[18]).toBeCloseTo(3 / 21);
+        expect(x.luck?.value.bins.reduce((a, b) => a + b, 0)).toBeCloseTo(1);
     });
 
     it('nothing shows until the last chunk is in', async () => {
         const { x, luck } = setupLuck();
         x.random();
-        luck()[0].resolve({ this_roll: 0.55, average: 0.05 });
+        luck()[0].resolve(chunk(0.55, 0.05));
         await flush();
         expect(x.luck).toBeNull();
         expect(luck()).toHaveLength(2);
@@ -397,7 +408,7 @@ describe('ExplorerController luck', () => {
         await flush();
         expect(kinds().filter((k) => k === 'explore')).toHaveLength(2);
         expect(kinds().at(-1)).toBe('explore'); // the luck chunk in flight doesn't hold it back
-        luck()[0].resolve({ this_roll: 0.1, average: 0.05 });
+        luck()[0].resolve(chunk(0.1, 0.05));
         await flush();
         expect(luck()[1]).toMatchObject({ first: 0 }); // the new dice, from the start
         (luck()[0] as any).done = true;

@@ -309,12 +309,15 @@ export class ExplorerController {
                     break;
                 }
                 const key = luckKey(this.pos);
-                const value = { this_roll: 0, average: 0 };
+                const value: Luck = { this_roll: 0, average: 0, bins: [], below: 0, above: 0 };
                 try {
                     for (let first = 0; first < WHITE_PAIRS && !this.luckDirty; first += LUCK_CHUNK) {
                         const part = await this.engine.luck(pos, first, Math.min(LUCK_CHUNK, WHITE_PAIRS - first));
                         value.this_roll = part.this_roll;
                         value.average += part.average;
+                        value.bins = part.bins.map((b, i) => b + (value.bins[i] ?? 0));
+                        value.below += part.below;
+                        value.above += part.above;
                     }
                     if (!this.luckDirty && luckKey(this.pos) === key) this.luck = { key, value };
                 } catch {

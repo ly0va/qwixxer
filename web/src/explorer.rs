@@ -147,12 +147,29 @@ pub struct Analysis {
 /// Spec "Engine" (`2026-10-22-explorer-roll-luck-design.md`): your P(win)
 /// after the roller's best turn for this roll, and the share of its average
 /// over all rolls that a chunk of white pairs contributes. The chunks' shares add up
-/// to the average; luck is this roll minus it.
+/// to the average; luck is this roll minus it. The chunk's rolls also come
+/// as a histogram of their top value (`bins`, by whole points of P(win)) and
+/// the probability of those worse (`below`) and better (`above`) than this
+/// roll; these add up over the chunks too.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Luck {
     pub this_roll: f32,
     pub average: f64,
+    pub bins: Vec<f64>,
+    pub below: f64,
+    pub above: f64,
 }
+
+/// Histogram bins of a roll's top value: whole points of P(win), 0..100.
+pub const LUCK_BINS: usize = 100;
+
+/// The bin of P(win) `f` (1.0 joins the top bin).
+pub(crate) fn luck_bin(f: f64) -> usize {
+    ((f * LUCK_BINS as f64) as usize).min(LUCK_BINS - 1)
+}
+
+/// Rolls within this of this roll's value tie with it: neither worse nor better.
+const LUCK_TIE: f64 = 1e-5;
 
 /// The unordered white pairs, the unit luck is computed in.
 pub const WHITE_PAIRS: u32 = 21;
@@ -702,15 +719,29 @@ impl Explorer {
         if you.strikes >= 4 || opp.strikes >= 4 || n_locked(locked) >= 2 {
             return Err("the game is over".into());
         }
-        Ok(Luck {
-            this_roll: self.top(&you, &opp, dice, pos.roller),
-            average: self.average_top(&you, &opp, pos.roller, pairs),
-        })
-    }
-
-    /// E[f]: the white pairs `pairs`' share of f's average over every roll.
-    pub(crate) fn average_top(&self, you: &State, opp: &State, roller: Roller, pairs: std::ops::Range<usize>) -> f64 {
-        self.top_sums(you, opp, roller, pairs).0
+        let this_roll = self.top(&you, &opp, dice, pos.roller);
+        let t = this_roll as f64;
+        let mut l = Luck {
+            this_roll,
+            average: 0.0,
+            bins: vec![0.0; LUCK_BINS],
+            below: 0.0,
+            above: 0.0,
+        };
+        let mut visit = |w: f64, f: f64| {
+            l.average += w * f;
+            l.bins[luck_bin(f)] += w;
+            if f < t - LUCK_TIE {
+                l.below += w;
+            } else if f > t + LUCK_TIE {
+                l.above += w;
+            }
+        };
+        match pos.roller {
+            Roller::You => self.each_top_yours(&you, &opp, pairs, |w, f| visit(w, f)),
+            Roller::Opponent => self.each_top_yours(&opp, &you, pairs, |w, g| visit(w, 1.0 - g)),
+        }
+        Ok(l)
     }
 
     /// The white pairs `pairs`' shares of E[f] and E[f²] (f² for the
@@ -740,6 +771,16 @@ impl Explorer {
     fn top_sums_yours(&self, you: &State, opp: &State, pairs: std::ops::Range<usize>) -> (f64, f64) {
         let mut total = 0.0;
         let mut total2 = 0.0;
+        self.each_top_yours(you, opp, pairs, |w, f| {
+            total += w * f;
+            total2 += w * f * f;
+        });
+        (total, total2)
+    }
+
+    /// Every roll of the white pairs `pairs` on your roll, with its
+    /// probability and its top value f (each distinct turn valued once).
+    fn each_top_yours(&self, you: &State, opp: &State, pairs: std::ops::Range<usize>, mut visit: impl FnMut(f64, f64)) {
         let mut outcomes = rolls_of(pairs).peekable();
         while let Some(&(first, w)) = outcomes.peek() {
             let opp_white = predict_opp_white(&self.net, you, opp, first);
@@ -765,14 +806,12 @@ impl Explorer {
             let values = self.turn_values(you, opp, &distinct, Roller::You, opp_white, first).1;
             for ix in &legal {
                 let f = ix.iter().map(|&i| values[i]).fold(f32::MIN, f32::max) as f64;
-                total += w * f;
-                total2 += w * f * f;
+                visit(w, f);
             }
         }
-        (total, total2)
     }
 
-    /// [`Explorer::average_top`] by brute force over every distinct roll.
+    /// [`Luck::average`] by brute force over every distinct roll.
     #[cfg(test)]
     fn luck_reference(&self, you: &State, opp: &State, roller: Roller) -> f64 {
         rolls().map(|(d, w)| w * self.top(you, opp, d, roller) as f64).sum()
@@ -1380,6 +1419,35 @@ mod tests {
         }
     }
 
+    /// The histogram is every roll's top value binned by whole points of
+    /// P(win), and below / above the rolls worse / better than this one.
+    #[test]
+    fn the_histogram_bins_every_roll() {
+        let ex = Explorer::new();
+        for p in [&luck_positions()[2], &luck_positions()[3]] {
+            let (you, opp, _) = states(p);
+            let got = ex.luck(p, 0, WHITE_PAIRS).unwrap();
+            assert_eq!(got.bins.len(), LUCK_BINS);
+            let mut bins = vec![0.0; LUCK_BINS];
+            let (mut below, mut above) = (0.0, 0.0);
+            for (d, w) in rolls() {
+                let f = ex.top(&you, &opp, d, p.roller) as f64;
+                bins[luck_bin(f)] += w;
+                if f < got.this_roll as f64 - 1e-5 {
+                    below += w;
+                } else if f > got.this_roll as f64 + 1e-5 {
+                    above += w;
+                }
+            }
+            for (i, (g, w)) in got.bins.iter().zip(&bins).enumerate() {
+                assert!((g - w).abs() < 1e-4, "{p:?} bin {i}: {g} vs {w}");
+            }
+            assert!((got.below - below).abs() < 1e-4, "{} vs {below}", got.below);
+            assert!((got.above - above).abs() < 1e-4, "{} vs {above}", got.above);
+            assert!((got.bins.iter().sum::<f64>() - 1.0).abs() < 1e-9);
+        }
+    }
+
     /// Luck comes in chunks of white pairs so the move list never waits
     /// long behind it; the chunks add up to the whole.
     #[test]
@@ -1394,6 +1462,13 @@ mod tests {
             assert!(parts.iter().all(|l| l.this_roll == all.this_roll));
             let sum: f64 = parts.iter().map(|l| l.average).sum();
             assert!((sum - all.average).abs() < 1e-9, "{sum} vs {}", all.average);
+            let below: f64 = parts.iter().map(|l| l.below).sum();
+            let above: f64 = parts.iter().map(|l| l.above).sum();
+            assert!((below - all.below).abs() < 1e-9 && (above - all.above).abs() < 1e-9);
+            for i in 0..LUCK_BINS {
+                let bin: f64 = parts.iter().map(|l| l.bins[i]).sum();
+                assert!((bin - all.bins[i]).abs() < 1e-9, "bin {i}");
+            }
         }
         assert!(ex.luck(&luck_positions()[0], 20, 2).is_err());
     }

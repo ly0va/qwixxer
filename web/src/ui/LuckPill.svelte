@@ -9,8 +9,11 @@
     // not analysed yet. `size`: the review strip (sm), the explorer roll card
     // on a phone (md) or on desktop (lg). `start`: the tooltip hangs from the
     // pill's left edge (a pill near the card's left) instead of its right.
-    let { luck, stale = false, size = 'lg', live = false, start = false }: {
+    // `onToggle`: the chip opens a panel of its own (the explorer's histogram)
+    // instead of the tooltip; `expanded` says whether it is open.
+    let { luck, stale = false, size = 'lg', live = false, start = false, onToggle, expanded = false }: {
         luck: ReturnType<typeof luckText> | null; stale?: boolean; size?: 'sm' | 'md' | 'lg'; live?: boolean; start?: boolean;
+        onToggle?: () => void; expanded?: boolean;
     } = $props();
     const id = `luck-${++ids}`;
     let open = $state(false);
@@ -22,7 +25,11 @@
 <svelte:document onclick={outside} />
 
 <span class="wrap {size}" class:start class:open class:stale {id} aria-live={live ? 'polite' : undefined}>
-    {#if luck}
+    {#if luck && onToggle}
+        <button type="button" class="luck {luck.tone}" class:expanded aria-expanded={expanded} onclick={onToggle}>
+            {luck.word}{#if luck.value}<b aria-label="{luck.value} points">{luck.value}</b>{/if}
+        </button>
+    {:else if luck}
         <button type="button" class="luck {luck.tone}" aria-expanded={open} aria-describedby="{id}-tip" onclick={() => (open = !open)}>
             {luck.word}{#if luck.value}<b aria-label="{luck.value} points">{luck.value}</b>{/if}
         </button>
@@ -45,7 +52,7 @@
     .luck.unlucky { color: var(--unlucky-ink); background: color-mix(in srgb, var(--unlucky-ink) 14%, var(--paper)); }
     .luck.average { color: var(--ink); background: var(--btn-muted-bg); }
     .luck.pending { color: var(--muted); font-weight: 600; background: var(--btn-muted-bg); cursor: default; }
-    .open .luck { box-shadow: inset 0 0 0 1.5px currentColor; }
+    .open .luck, .luck.expanded { box-shadow: inset 0 0 0 1.5px currentColor; }
     .tip { display: none; position: absolute; z-index: 4; top: calc(100% + 4px); right: 0; width: max-content; max-width: 240px; box-sizing: border-box; padding: 8px 10px; border-radius: 9px; background: var(--ink); color: var(--ground); font-size: 13px; font-weight: 500; line-height: 1.35; white-space: normal; box-shadow: 0 6px 20px var(--shadow); }
     .start .tip { right: auto; left: 0; }
     /* Tap toggles it; hover only where there is a real pointer (a tap leaves

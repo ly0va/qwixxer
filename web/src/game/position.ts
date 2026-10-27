@@ -230,8 +230,39 @@ export const chanceText = (w: { p: number; pm: number }) => percent(w.p, w.pm < 
 export const gamesText = (w: { p: number; pm: number }, games: number) =>
     `± ${(w.pm * 100).toFixed(1)} · ${games.toLocaleString('en-US')} ${games === 1 ? 'game' : 'games'}`;
 
+/** One bin of the luck histogram: luck `lo .. lo + 1` in points of P(win), and the share of rolls there. */
+export interface LuckBar { lo: number; share: number; tone: 'lucky' | 'unlucky'; current: boolean }
+
+/**
+ * Every roll's luck as a histogram (engine bins are whole points of P(win),
+ * moved onto the luck axis by the average), trimmed to the bins with rolls;
+ * the axis spans at least -1 .. +1 so zero is always on it. `rank` places
+ * this roll among the others: better than most, or worse than most.
+ */
+export function luckHistogram(l: Luck): { bars: LuckBar[]; min: number; max: number; ticks: number[]; tallest: number; thisLuck: number; rank: string } {
+    const avg = 100 * l.average;
+    const here = Math.min(l.bins.length - 1, Math.floor(100 * l.this_roll));
+    const used = l.bins.map((b, i) => (b > 1e-12 ? i : -1)).filter((i) => i >= 0);
+    const first = Math.min(used[0] ?? here, here);
+    const last = Math.max(used.at(-1) ?? here, here);
+    const bars: LuckBar[] = [];
+    for (let i = first; i <= last; i++) {
+        bars.push({ lo: i - avg, share: l.bins[i] ?? 0, tone: i + 0.5 < avg ? 'unlucky' : 'lucky', current: i === here });
+    }
+    const min = Math.min(first - avg, -1);
+    const max = Math.max(last + 1 - avg, 1);
+    const ticks: number[] = [];
+    for (let t = Math.ceil(min / 5) * 5 || 0; t <= max; t += 5) ticks.push(t);
+    const pct = (p: number) => `${Math.round(100 * p)}%`;
+    return {
+        bars, min, max, ticks,
+        tallest: Math.max(...bars.map((b) => b.share)),
+        thisLuck: 100 * (l.this_roll - l.average),
+        rank: l.below >= l.above ? `Better than ${pct(l.below)} of rolls` : `Worse than ${pct(l.above)} of rolls`,
+    };
+}
 /** Spec "UI" (`2026-10-22-explorer-roll-luck-design.md`): the Roll card's luck chip. */
-export function luckText(l: Luck): { word: string; value: string; tone: 'lucky' | 'unlucky' | 'average'; detail: string } {
+export function luckText(l: Pick<Luck, 'this_roll' | 'average'>): { word: string; value: string; tone: 'lucky' | 'unlucky' | 'average'; detail: string } {
     const pts = Math.round((l.this_roll - l.average) * 1000) / 10;
     const detail = `This roll ${percent(l.this_roll, 1)} · average ${percent(l.average, 1)}`;
     if (pts > 0) return { word: 'Lucky', value: `+${pts.toFixed(1)}`, tone: 'lucky', detail };
