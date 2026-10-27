@@ -233,6 +233,15 @@ export const gamesText = (w: { p: number; pm: number }, games: number) =>
 /** One bin of the luck histogram: luck `lo .. lo + 1` in points of P(win), and the share of rolls there. */
 export interface LuckBar { lo: number; share: number; tone: 'lucky' | 'unlucky'; current: boolean }
 
+/** A histogram bar's tooltip: its share of all rolls and its luck range (null for an empty bar). */
+export function luckBarTip(b: LuckBar): { share: string; range: string } | null {
+    if (b.share <= 0) return null;
+    const p = 100 * b.share;
+    const share = p < 0.1 ? 'under 0.1%' : p < 10 ? `${p.toFixed(1)}%` : `${Math.round(p)}%`;
+    const pts = (v: number) => `${v < 0 ? '−' : '+'}${Math.abs(v).toFixed(1)}`;
+    return { share: `${share} of rolls`, range: `luck ${pts(b.lo)} to ${pts(b.lo + 1)}` };
+}
+
 /**
  * Every roll's luck as a histogram (engine bins are whole points of P(win),
  * moved onto the luck axis by the average), trimmed to the bins with rolls;

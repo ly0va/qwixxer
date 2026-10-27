@@ -3,7 +3,7 @@ import type { MoveOut, View } from '../engine/protocol';
 import {
     clearSheet, closedRows, emptyPosition, exploreSheet, fromView, marginText, nextUnsetDie, overText, percent, randomDice,
     setDie, sheetTotal, swapSides, tapStrike, toEngine, toggleLock, toggleSquare,
-    addAnalysis, analysisKey, analysisMargin, chanceText, gamesText, isOver, luckHistogram, luckText, moreBadges, moveChance, rankMoves, refineCount, winChance, ZERO_ANALYSIS,
+    addAnalysis, analysisKey, analysisMargin, chanceText, gamesText, isOver, luckBarTip, luckHistogram, luckText, moreBadges, moveChance, rankMoves, refineCount, winChance, ZERO_ANALYSIS,
 } from './position';
 
 const markRed = (idx: number[]) => idx.reduce((p, i) => toggleSquare(p, 'you', 0, i), emptyPosition());
@@ -170,6 +170,14 @@ describe('analysis numbers', () => {
         expect(h.ticks).toEqual([0, 5]);
         expect(h.tallest).toBe(0.5);
         expect(h.rank).toBe('Better than 25% of rolls');
+    });
+
+    it("a histogram bar's tip: its share of rolls, and its luck range", () => {
+        expect(luckBarTip({ lo: 1.7, share: 0.0843, tone: 'lucky', current: false })).toEqual({ share: '8.4% of rolls', range: 'luck +1.7 to +2.7' });
+        expect(luckBarTip({ lo: -3.25, share: 0.12, tone: 'unlucky', current: false })).toEqual({ share: '12% of rolls', range: 'luck −3.3 to −2.3' });
+        expect(luckBarTip({ lo: -0.4, share: 0.0004, tone: 'unlucky', current: true })?.share).toBe('under 0.1% of rolls');
+        expect(luckBarTip({ lo: -0.4, share: 0.0004, tone: 'unlucky', current: true })?.range).toBe('luck −0.4 to +0.6');
+        expect(luckBarTip({ lo: 2, share: 0, tone: 'lucky', current: false })).toBeNull();
     });
 
     it('the rank says "worse than" when more rolls beat this one', () => {
