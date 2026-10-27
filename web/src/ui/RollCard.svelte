@@ -32,8 +32,6 @@
     const luckShown = $derived(d.every((v) => v !== null) && !isOver(x.pos));
     const luck = $derived(x.luck ? luckText(x.luck.value) : null);
     const luckStale = $derived(!!x.luck && x.luck.key !== luckKey(x.pos));
-    // The chip opens the histogram of every roll's luck at the card's foot.
-    let luckOpen = $state(false);
     // The last move played from the list, and Undo.
     const theirs = $derived(!x.lastPlay ? '' : x.lastPlay.opponentStrike ? 'took a strike' : x.lastPlay.opponent.length ? 'marked' : 'passed');
     // A click outside the picker closes it; a die button toggles it itself.
@@ -66,7 +64,7 @@
             <button type="button" role="radio" aria-checked={x.pos.roller === 'opponent'} aria-label="Opponent’s roll" onclick={() => x.setRoller('opponent')}>{compact ? 'Them' : 'Opponent’s'}</button>
         </div>
         {#if luckShown}
-            <LuckPill {luck} stale={luckStale} size={compact ? 'md' : 'lg'} live expanded={luckOpen} onToggle={() => (luckOpen = !luckOpen)} />
+            <LuckPill {luck} stale={luckStale} size={compact ? 'md' : 'lg'} live expanded={x.luckOpen} onToggle={() => x.toggleLuck()} />
         {/if}
         <button type="button" class="tool" aria-label="Random roll" onclick={() => x.random()}>
             <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="4"></rect><circle cx="8.5" cy="8.5" r="1.2" fill="currentColor"></circle><circle cx="15.5" cy="15.5" r="1.2" fill="currentColor"></circle><circle cx="15.5" cy="8.5" r="1.2" fill="currentColor"></circle><circle cx="8.5" cy="15.5" r="1.2" fill="currentColor"></circle></svg>
@@ -111,7 +109,7 @@
             Opponent likely {t.verb} {#each t.chips as ch}<ChipView chip={ch} size={22} />{/each}<span class="after">after your top move</span>
         </p>
     {/if}
-    {#if luckOpen && luckShown && x.luck}<LuckHistogram luck={x.luck.value} stale={luckStale} theirs={x.pos.roller === 'opponent'} />{/if}
+    {#if x.luckOpen && luckShown && x.luck}<LuckHistogram luck={x.luck.value} stale={luckStale} theirs={x.pos.roller === 'opponent'} />{/if}
 </section>
 
 <style>

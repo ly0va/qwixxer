@@ -343,6 +343,25 @@ describe('ExplorerController analysis fixes', () => {
     });
 });
 
+describe('ExplorerController luck histogram', () => {
+    it('remembers whether the histogram is open, across pages and reloads', () => {
+        const store = memStore();
+        const engine = { explore: vi.fn(() => new Promise(() => {})) } as unknown as Engine;
+        const x = new ExplorerController(engine, store);
+        x.init();
+        expect(x.luckOpen).toBe(false);
+        x.toggleLuck();
+        expect(x.luckOpen).toBe(true);
+        const again = new ExplorerController(engine, store);
+        again.init();
+        expect(again.luckOpen).toBe(true);
+        again.toggleLuck();
+        const third = new ExplorerController(engine, store);
+        third.init();
+        expect(third.luckOpen).toBe(false);
+    });
+});
+
 describe('ExplorerController luck', () => {
     /** A luck chunk (no roll values unless `values` gives them). */
     const chunk = (this_roll: number, average: number, values: Luck['values'] = []): Luck => ({ this_roll, average, values });

@@ -5,6 +5,8 @@ import * as P from './position';
 import type { ExPosition, RankedMove, Who } from './position';
 
 const SAVE = 'qwixxer.explorer.v1';
+/** Whether the luck chip's histogram is open: '1' or ''. */
+const LUCK_OPEN = 'qwixxer.explorer.luck-open';
 export const BAD_LINK = "That link doesn't hold a valid position.";
 /** Spec "Controller": each analysis batch aims at about this long, within these sizes. */
 export const BATCH_MS = 100;
@@ -55,6 +57,8 @@ export class ExplorerController {
     private plays = $state.raw<(PlayedMove & { before: ExPosition })[]>([]);
     /** Roll luck and the position (dice included) it belongs to. */
     luck = $state<{ key: string; value: Luck } | null>(null);
+    /** The luck chip's histogram is open (remembered across pages and reloads). */
+    luckOpen = $state(false);
     /** The current answer and the position it was asked for (null once an edit outdates it): what 1-ply values belong to. */
     private answered = $state.raw<{ seq: number; pos: Position } | null>(null);
     /** 1-ply values of an answer's top `refineCount` moves, in static order (null: the engine failed). */
@@ -107,6 +111,13 @@ export class ExplorerController {
             saved = null;
         }
         this.pos = saved ?? P.emptyPosition();
+        try { this.luckOpen = this.store.get(LUCK_OPEN) === '1'; } catch { /* storage unavailable */ }
+    }
+
+    /** The luck chip: open or close the histogram. */
+    toggleLuck() {
+        this.luckOpen = !this.luckOpen;
+        try { this.store.set(LUCK_OPEN, this.luckOpen ? '1' : ''); } catch { /* storage unavailable */ }
     }
 
     /** Evaluate the position unless it has an answer or a call is already on it. */
