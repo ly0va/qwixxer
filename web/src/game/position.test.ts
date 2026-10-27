@@ -168,10 +168,11 @@ describe('analysis numbers', () => {
         expect(h.rank).toBe('Better than 50% of rolls');
     });
 
-    it("a histogram bar's tip: how many of the 46,656 rolls, their share, and the luck range", () => {
-        expect(luckBarTip({ lo: 1, share: 8880 / 46656, tone: 'lucky', current: false })).toEqual({ count: '8,880 of 46,656 rolls', share: '19%', range: 'luck +1 to +2' });
-        expect(luckBarTip({ lo: -1, share: 2400 / 46656, tone: 'unlucky', current: false })).toEqual({ count: '2,400 of 46,656 rolls', share: '5.1%', range: 'luck −1 to 0' });
-        expect(luckBarTip({ lo: 0, share: 2 / 46656, tone: 'lucky', current: true })).toEqual({ count: '2 of 46,656 rolls', share: 'under 0.1%', range: 'luck 0 to +1' });
+    it("a histogram bar's tip: its share of rolls, and its luck rounded away from zero", () => {
+        expect(luckBarTip({ lo: 1, share: 0.2464, tone: 'lucky', current: false })).toEqual({ share: '25% of rolls', luck: 'luck +2' });
+        expect(luckBarTip({ lo: 0, share: 0.051, tone: 'lucky', current: false })).toEqual({ share: '5.1% of rolls', luck: 'luck +1' });
+        expect(luckBarTip({ lo: -1, share: 0.0004, tone: 'unlucky', current: true })).toEqual({ share: 'under 0.1% of rolls', luck: 'luck −1' });
+        expect(luckBarTip({ lo: -7, share: 0.027, tone: 'unlucky', current: false })?.luck).toBe('luck −7');
         expect(luckBarTip({ lo: 2, share: 0, tone: 'lucky', current: false })).toBeNull();
     });
 

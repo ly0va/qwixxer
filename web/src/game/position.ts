@@ -230,20 +230,16 @@ export const chanceText = (w: { p: number; pm: number }) => percent(w.p, w.pm < 
 export const gamesText = (w: { p: number; pm: number }, games: number) =>
     `± ${(w.pm * 100).toFixed(1)} · ${games.toLocaleString('en-US')} ${games === 1 ? 'game' : 'games'}`;
 
-/** A histogram bar's tooltip: how many of the 46,656 equally likely rolls (six dice in order), their share, and its luck range; null for an empty bar. */
-export function luckBarTip(b: LuckBar): { count: string; share: string; range: string } | null {
+/** A histogram bar's tooltip: its share of rolls, and its luck rounded away from zero (bar 1..2 is "+2", -2..-1 "−2"); null for an empty bar. */
+export function luckBarTip(b: LuckBar): { share: string; luck: string } | null {
     if (b.share <= 0) return null;
     const p = 100 * b.share;
-    const pts = (v: number) => (v === 0 ? '0' : `${v < 0 ? '−' : '+'}${Math.abs(v)}`);
+    const away = b.lo >= 0 ? b.lo + 1 : b.lo;
     return {
-        count: `${Math.round(b.share * ROLLS).toLocaleString('en-US')} of ${ROLLS.toLocaleString('en-US')} rolls`,
-        share: p < 0.1 ? 'under 0.1%' : p < 10 ? `${p.toFixed(1)}%` : `${Math.round(p)}%`,
-        range: `luck ${pts(b.lo)} to ${pts(b.lo + 1)}`,
+        share: `${p < 0.1 ? 'under 0.1%' : p < 10 ? `${p.toFixed(1)}%` : `${Math.round(p)}%`} of rolls`,
+        luck: `luck ${away < 0 ? '−' : '+'}${Math.abs(away)}`,
     };
 }
-
-/** Six dice in order: every roll equally likely. */
-const ROLLS = 6 ** 6;
 
 /** One bin of the luck histogram: luck `lo .. lo + 1` points of P(win), and the share of rolls there. */
 export interface LuckBar { lo: number; share: number; tone: 'lucky' | 'unlucky'; current: boolean }
