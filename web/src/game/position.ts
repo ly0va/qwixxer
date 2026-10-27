@@ -230,46 +230,59 @@ export const chanceText = (w: { p: number; pm: number }) => percent(w.p, w.pm < 
 export const gamesText = (w: { p: number; pm: number }, games: number) =>
     `± ${(w.pm * 100).toFixed(1)} · ${games.toLocaleString('en-US')} ${games === 1 ? 'game' : 'games'}`;
 
-/** One bin of the luck histogram: luck `lo .. lo + 1` in points of P(win), and the share of rolls there. */
-export interface LuckBar { lo: number; share: number; tone: 'lucky' | 'unlucky'; current: boolean }
-
-/** A histogram bar's tooltip: its share of all rolls and its luck range (null for an empty bar). */
-export function luckBarTip(b: LuckBar): { share: string; range: string } | null {
+/** A histogram bar's tooltip: how many of the 46,656 equally likely rolls (six dice in order), their share, and its luck range; null for an empty bar. */
+export function luckBarTip(b: LuckBar): { count: string; share: string; range: string } | null {
     if (b.share <= 0) return null;
     const p = 100 * b.share;
-    const share = p < 0.1 ? 'under 0.1%' : p < 10 ? `${p.toFixed(1)}%` : `${Math.round(p)}%`;
-    const pts = (v: number) => `${v < 0 ? '−' : '+'}${Math.abs(v).toFixed(1)}`;
-    return { share: `${share} of rolls`, range: `luck ${pts(b.lo)} to ${pts(b.lo + 1)}` };
+    const pts = (v: number) => (v === 0 ? '0' : `${v < 0 ? '−' : '+'}${Math.abs(v)}`);
+    return {
+        count: `${Math.round(b.share * ROLLS).toLocaleString('en-US')} of ${ROLLS.toLocaleString('en-US')} rolls`,
+        share: p < 0.1 ? 'under 0.1%' : p < 10 ? `${p.toFixed(1)}%` : `${Math.round(p)}%`,
+        range: `luck ${pts(b.lo)} to ${pts(b.lo + 1)}`,
+    };
 }
 
+/** Six dice in order: every roll equally likely. */
+const ROLLS = 6 ** 6;
+
+/** One bin of the luck histogram: luck `lo .. lo + 1` points of P(win), and the share of rolls there. */
+export interface LuckBar { lo: number; share: number; tone: 'lucky' | 'unlucky'; current: boolean }
+
 /**
- * Every roll's luck as a histogram (engine bins are whole points of P(win),
- * moved onto the luck axis by the average), trimmed to the bins with rolls;
- * the axis spans at least -1 .. +1 so zero is always on it. `rank` places
- * this roll among the others: better than most, or worse than most.
+ * Every roll's luck as a histogram: the rolls' values against the average,
+ * in whole-point bins (zero on a bin edge), trimmed to the bins with rolls
+ * and this roll's; the axis spans at least -1 .. +1. `rank` places this roll
+ * among the others: better than most, or worse than most.
  */
 export function luckHistogram(l: Luck): { bars: LuckBar[]; min: number; max: number; ticks: number[]; tallest: number; thisLuck: number; rank: string } {
-    const avg = 100 * l.average;
-    const here = Math.min(l.bins.length - 1, Math.floor(100 * l.this_roll));
-    const used = l.bins.map((b, i) => (b > 1e-12 ? i : -1)).filter((i) => i >= 0);
-    const first = Math.min(used[0] ?? here, here);
-    const last = Math.max(used.at(-1) ?? here, here);
-    const bars: LuckBar[] = [];
-    for (let i = first; i <= last; i++) {
-        bars.push({ lo: i - avg, share: l.bins[i] ?? 0, tone: i + 0.5 < avg ? 'unlucky' : 'lucky', current: i === here });
+    const luck = (v: number) => 100 * (v - l.average);
+    const bin = (v: number) => Math.floor(luck(v));
+    const thisLuck = luck(l.this_roll);
+    const here = bin(l.this_roll);
+    const shares = new Map<number, number>();
+    let below = 0, above = 0;
+    for (const [v, w] of l.values) {
+        shares.set(bin(v), (shares.get(bin(v)) ?? 0) + w);
+        // Rolls within float noise of this one tie with it.
+        if (v < l.this_roll - 1e-5) below += w;
+        else if (v > l.this_roll + 1e-5) above += w;
     }
-    const min = Math.min(first - avg, -1);
-    const max = Math.max(last + 1 - avg, 1);
+    const first = Math.min(here, ...shares.keys());
+    const last = Math.max(here, ...shares.keys());
+    const bars: LuckBar[] = [];
+    for (let k = first; k <= last; k++) bars.push({ lo: k, share: shares.get(k) ?? 0, tone: k < 0 ? 'unlucky' : 'lucky', current: k === here });
+    const min = Math.min(first, -1);
+    const max = Math.max(last + 1, 1);
     const ticks: number[] = [];
     for (let t = Math.ceil(min / 5) * 5 || 0; t <= max; t += 5) ticks.push(t);
     const pct = (p: number) => `${Math.round(100 * p)}%`;
     return {
-        bars, min, max, ticks,
+        bars, min, max, ticks, thisLuck,
         tallest: Math.max(...bars.map((b) => b.share)),
-        thisLuck: 100 * (l.this_roll - l.average),
-        rank: l.below >= l.above ? `Better than ${pct(l.below)} of rolls` : `Worse than ${pct(l.above)} of rolls`,
+        rank: below >= above ? `Better than ${pct(below)} of rolls` : `Worse than ${pct(above)} of rolls`,
     };
 }
+
 /** Spec "UI" (`2026-10-22-explorer-roll-luck-design.md`): the Roll card's luck chip. */
 export function luckText(l: Pick<Luck, 'this_roll' | 'average'>): { word: string; value: string; tone: 'lucky' | 'unlucky' | 'average'; detail: string } {
     const pts = Math.round((l.this_roll - l.average) * 1000) / 10;

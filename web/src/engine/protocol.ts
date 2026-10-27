@@ -52,11 +52,10 @@ export interface Answer {
     opponent_turn: OpponentTurn | null;
 }
 /**
- * Mirrors explorer.rs `Luck`: your P(win) after the roller's best turn for this roll, and a chunk of
- * white pairs' share of its average over all rolls; of the histogram of every roll's value by whole
- * points of P(win) (100 bins); and of the probability of the rolls worse and better than this one.
+ * Mirrors explorer.rs `Luck`: your P(win) after the roller's best turn for this roll, a chunk of white
+ * pairs' share of its average over all rolls, and the chunk's rolls' values as [value, probability].
  */
-export interface Luck { this_roll: number; average: number; bins: number[]; below: number; above: number }
+export interface Luck { this_roll: number; average: number; values: [number, number][] }
 /** Mirrors gamecode.rs `ReviewRoll`: the position before the roll's marks (with dice and roller), what happened, the position after. */
 export interface ReviewRoll { before: Position; record: RollRecord; after: Position }
 /** Mirrors gamecode.rs `ReviewGame`; `over` is null for an unfinished game. */

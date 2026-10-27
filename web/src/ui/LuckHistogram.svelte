@@ -38,7 +38,7 @@
         {/each}
         {#if tip?.text}
             <span class="tip" role="tooltip" style:left={tipAt.left} style:transform="translateX({tipAt.shift})">
-                <b>{tip.text.share}</b><span>{tip.text.range}</span>
+                <b>{tip.text.count}</b><span>{tip.text.share} · {tip.text.range}</span>
             </span>
         {/if}
     </div>

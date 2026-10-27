@@ -344,9 +344,8 @@ describe('ExplorerController analysis fixes', () => {
 });
 
 describe('ExplorerController luck', () => {
-    /** A luck chunk; its rolls all in bin `bin` unless `bins` says otherwise. */
-    const chunk = (this_roll: number, average: number, p: Partial<Luck> = {}): Luck =>
-        ({ this_roll, average, bins: Array(100).fill(0), below: 0, above: 0, ...p });
+    /** A luck chunk (no roll values unless `values` gives them). */
+    const chunk = (this_roll: number, average: number, values: Luck['values'] = []): Luck => ({ this_roll, average, values });
     type Call = { kind: string; pos: Position; first?: number; count?: number; resolve: (v: any) => void };
     function setupLuck(store = memStore()) {
         const calls: Call[] = [];
@@ -361,10 +360,7 @@ describe('ExplorerController luck', () => {
         const finish = async (this_roll: number) => {
             for (let c = luck().find((c) => !(c as any).done); c; c = luck().find((c) => !(c as any).done)) {
                 (c as any).done = true;
-                const share = (c.count ?? 0) / 21;
-                const bins = Array(100).fill(0);
-                bins[c.first ?? 0] = share;
-                c.resolve(chunk(this_roll, 0.05 * (c.count ?? 0) / 3, { bins, below: share / 2, above: share / 4 }));
+                c.resolve(chunk(this_roll, 0.05 * (c.count ?? 0) / 3, [[(c.first ?? 0) / 100, (c.count ?? 0) / 21]]));
                 await flush();
             }
         };
@@ -383,11 +379,9 @@ describe('ExplorerController luck', () => {
         expect(x.luck?.key).toBe(luckKey(x.pos));
         expect(x.luck?.value.this_roll).toBe(0.55);
         expect(x.luck?.value.average).toBeCloseTo(0.35);
-        expect(x.luck?.value.below).toBeCloseTo(0.5);
-        expect(x.luck?.value.above).toBeCloseTo(0.25);
-        expect(x.luck?.value.bins[0]).toBeCloseTo(3 / 21);
-        expect(x.luck?.value.bins[18]).toBeCloseTo(3 / 21);
-        expect(x.luck?.value.bins.reduce((a, b) => a + b, 0)).toBeCloseTo(1);
+        expect(x.luck?.value.values).toHaveLength(7);
+        expect(x.luck?.value.values[6]).toEqual([0.18, 3 / 21]);
+        expect(x.luck?.value.values.reduce((a, v) => a + v[1], 0)).toBeCloseTo(1);
     });
 
     it('nothing shows until the last chunk is in', async () => {
