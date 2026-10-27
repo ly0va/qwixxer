@@ -21,7 +21,11 @@
         const i = h.bars.findIndex((b) => v >= b.lo && v < b.lo + 1);
         hover = i >= 0 && h.bars[i].share > 0 ? i : null;
     }
-    const tip = $derived(hover === null ? null : { bar: h.bars[hover], text: luckBarTip(h.bars[hover]) });
+    // A new histogram can arrive under a resting pointer: an index past its bars is no bar.
+    const tip = $derived.by(() => {
+        const bar = hover === null ? undefined : h.bars[hover];
+        return bar ? { bar, text: luckBarTip(bar) } : null;
+    });
     // The tooltip sits at the plot's top beside its bar, on the side with more
     // room, so it never covers the bar or leaves the plot.
     const tipAt = $derived.by(() => {
@@ -61,10 +65,10 @@
     .bar.unlucky { background: color-mix(in srgb, var(--unlucky-ink) 35%, var(--paper)); }
     .bar.current { min-height: 2px; }
     .bar.lucky.current { background: var(--lucky-ink); }
+    .bar.unlucky.current { background: var(--unlucky-ink); }
     .bar.hover { filter: brightness(0.85); }
     .tip { position: absolute; top: 0; z-index: 4; display: flex; flex-direction: column; gap: 1px; width: max-content; padding: 6px 9px; border-radius: 9px; background: var(--ink); color: var(--ground); font-size: 12px; font-weight: 500; line-height: 1.3; box-shadow: 0 6px 20px var(--shadow); pointer-events: none; }
     .tip b { font-size: 13px; font-weight: 700; }
-    .bar.unlucky.current { background: var(--unlucky-ink); }
     .axis { position: relative; height: 16px; }
     .axis span { position: absolute; transform: translateX(-50%); font-size: 11px; font-weight: 600; color: var(--muted); }
 </style>
