@@ -15,7 +15,6 @@
 <section class="dist" class:stale aria-label="Luck of every possible roll">
     <div class="head"><span class="title">Luck of every roll</span><span class="rank">{h.rank}</span></div>
     <div class="plot" role="img" aria-label="Histogram of every roll's luck, from {label(Math.round(h.min))} to {label(Math.round(h.max))} points; this roll {signed(h.thisLuck)}">
-        <span class="zero" style:left={x(0)}></span>
         {#each h.bars as b (b.lo)}
             <span class="bar {b.tone}" class:current={b.current} style:left={x(b.lo)} style:width style:height="{(b.share / h.tallest) * 100}%"></span>
         {/each}
@@ -38,7 +37,6 @@
     .bar.current { min-height: 2px; }
     .bar.lucky.current { background: var(--lucky-ink); }
     .bar.unlucky.current { background: var(--unlucky-ink); }
-    .zero { position: absolute; top: 0; bottom: 0; border-left: 1.5px dashed var(--muted); }
     .axis { position: relative; height: 16px; }
     .axis span { position: absolute; transform: translateX(-50%); font-size: 11px; font-weight: 600; color: var(--muted); }
 </style>
