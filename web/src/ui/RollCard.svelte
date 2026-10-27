@@ -111,7 +111,7 @@
             Opponent likely {t.verb} {#each t.chips as ch}<ChipView chip={ch} size={22} />{/each}<span class="after">after your top move</span>
         </p>
     {/if}
-    {#if luckOpen && luckShown && x.luck}<LuckHistogram luck={x.luck.value} stale={luckStale} />{/if}
+    {#if luckOpen && luckShown && x.luck}<LuckHistogram luck={x.luck.value} stale={luckStale} theirs={x.pos.roller === 'opponent'} />{/if}
 </section>
 
 <style>
