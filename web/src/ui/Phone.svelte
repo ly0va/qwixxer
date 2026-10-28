@@ -58,8 +58,10 @@
             <span class="you" class:turn={yourTurn}>You <b>{v?.you.score ?? 0}</b></span>
             <button type="button" class="botbtn" class:turn={botTurn} bind:this={botBtn} aria-label="Bot, {v?.bot.score ?? 0} points. Open bot sheet and log" onclick={() => (drawer = true)}>
                 Bot <b>{v?.bot.score ?? 0}</b>
-                {#each botChips as ch}<ChipView chip={ch} size={20} />{/each}
+                {#if !result}{#each botChips as ch}<ChipView chip={ch} size={20} />{/each}{/if}
             </button>
+            <!-- Game over: share it, as the review page does (the bot's last marks give way). -->
+            {#if result && c.lastCode}<button type="button" class="icon" aria-label="Share game" onclick={() => c.share()}><Icon name="link" size={20} /></button>{/if}
             <Menu {c} {nav} />
         </div>
     </header>
@@ -68,12 +70,7 @@
             <!-- Share game's notice takes the headline's place for its two seconds. -->
             {#if c.notice}<span class="notice" role="status">{c.notice}</span>
             {:else}<div class="headline"><b>{result.title}</b><span>{result.score}</span></div>{/if}
-            {#if c.lastCode}{@const code = c.lastCode}
-                <div class="acts">
-                    <button type="button" class="analyze" onclick={() => (location.hash = gameHref(code))}><Icon name="chart" size={16} />Analyze</button>
-                    <button type="button" class="analyze share" aria-label="Share game" onclick={() => c.share()}><Icon name="link" size={16} /></button>
-                </div>
-            {/if}
+            {#if c.lastCode}{@const code = c.lastCode}<button type="button" class="analyze" onclick={() => (location.hash = gameHref(code))}><Icon name="chart" size={16} />Analyze</button>{/if}
         </div>
     {:else}
         <DiceTray {c} size={L.die} compact />
@@ -158,7 +155,6 @@
     .handle { align-self: center; width: 40px; height: 5px; border-radius: 3px; background: var(--edge); }
     .close { align-self: flex-end; min-height: 44px; padding: 0 16px; border-radius: 12px; border: none; background: var(--ground); color: var(--ink); font-weight: 600; }
     .analyze { display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 34px; padding: 0 14px; border: none; border-radius: 9px; background: var(--ink); color: var(--ground); font-weight: 700; font-size: 14px; cursor: pointer; }
-    .acts { display: flex; gap: 6px; }
-    .share { width: 34px; padding: 0; }
+    .icon { width: 44px; height: 44px; flex: none; border-radius: 12px; border: none; background: var(--paper); box-shadow: 0 1px 0 var(--edge); color: var(--ink); display: flex; align-items: center; justify-content: center; padding: 0; cursor: pointer; }
     .notice { font-size: 14px; font-weight: 600; color: var(--soft); }
 </style>
