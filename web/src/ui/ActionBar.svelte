@@ -53,5 +53,5 @@
     .confirm { width: 136px; min-height: 48px; padding: 0; border: none; border-radius: 12px; font-weight: 700; font-size: 17px; cursor: not-allowed; background: var(--btn-muted-bg); color: var(--btn-muted-fg); }
     .confirm.primary { cursor: pointer; background: var(--ink); color: var(--ground); }
     /* Looks like New game beside it. */
-    .analyze { margin-left: 6px; min-height: 48px; padding: 0 22px; border: none; border-radius: 12px; background: var(--ink); color: var(--ground); font-weight: 700; font-size: 17px; cursor: pointer; }
+    .analyze { margin-left: 6px; width: 136px; min-height: 48px; padding: 0; border: none; border-radius: 12px; background: var(--ink); color: var(--ground); font-weight: 700; font-size: 17px; cursor: pointer; }
 </style>
