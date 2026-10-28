@@ -248,7 +248,7 @@ export interface LuckBar { lo: number; share: number; tone: 'lucky' | 'unlucky';
  * Every roll's luck as a histogram: the rolls' values against the average,
  * in whole-point bins (zero on a bin edge), trimmed to the bins with rolls
  * and this roll's; the axis spans at least -1 .. +1. `rank` places this roll
- * among the others: better than most, or worse than most.
+ * among the others: luckier than most, or unluckier than most.
  */
 export function luckHistogram(l: Luck): { bars: LuckBar[]; min: number; max: number; ticks: number[]; tallest: number; thisLuck: number; rank: string } {
     const luck = (v: number) => 100 * (v - l.average);
@@ -275,7 +275,7 @@ export function luckHistogram(l: Luck): { bars: LuckBar[]; min: number; max: num
     return {
         bars, min, max, ticks, thisLuck,
         tallest: Math.max(...bars.map((b) => b.share)),
-        rank: below >= above ? `Better than ${pct(below)} of rolls` : `Worse than ${pct(above)} of rolls`,
+        rank: below >= above ? `Luckier than ${pct(below)} of rolls` : `Unluckier than ${pct(above)} of rolls`,
     };
 }
 

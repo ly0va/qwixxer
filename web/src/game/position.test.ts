@@ -165,7 +165,7 @@ describe('analysis numbers', () => {
         expect(h.bars.map((b) => b.tone)).toEqual(['unlucky', 'unlucky', 'lucky', 'lucky', 'lucky', 'lucky', 'lucky', 'lucky']);
         expect([h.min, h.max, h.tallest]).toEqual([-2, 6, 0.5]);
         expect(h.ticks).toEqual([0, 5]);
-        expect(h.rank).toBe('Better than 50% of rolls');
+        expect(h.rank).toBe('Luckier than 50% of rolls');
     });
 
     it("a histogram bar's tip: its share of rolls, and its luck rounded away from zero", () => {
@@ -176,9 +176,9 @@ describe('analysis numbers', () => {
         expect(luckBarTip({ lo: 2, share: 0, tone: 'lucky', current: false })).toBeNull();
     });
 
-    it('the rank says "worse than" when more rolls beat this one', () => {
+    it('the rank says "unluckier than" when more rolls beat this one', () => {
         const h = luckHistogram({ this_roll: 0.3, average: 0.492, values: [[0.3, 0.04], [0.5, 0.96]] });
-        expect(h.rank).toBe('Worse than 96% of rolls');
+        expect(h.rank).toBe('Unluckier than 96% of rolls');
         expect(h.ticks).toEqual([-20, -15, -10, -5, 0]);
     });
 

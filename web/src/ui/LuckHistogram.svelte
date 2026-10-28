@@ -4,9 +4,8 @@
     // The luck chip's panel: how lucky every possible roll would have been, on
     // the chip's own axis (points of win chance against the average roll),
     // this roll's bin solid, and where it ranks among the others.
-    // `theirs`: the opponent's roll (luck stays yours, the roll is theirs).
-    let { luck, stale = false, theirs = false }: { luck: Luck; stale?: boolean; theirs?: boolean } = $props();
-    const title = $derived(`Luck of ${theirs ? 'their' : 'your'} roll compared to others`);
+    let { luck, stale = false }: { luck: Luck; stale?: boolean } = $props();
+    const title = 'Luck of this roll vs others';
     const h = $derived(luckHistogram(luck));
     const x = (v: number) => `${((v - h.min) / (h.max - h.min)) * 100}%`;
     const width = $derived(`calc(${100 / (h.max - h.min)}% - 1px)`);
