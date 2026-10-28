@@ -8,7 +8,7 @@ export interface KeyTarget {
     keyboardFocus: boolean;
     /** A modal (the phone’s bot/log drawer, or the menu) is open over the page. */
     modal?: boolean;
-    /** The explorer is showing: no game keys at all; Escape closes the menu or die picker. */
+    /** The explorer (or the about page) is showing: no game keys at all; Escape closes the menu or die picker. */
     explore?: boolean;
     /** The game review is showing: ← → Home End step through the game, ↑ ↓ pick Played or Best. */
     review?: boolean;

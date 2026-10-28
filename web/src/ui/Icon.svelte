@@ -1,5 +1,5 @@
 <script lang="ts" module>
-    export type IconName = 'plus' | 'search' | 'die' | 'moon' | 'book' | 'github' | 'chart' | 'link';
+    export type IconName = 'plus' | 'search' | 'die' | 'moon' | 'book' | 'github' | 'chart' | 'link' | 'info';
 </script>
 
 <script lang="ts">
@@ -18,6 +18,7 @@
         {:else if name === 'link'}<path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1"></path><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"></path>
         {:else if name === 'moon'}<path d="M20 12.8A8 8 0 1 1 11.2 4a6.2 6.2 0 0 0 8.8 8.8z"></path>
         {:else if name === 'book'}<path d="M5 4.5A1.5 1.5 0 0 1 6.5 3H19v15H6.5A1.5 1.5 0 0 0 5 19.5zM5 19.5A1.5 1.5 0 0 0 6.5 21H19v-3"></path>
+        {:else if name === 'info'}<circle cx="12" cy="12" r="8.5"></circle><path d="M12 11v5.5"></path><circle cx="12" cy="7.8" r="0.6" fill="currentColor"></circle>
         {/if}
     </svg>
 {/if}

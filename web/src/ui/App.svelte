@@ -6,6 +6,7 @@
     import { ReviewController } from '../game/review.svelte';
     import { keyAction } from '../game/keys';
     import { parseRoute, type Route } from '../game/route';
+    import About from './About.svelte';
     import Desktop from './Desktop.svelte';
     import ExplorerDesktop from './ExplorerDesktop.svelte';
     import ExplorerPhone from './ExplorerPhone.svelte';
@@ -61,6 +62,7 @@
         play: () => { if (route.view === 'play') return; history.pushState(null, '', location.pathname + location.search); sync(); },
         explorer: () => { location.hash = '#/explore'; },
         review: () => { location.hash = '#/review'; },
+        about: () => { location.hash = '#/about'; },
     };
 
     onMount(() => {
@@ -86,7 +88,7 @@
         const t = e.target instanceof Element ? e.target : null;
         const field = !!t?.closest('select, input, textarea');
         const keyboardFocus = !!t && t !== document.body && focusVisible(t);
-        const action = keyAction(e.key, { field, keyboardFocus, modal: (phone && drawer) || c.menuOpen, explore: route.view === 'explore', review: route.view === 'review' }, c.view?.phase);
+        const action = keyAction(e.key, { field, keyboardFocus, modal: (phone && drawer) || c.menuOpen, explore: route.view === 'explore' || route.view === 'about', review: route.view === 'review' }, c.view?.phase);
         if (action && action !== 'clear' && action !== 'close') e.preventDefault();
         if (action === 'confirm') c.confirm();
         else if (action === 'roll') c.roll();
@@ -102,7 +104,9 @@
 </script>
 
 <svelte:window onkeydown={onKey} />
-{#if route.view === 'review'}
+{#if route.view === 'about'}
+    <About {c} {nav} {phone} />
+{:else if route.view === 'review'}
     {#if phone}<ReviewPhone {c} r={rv} {nav} />{:else}<ReviewDesktop {c} r={rv} {nav} />{/if}
 {:else if route.view === 'explore'}
     {#if phone}<ExplorerPhone {c} {x} {nav} />{:else}<ExplorerDesktop {c} {x} {nav} />{/if}
