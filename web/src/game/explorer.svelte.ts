@@ -28,7 +28,7 @@ function precise(t: Analysis): boolean {
 
 /** Roll luck is asked for in chunks of this many white pairs (of 21): at most about 150 ms each, so a move list never waits long behind it. */
 export const LUCK_CHUNK = 3;
-const WHITE_PAIRS = 21;
+export const WHITE_PAIRS = 21;
 
 /** The whole position, dice and roller included: what roll luck belongs to. */
 export const luckKey = (p: ExPosition) => encode(p);

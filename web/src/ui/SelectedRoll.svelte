@@ -5,6 +5,7 @@
     import { chipsFor } from '../game/rules';
     import ChipView from './Chip.svelte';
     import Die from './Die.svelte';
+    import LuckHistogram from './LuckHistogram.svelte';
     import LuckPill from './LuckPill.svelte';
     // Spec "The page": the selected roll — its luck, dice, and your choice
     // against the best one. The Played / Best rows pick which outcome the
@@ -25,6 +26,16 @@
     const best = $derived(shown ? chipsFor(shown.marks, shown.strike) : null);
     const cost = $derived(!a || !shown ? '' : shown.grade === 'best' ? 'Best' : shown.grade === 'excellent' ? 'Excellent' : `${signed(-a.you_cost)} pts`);
     const side = $derived(r.sel % 2 === 0 ? r.side : null);
+    // The luck chip opens the roll's histogram: over the sheets on desktop
+    // (it stays open while stepping), in the card on a phone. The last roll's
+    // stays up, faded, until this one's comes in.
+    const hist = $derived(r.luckOpen && roll ? r.rollLuck : null);
+    let chip = $state<HTMLElement>();
+    let caret = $state(0);
+    $effect(() => {
+        void luck;
+        if (r.luckOpen && chip && !compact) caret = chip.offsetLeft + chip.offsetWidth / 2;
+    });
     const pick = (s: Side) => r.show(s);
     const STEPS = [
         { label: 'First', d: 'M6 5v14M18 6l-7 6 7 6', go: () => r.first() }, { label: 'Previous', d: 'M15 6l-6 6 6 6', go: () => r.step(-1) },
@@ -38,7 +49,7 @@
             {#if roll}
                 <b>Roll {k + 1}</b>
                 <span class="whose">{roll.record.roller === 'you' ? 'your roll' : 'bot’s roll'}</span>
-                <LuckPill {luck} size="sm" start />
+                <span class="chip" bind:this={chip}><LuckPill {luck} size="sm" start onToggle={() => r.toggleLuck()} expanded={r.luckOpen} /></span>
                 {#if compact && r.game}<a class="open explore" href={explorerHref(r.game, k)}>Explore</a>{/if}
             {:else}
                 <b>Start</b><span class="whose">before the first roll</span>
@@ -77,6 +88,15 @@
             </button>
         </div>
     {/if}
+    {#if r.luckOpen && roll}
+        {#if compact}
+            {#if hist}<LuckHistogram luck={hist.value} stale={hist.k !== k} />{:else}<div class="wait">Working out every roll…</div>{/if}
+        {:else}
+            <div class="pop" role="dialog" aria-label="Luck of this roll vs others" style:--caret="{caret}px">
+                {#if hist}<LuckHistogram luck={hist.value} stale={hist.k !== k} float />{:else}<div class="wait">Working out every roll…</div>{/if}
+            </div>
+        {/if}
+    {/if}
     {#if !compact}
         <div class="nav">
             <div class="steps" role="group" aria-label="Step through the game">
@@ -93,7 +113,7 @@
 </section>
 
 <style>
-    .strip { display: flex; align-items: center; gap: 14px; background: var(--paper); border-radius: 14px; padding: 10px 14px; box-shadow: 0 1px 0 var(--edge); }
+    .strip { position: relative; display: flex; align-items: center; gap: 14px; background: var(--paper); border-radius: 14px; padding: 10px 14px; box-shadow: 0 1px 0 var(--edge); }
     .strip.compact { flex-direction: column; align-items: stretch; gap: 8px; padding: 10px 12px; }
     .roll { display: flex; flex-direction: column; gap: 6px; }
     .title { display: flex; align-items: center; gap: 8px; min-height: 26px; }
@@ -111,6 +131,12 @@
     .cost { margin-left: auto; font-family: var(--cond); font-weight: 800; font-size: 18px; color: var(--unlucky-ink); }
     .cost.best { color: var(--lucky-ink); font-size: 15px; }
     .ghost { visibility: hidden; }
+    .chip { display: inline-flex; }
+    /* Desktop: the histogram floats over the sheets, its caret under the chip. */
+    .pop { position: absolute; left: 0; bottom: calc(100% + 10px); z-index: 5; width: 470px; border-radius: 14px; background: var(--paper); box-shadow: 0 10px 30px var(--shadow), 0 0 0 1px var(--edge); }
+    .pop::after { content: ''; position: absolute; bottom: -7px; left: calc(var(--caret) - 7px); width: 14px; height: 14px; background: var(--paper); transform: rotate(45deg); box-shadow: 1px 1px 0 var(--edge); }
+    .wait { min-height: 150px; display: flex; align-items: center; justify-content: center; font-size: 13px; color: var(--muted); border-radius: 12px; }
+    .compact .wait { background: var(--log-bg); }
     /* Desktop: the three columns share the step column's height, so their tops and bottoms line up. */
     .strip:not(.compact) > :is(.roll, .switch, .nav) { height: 76px; box-sizing: border-box; justify-content: space-between; }
     .nav { margin-left: auto; display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }

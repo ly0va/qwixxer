@@ -1,9 +1,12 @@
-import type { Engine, ReviewGame, RollAnalysis } from '../engine/protocol';
+import type { Engine, Luck, ReviewGame, RollAnalysis } from '../engine/protocol';
 import type { Store } from './controller.svelte';
+import { LUCK_CHUNK, WHITE_PAIRS } from './explorer.svelte';
 import { gameHref, type Analyses, type GraphKind, type Side } from './review';
 
 /** The last finished game's code (spec "The page": the Review tab opens it). */
 export const LAST_GAME = 'qwixxer.lastGame';
+/** Whether the selected roll's luck histogram is open: '1' or ''. */
+const LUCK_OPEN = 'qwixxer.review.luck-open';
 
 /**
  * Spec `2026-10-24-game-review-design.md`: the game being reviewed, its
@@ -22,6 +25,10 @@ export class ReviewController {
     error = $state<string | null>(null);
     /** "Share game"'s result, shown for two seconds. */
     notice = $state('');
+    /** The luck chip's histogram is open (remembered across pages and reloads). */
+    luckOpen = $state(false);
+    /** The last roll whose every-roll luck came in (the histogram's data), by roll index. */
+    rollLuck = $state<{ k: number; value: Luck } | null>(null);
 
     private engine: Engine;
     private store: Store;
@@ -31,10 +38,20 @@ export class ReviewController {
     /** The generation whose analysis loop is running, if any. */
     private running: number | null = null;
     private noticeTimer: ReturnType<typeof setTimeout> | undefined;
+    /** This game's every-roll luck by roll index, kept while it is shown. */
+    private luckCache = new Map<number, Luck>();
+    private luckInflight = false;
+    private luckDirty = false;
 
     constructor(engine: Engine, store: Store) {
         this.engine = engine;
         this.store = store;
+        try { this.luckOpen = store.get(LUCK_OPEN) === '1'; } catch { /* storage unavailable */ }
+    }
+
+    /** The selected roll's index, -1 at the start. */
+    get roll() {
+        return this.sel === 0 ? -1 : Math.floor((this.sel - 1) / 2);
     }
 
     get points() {
@@ -59,10 +76,13 @@ export class ReviewController {
         this.sel = 0;
         this.side = 'played';
         this.error = null;
+        this.luckCache = new Map();
+        this.rollLuck = null;
         try {
             const g = await this.engine.reviewGame(c);
             if (gen !== this.gen) return;
             this.game = g;
+            void this.askLuck();
         } catch (err) {
             if (gen === this.gen) this.error = err instanceof Error ? err.message : String(err);
             return;
@@ -106,6 +126,7 @@ export class ReviewController {
     select(j: number) {
         this.sel = Math.max(0, Math.min(this.points - 1, j));
         this.side = 'played';
+        void this.askLuck();
     }
     step(d: 1 | -1) { this.select(this.sel + d); }
     first() { this.select(0); }
@@ -116,6 +137,57 @@ export class ReviewController {
         if (this.sel === 0) return;
         if (this.sel % 2 === 1) this.select(this.sel + 1);
         this.side = s;
+    }
+
+    /** The luck chip: open or close the selected roll's histogram. */
+    toggleLuck() {
+        this.luckOpen = !this.luckOpen;
+        try { this.store.set(LUCK_OPEN, this.luckOpen ? '1' : ''); } catch { /* storage unavailable */ }
+        void this.askLuck();
+    }
+
+    /**
+     * The histogram's data for the selected roll, while it is open: the
+     * explorer's roll luck of the position before the roll, in the same
+     * chunks, kept per roll. Stepping to another roll mid-way starts over
+     * for that one.
+     */
+    private async askLuck() {
+        if (this.luckInflight) {
+            this.luckDirty = true;
+            return;
+        }
+        this.luckInflight = true;
+        try {
+            do {
+                this.luckDirty = false;
+                const { roll: k, game, gen } = this;
+                if (!this.luckOpen || !game || k < 0) break;
+                const kept = this.luckCache.get(k);
+                if (kept) {
+                    this.rollLuck = { k, value: kept };
+                    break;
+                }
+                const pos = game.rolls[k].before;
+                const value: Luck = { this_roll: 0, average: 0, values: [] };
+                try {
+                    for (let first = 0; first < WHITE_PAIRS && !this.luckDirty; first += LUCK_CHUNK) {
+                        const part = await this.engine.luck(pos, first, Math.min(LUCK_CHUNK, WHITE_PAIRS - first));
+                        value.this_roll = part.this_roll;
+                        value.average += part.average;
+                        value.values = value.values.concat(part.values);
+                    }
+                    if (!this.luckDirty && gen === this.gen) {
+                        this.luckCache.set(k, value);
+                        this.rollLuck = { k, value };
+                    }
+                } catch {
+                    // The page shows engine errors from the analysis.
+                }
+            } while (this.luckDirty);
+        } finally {
+            this.luckInflight = false;
+        }
     }
 
     private async analyse() {

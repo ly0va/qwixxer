@@ -4,7 +4,8 @@
     // The luck chip's panel: how lucky every possible roll would have been, on
     // the chip's own axis (points of win chance against the average roll),
     // this roll's bin solid, and where it ranks among the others.
-    let { luck, stale = false }: { luck: Luck; stale?: boolean } = $props();
+    // `float`: on a surface of its own (the review's popover), no inset background.
+    let { luck, stale = false, float = false }: { luck: Luck; stale?: boolean; float?: boolean } = $props();
     const title = 'Luck of this roll vs others';
     const h = $derived(luckHistogram(luck));
     const x = (v: number) => `${((v - h.min) / (h.max - h.min)) * 100}%`;
@@ -34,7 +35,7 @@
     });
 </script>
 
-<section class="dist" class:stale aria-label={title}>
+<section class="dist" class:stale class:float aria-label={title}>
     <div class="head"><span class="title">{title}</span><span class="rank">{h.rank}</span></div>
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div class="plot" role="img" onpointermove={point} onpointerdown={point} onpointerleave={() => (hover = null)} aria-label="Histogram of every roll's luck, from {label(Math.round(h.min))} to {label(Math.round(h.max))} points; this roll {signed(h.thisLuck)}">
@@ -55,6 +56,7 @@
 <style>
     .dist { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px 6px; border-radius: 12px; background: var(--log-bg); transition: opacity 0.15s; }
     .stale { opacity: 0.6; }
+    .float { background: none; padding: 12px 14px 6px; }
     .head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; column-gap: 12px; row-gap: 2px; }
     .title { font-weight: 700; font-size: 14px; }
     .rank { font-size: 13px; color: var(--muted); white-space: nowrap; }

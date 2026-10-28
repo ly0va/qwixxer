@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { Engine, ReviewGame, RollAnalysis } from '../engine/protocol';
+import type { Engine, Luck, ReviewGame, RollAnalysis } from '../engine/protocol';
 import type { Store } from './controller.svelte';
 import { LAST_GAME, ReviewController } from './review.svelte';
 
@@ -195,5 +195,72 @@ describe('ReviewController', () => {
         } finally {
             vi.useRealTimers();
         }
+    });
+});
+
+describe('ReviewController roll luck histogram', () => {
+    /** luck replies wait until the test resolves them; each chunk gives one value. */
+    function setup(init: Record<string, string> = {}) {
+        const { e } = engine({ A: 3 });
+        const luck: { pos: unknown; first: number; resolve: () => void }[] = [];
+        (e as unknown as { luck: unknown }).luck = vi.fn((p: unknown, first: number) => new Promise<Luck>((resolve) =>
+            luck.push({ pos: p, first, resolve: () => resolve({ this_roll: 0.6, average: 0.1, values: [[first / 100, 0.1]] }) })));
+        const store = memStore(init);
+        const r = new ReviewController(e, store);
+        const finish = async () => {
+            for (let c = luck.find((c) => !(c as any).done); c; c = luck.find((c) => !(c as any).done)) {
+                (c as any).done = true;
+                c.resolve();
+                await flush();
+            }
+        };
+        return { r, luck, store, finish };
+    }
+
+    it('remembers whether the histogram is open', () => {
+        const { r, store } = setup();
+        expect(r.luckOpen).toBe(false);
+        r.toggleLuck();
+        expect(r.luckOpen).toBe(true);
+        expect(new ReviewController(engine({}).e, store).luckOpen).toBe(true);
+        r.toggleLuck();
+        expect(new ReviewController(engine({}).e, store).luckOpen).toBe(false);
+    });
+
+    it('asks the selected roll\'s luck in chunks only while open, and keeps it per roll', async () => {
+        const { r, luck, finish } = setup();
+        await r.load('A');
+        r.select(1);
+        await flush();
+        expect(luck).toHaveLength(0);
+        r.toggleLuck();
+        await finish();
+        expect(luck.map((c) => c.first)).toEqual([0, 3, 6, 9, 12, 15, 18]);
+        expect(luck[0].pos).toBe(r.game!.rolls[0].before);
+        expect(r.rollLuck?.k).toBe(0);
+        expect(r.rollLuck?.value.average).toBeCloseTo(0.7);
+        expect(r.rollLuck?.value.values).toHaveLength(7);
+        r.select(2); // the same roll after its move
+        r.select(3); // roll 1
+        await finish();
+        expect(luck).toHaveLength(14);
+        expect(r.rollLuck?.k).toBe(1);
+        r.select(1);
+        await finish();
+        expect(luck).toHaveLength(14);
+        expect(r.rollLuck?.k).toBe(0);
+    });
+
+    it('stepping mid-way drops the old roll and asks for the new one', async () => {
+        const { r, luck, finish } = setup({ 'qwixxer.review.luck-open': '1' });
+        await r.load('A');
+        r.select(1);
+        await flush();
+        expect(luck).toHaveLength(1);
+        r.select(3);
+        await finish();
+        expect(luck.map((c) => c.first)).toEqual([0, 0, 3, 6, 9, 12, 15, 18]);
+        expect(luck[1].pos).toBe(r.game!.rolls[1].before);
+        expect(r.rollLuck?.k).toBe(1);
     });
 });
