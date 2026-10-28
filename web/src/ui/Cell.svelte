@@ -25,6 +25,7 @@
         background: var(--paper); color: var(--c); font-family: var(--cond); font-weight: 700; font-size: calc(var(--s) * 0.5);
     }
     button.cell { cursor: default; }
+    div.cell { cursor: default; user-select: none; -webkit-user-select: none; }
     .look-legal { font-weight: 800; cursor: pointer !important; }
     .look-soft { font-weight: 500; color: color-mix(in srgb, var(--c) var(--soft-mix), transparent); }
     .look-skipped { opacity: 0.35; }
