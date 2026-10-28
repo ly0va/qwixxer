@@ -2,6 +2,7 @@
     import type { GameController } from '../game/controller.svelte';
     import { confirmState, strikeOpen } from '../game/rules';
     import { gameHref } from '../game/review';
+    import Icon from './Icon.svelte';
     import MarkX from './MarkX.svelte';
     let { c }: { c: GameController } = $props();
     const v = $derived(c.view);
@@ -29,13 +30,13 @@
             <div class="tip" role="alert">Something went wrong: {c.error}</div>
         {:else if result}
             <div class="result" role="status"><b>{result.title}</b><span class="score">{v?.you.score} – {v?.bot.score}</span>
-                {#if c.lastCode}{@const code = c.lastCode}<button type="button" class="analyze" onclick={() => (location.hash = gameHref(code))}>Analyze</button>{/if}</div>
+                {#if c.lastCode}{@const code = c.lastCode}<button type="button" class="analyze" onclick={() => (location.hash = gameHref(code))}><Icon name="chart" size={18} />Analyze</button>{/if}</div>
         {:else if c.tip}
             <div class="tip" role="alert">{c.tip}</div>
         {/if}
     </div>
     <button type="button" class="confirm" class:primary={conf.ok || !!c.error} aria-disabled={!conf.ok && !c.error}
-        onclick={() => (c.error ? c.newGame() : c.confirm())}>{c.error ? 'New game' : conf.label}</button>
+        onclick={() => (c.error ? c.newGame() : c.confirm())}>{#if c.error || v?.over}<Icon name="plus" size={18} />{/if}{c.error ? 'New game' : conf.label}</button>
 </section>
 
 <style>
@@ -50,8 +51,8 @@
     .result b { font-family: var(--cond); font-weight: 800; font-size: 28px; }
     .score { font-family: var(--cond); font-weight: 700; font-size: 22px; }
     /* Fixed width so the bar doesn't shift as the label changes (Mark 1, Strike, New game…). */
-    .confirm { width: 136px; min-height: 48px; padding: 0; border: none; border-radius: 12px; font-weight: 700; font-size: 17px; cursor: not-allowed; background: var(--btn-muted-bg); color: var(--btn-muted-fg); }
+    .confirm { display: inline-flex; align-items: center; justify-content: center; gap: 8px; width: 136px; min-height: 48px; padding: 0; border: none; border-radius: 12px; font-weight: 700; font-size: 17px; cursor: not-allowed; background: var(--btn-muted-bg); color: var(--btn-muted-fg); }
     .confirm.primary { cursor: pointer; background: var(--ink); color: var(--ground); }
     /* Looks like New game beside it. */
-    .analyze { margin-left: 6px; width: 136px; min-height: 48px; padding: 0; border: none; border-radius: 12px; background: var(--ink); color: var(--ground); font-weight: 700; font-size: 17px; cursor: pointer; }
+    .analyze { display: inline-flex; align-items: center; justify-content: center; gap: 8px; margin-left: 6px; width: 136px; min-height: 48px; padding: 0; border: none; border-radius: 12px; background: var(--ink); color: var(--ground); font-weight: 700; font-size: 17px; cursor: pointer; }
 </style>

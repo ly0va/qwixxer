@@ -7,6 +7,7 @@
     import ChipView from './Chip.svelte';
     import DiceTray from './DiceTray.svelte';
     import Log from './Log.svelte';
+    import Icon from './Icon.svelte';
     import MarkX from './MarkX.svelte';
     import Menu from './Menu.svelte';
     import type { Nav } from './nav';
@@ -65,7 +66,7 @@
     {#if result}
         <div class="result" role="status">
             <div class="headline"><b>{result.title}</b><span>{result.score}</span></div>
-            {#if c.lastCode}{@const code = c.lastCode}<button type="button" class="analyze" onclick={() => (location.hash = gameHref(code))}>Analyze</button>{/if}
+            {#if c.lastCode}{@const code = c.lastCode}<button type="button" class="analyze" onclick={() => (location.hash = gameHref(code))}><Icon name="chart" size={16} />Analyze</button>{/if}
         </div>
     {:else}
         <DiceTray {c} size={L.die} compact />
@@ -94,7 +95,7 @@
                 </div>
             </div>
             <button type="button" class="confirm" class:primary={conf.ok || !!c.error} aria-disabled={!conf.ok && !c.error}
-                onclick={() => (c.error ? c.newGame() : c.confirm())}>{c.error ? 'New game' : conf.label}</button>
+                onclick={() => (c.error ? c.newGame() : c.confirm())}>{#if c.error || v?.over}<Icon name="plus" size={20} />{/if}{c.error ? 'New game' : conf.label}</button>
         </aside>
     </div>
     <div class="msg" role="status">{c.error ? `Something went wrong: ${c.error}` : c.tip}</div>
@@ -138,7 +139,7 @@
     .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; justify-items: center; }
     .box { position: relative; box-sizing: border-box; width: 40px; height: 40px; border-radius: 8px; padding: 0; border: 2px solid var(--ink); background: var(--paper); }
     .box.faded { opacity: 0.35; }
-    .confirm { margin-top: auto; min-height: 64px; border: none; border-radius: 14px; font-weight: 700; font-size: 18px; background: var(--btn-muted-bg); color: var(--btn-muted-fg); }
+    .confirm { display: inline-flex; align-items: center; justify-content: center; gap: 8px; margin-top: auto; min-height: 64px; border: none; border-radius: 14px; font-weight: 700; font-size: 18px; background: var(--btn-muted-bg); color: var(--btn-muted-fg); }
     .confirm.primary { background: var(--ink); color: var(--ground); }
     .result { height: 48px; box-sizing: border-box; padding: 0 12px; border-radius: 12px; background: var(--paper); box-shadow: 0 1px 0 var(--edge); display: flex; align-items: center; justify-content: space-between; flex-shrink: 0; }
     .headline { display: flex; align-items: baseline; gap: 10px; line-height: 1; }
@@ -149,5 +150,5 @@
     .drawer { position: fixed; z-index: 2; bottom: 0; left: 50%; transform: translateX(-50%); width: 100%; max-width: 430px; max-height: 75dvh; box-sizing: border-box; background: var(--paper); border-radius: 20px 20px 0 0; padding: 8px 14px 16px; display: flex; flex-direction: column; gap: 12px; overflow: hidden; }
     .handle { align-self: center; width: 40px; height: 5px; border-radius: 3px; background: var(--edge); }
     .close { align-self: flex-end; min-height: 44px; padding: 0 16px; border-radius: 12px; border: none; background: var(--ground); color: var(--ink); font-weight: 600; }
-    .analyze { height: 34px; padding: 0 14px; border: none; border-radius: 9px; background: var(--ink); color: var(--ground); font-weight: 700; font-size: 14px; cursor: pointer; }
+    .analyze { display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 34px; padding: 0 14px; border: none; border-radius: 9px; background: var(--ink); color: var(--ground); font-weight: 700; font-size: 14px; cursor: pointer; }
 </style>
