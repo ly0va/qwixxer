@@ -1,4 +1,5 @@
 import { EngineError, type BotKind, type Engine, type Sq, type Step, type View } from '../engine/protocol';
+import { copyGameLink } from './review';
 import { LAST_GAME } from './review.svelte';
 import { clickable, confirmState, has, isTerminal, logEntry, NAME, sqKey, strikeOpen, type LogEntry } from './rules';
 
@@ -45,6 +46,8 @@ export class GameController {
     menuOpen = $state(false);
     /** The last finished game's code, for review (null: none, or a game saved before rolls were recorded). */
     lastCode = $state<string | null>(null);
+    /** Share game's result at game over, shown for two seconds. */
+    notice = $state('');
 
     // Plain fields assigned in the constructor: `.svelte.ts` files do not
     // support TypeScript parameter properties.
@@ -54,6 +57,7 @@ export class GameController {
     private seed: () => number;
     /** An engine call failed: New game starts over with a fresh worker. */
     private stale = false;
+    private noticeTimer: ReturnType<typeof setTimeout> | undefined;
 
     constructor(
         engine: Engine,
@@ -333,6 +337,15 @@ export class GameController {
         this.log = [logEntry(this.rollNo, step.record), ...this.log];
         this.save();
         if (step.view.phase === 'over') void this.keepCode();
+    }
+
+    /** Game over: copies the finished game's review link (`base`: the app's address). */
+    async share(base = location.origin + location.pathname, copy = (t: string) => navigator.clipboard.writeText(t)) {
+        if (!this.lastCode) return;
+        const text = await copyGameLink(this.lastCode, base, copy);
+        clearTimeout(this.noticeTimer);
+        this.notice = text;
+        this.noticeTimer = setTimeout(() => (this.notice = ''), 2000);
     }
 
     /** Spec "Entry points": the finished game's code, kept for the review page. */

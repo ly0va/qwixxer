@@ -463,3 +463,31 @@ describe('GameController', () => {
         expect(store.data['qwixxer.lastGame']).toBe('1NEW');
     });
 });
+
+describe('GameController share', () => {
+    it('copies the finished game\'s review link and shows a notice for two seconds', async () => {
+        vi.useFakeTimers();
+        try {
+            const c = new GameController(fakeEngine(), memStore(), instant, () => 1);
+            c.lastCode = '1ABC';
+            const copied: string[] = [];
+            await c.share('https://x.test/qwixxer/', async (t) => { copied.push(t); });
+            expect(copied).toEqual(['https://x.test/qwixxer/#/review?g=1ABC']);
+            expect(c.notice).toBe('Link copied');
+            vi.advanceTimersByTime(2000);
+            expect(c.notice).toBe('');
+            await c.share('https://x.test/qwixxer/', async () => { throw new Error('denied'); });
+            expect(c.notice).toBe('Couldn’t copy the link');
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('with no finished game there is nothing to share', async () => {
+        const c = new GameController(fakeEngine(), memStore(), instant, () => 1);
+        const copy = vi.fn(async () => {});
+        await c.share('https://x.test/qwixxer/', copy);
+        expect(copy).not.toHaveBeenCalled();
+        expect(c.notice).toBe('');
+    });
+});

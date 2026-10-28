@@ -65,8 +65,15 @@
     </header>
     {#if result}
         <div class="result" role="status">
-            <div class="headline"><b>{result.title}</b><span>{result.score}</span></div>
-            {#if c.lastCode}{@const code = c.lastCode}<button type="button" class="analyze" onclick={() => (location.hash = gameHref(code))}><Icon name="chart" size={16} />Analyze</button>{/if}
+            <!-- Share game's notice takes the headline's place for its two seconds. -->
+            {#if c.notice}<span class="notice" role="status">{c.notice}</span>
+            {:else}<div class="headline"><b>{result.title}</b><span>{result.score}</span></div>{/if}
+            {#if c.lastCode}{@const code = c.lastCode}
+                <div class="acts">
+                    <button type="button" class="analyze" onclick={() => (location.hash = gameHref(code))}><Icon name="chart" size={16} />Analyze</button>
+                    <button type="button" class="analyze share" aria-label="Share game" onclick={() => c.share()}><Icon name="link" size={16} /></button>
+                </div>
+            {/if}
         </div>
     {:else}
         <DiceTray {c} size={L.die} compact />
@@ -151,4 +158,7 @@
     .handle { align-self: center; width: 40px; height: 5px; border-radius: 3px; background: var(--edge); }
     .close { align-self: flex-end; min-height: 44px; padding: 0 16px; border-radius: 12px; border: none; background: var(--ground); color: var(--ink); font-weight: 600; }
     .analyze { display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 34px; padding: 0 14px; border: none; border-radius: 9px; background: var(--ink); color: var(--ground); font-weight: 700; font-size: 14px; cursor: pointer; }
+    .acts { display: flex; gap: 6px; }
+    .share { width: 34px; padding: 0; }
+    .notice { font-size: 14px; font-weight: 600; color: var(--soft); }
 </style>

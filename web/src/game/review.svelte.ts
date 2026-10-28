@@ -1,7 +1,7 @@
 import type { Engine, Luck, ReviewGame, RollAnalysis } from '../engine/protocol';
 import type { Store } from './controller.svelte';
 import { LUCK_CHUNK, WHITE_PAIRS } from './explorer.svelte';
-import { gameHref, type Analyses, type GraphKind, type Side } from './review';
+import { copyGameLink, type Analyses, type GraphKind, type Side } from './review';
 
 /** The last finished game's code (spec "The page": the Review tab opens it). */
 export const LAST_GAME = 'qwixxer.lastGame';
@@ -111,13 +111,7 @@ export class ReviewController {
     /** Copies the game's link (`base`: the app's address). */
     async share(base = location.origin + location.pathname, copy = (t: string) => navigator.clipboard.writeText(t)) {
         if (!this.code) return;
-        let text: string;
-        try {
-            await copy(base + gameHref(this.code));
-            text = 'Link copied';
-        } catch {
-            text = 'Couldn’t copy the link';
-        }
+        const text = await copyGameLink(this.code, base, copy);
         clearTimeout(this.noticeTimer);
         this.notice = text;
         this.noticeTimer = setTimeout(() => (this.notice = ''), 2000);

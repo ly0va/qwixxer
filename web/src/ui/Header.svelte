@@ -1,5 +1,6 @@
 <script lang="ts">
     import type { GameController } from '../game/controller.svelte';
+    import Icon from './Icon.svelte';
     import Menu from './Menu.svelte';
     import type { Nav } from './nav';
     import Tabs from './Tabs.svelte';
@@ -14,6 +15,13 @@
     <div class="right">
         <span>You <b>{c.view?.you.score ?? 0}</b></span>
         <span class="muted">Bot <b>{c.view?.bot.score ?? 0}</b></span>
+        <!-- Game over: share it, as the review page does. -->
+        {#if p === 'over' && c.lastCode}
+            <span class="share">
+                {#if c.notice}<span class="notice" role="status">{c.notice}</span>{/if}
+                <button type="button" class="btn" onclick={() => c.share()}><Icon name="link" />Share game</button>
+            </span>
+        {/if}
         <Menu {c} {nav} tabs />
     </div>
 </header>
@@ -27,4 +35,7 @@
     .right { display: flex; align-items: center; gap: 18px; font-weight: 600; font-size: 15px; }
     .right b { font-family: var(--cond); font-size: 22px; color: var(--ink); }
     .muted { color: var(--muted); }
+    .share { display: flex; align-items: center; gap: 10px; }
+    .notice { font-size: 14px; font-weight: 500; color: var(--soft); }
+    .btn { height: 44px; padding: 0 14px; border-radius: 12px; border: none; background: var(--paper); box-shadow: 0 1px 0 var(--edge); color: var(--ink); display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 15px; cursor: pointer; }
 </style>

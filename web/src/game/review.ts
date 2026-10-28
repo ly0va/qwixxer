@@ -274,3 +274,13 @@ export function stepLabel(j: number, n: number): { title: string; sub: string } 
 /** Roll k in the explorer: the position before its marks, with the dice and the roller. */
 export const explorerHref = (game: ReviewGame, k: number) => '#/explore?p=' + encode(fromEngine(game.rolls[k].before));
 export const gameHref = (code: string) => '#/review?g=' + code;
+
+/** Copies the game `code`'s review link (`base`: the app's address) and says how it went, for a notice. */
+export async function copyGameLink(code: string, base: string, copy: (t: string) => Promise<void>): Promise<string> {
+    try {
+        await copy(base + gameHref(code));
+        return 'Link copied';
+    } catch {
+        return 'Couldn’t copy the link';
+    }
+}
