@@ -52,5 +52,6 @@
     /* Fixed width so the bar doesn't shift as the label changes (Mark 1, Strike, New game…). */
     .confirm { width: 136px; min-height: 48px; padding: 0; border: none; border-radius: 12px; font-weight: 700; font-size: 17px; cursor: not-allowed; background: var(--btn-muted-bg); color: var(--btn-muted-fg); }
     .confirm.primary { cursor: pointer; background: var(--ink); color: var(--ground); }
-    .analyze { margin-left: 6px; height: 40px; padding: 0 16px; border: none; border-radius: 10px; background: var(--paper); box-shadow: 0 1px 0 var(--edge), inset 0 0 0 2px var(--ink); color: var(--ink); font-weight: 700; font-size: 15px; cursor: pointer; }
+    /* Looks like New game beside it. */
+    .analyze { margin-left: 6px; min-height: 48px; padding: 0 22px; border: none; border-radius: 12px; background: var(--ink); color: var(--ground); font-weight: 700; font-size: 17px; cursor: pointer; }
 </style>
