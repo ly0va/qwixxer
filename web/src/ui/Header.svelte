@@ -16,13 +16,13 @@
         <span>You <b>{c.view?.you.score ?? 0}</b></span>
         <span class="muted">Bot <b>{c.view?.bot.score ?? 0}</b></span>
         <!-- Game over: share it, as the review page does. -->
-        {#if p === 'over' && c.lastCode}
-            <span class="share">
+        <span class="share">
+            {#if p === 'over' && c.lastCode}
                 {#if c.notice}<span class="notice" role="status">{c.notice}</span>{/if}
                 <button type="button" class="btn" onclick={() => c.share()}><Icon name="link" />Share game</button>
-            </span>
-        {/if}
-        <Menu {c} {nav} tabs />
+            {/if}
+            <Menu {c} {nav} tabs />
+        </span>
     </div>
 </header>
 
