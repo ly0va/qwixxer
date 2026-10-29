@@ -9,7 +9,7 @@
 
     // The "⋯" header menu (all layouts). In the game: New game and First roll. On the phone,
     // the other views: Back to game, Explorer, Review last game. Then dark
-    // mode, About & FAQ, the rules PDF, the source repo and a trademark notice. Open state lives on the
+    // mode, About, the rules PDF, the source repo and a trademark notice. Open state lives on the
     // controller so App's page-wide keys treat it as a modal.
     let trigger = $state<HTMLButtonElement>();
     let root = $state<HTMLDivElement>();
@@ -78,7 +78,7 @@
                 <span class="lab"><Icon name="moon" />Dark mode</span>
                 <span class="switch" class:on={c.theme === 'dark'} aria-hidden="true"><span></span></span>
             </button>
-            <a role="menuitem" class="item" href="{import.meta.env.BASE_URL}about/"><span class="lab"><Icon name="info" />About &amp; FAQ</span></a>
+            <a role="menuitem" class="item" href="{import.meta.env.BASE_URL}about/"><span class="lab"><Icon name="info" />About</span></a>
             <a role="menuitem" class="item" href="https://gamewright.com/pdfs/Rules/QWIXX-01_rules.pdf" target="_blank" rel="noopener noreferrer"
                 onclick={() => (c.menuOpen = false)}>
                 <span class="lab"><Icon name="book" />Rules</span>
