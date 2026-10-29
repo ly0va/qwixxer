@@ -19,13 +19,13 @@
 
     <article>
         <h1>About Qwixxer</h1>
-        <p class="lede">Play Qwixx against strong bots, then find out where your games were won and lost.</p>
+        <p class="lede">The strongest Qwixx bot on the internet. Play against it, then find out where your games were won and lost.</p>
 
         <section>
             <h2>What this is</h2>
             <details>
                 <summary>What is Qwixxer?</summary>
-                <p>A place to play the dice game Qwixx against a computer opponent, and to look closely at how you play. You can pick an opponent from beginner to very strong, test any position in the explorer, and replay a finished game move by move in the review.</p>
+                <p>A place to play the dice game Qwixx against a computer opponent, and to look closely at how you play. Its top bot, Master+, is the strongest Qwixx bot on the internet that we know of. You can pick an opponent from beginner to Master+, test any position in the explorer, and replay a finished game move by move in the review.</p>
             </details>
             <details>
                 <summary>Is this the official Qwixx?</summary>
