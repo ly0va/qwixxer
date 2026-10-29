@@ -113,8 +113,17 @@
                 <p>Only in your browser: the game in progress, your last finished game and your settings. Clearing your browser's site data erases them. To keep a game, copy its link.</p>
             </details>
             <details>
-                <summary>Does it work on a phone, or offline?</summary>
-                <p>Yes to both. It has its own phone layout, and once loaded it keeps working without a connection. You can also add it to your home screen.</p>
+                <summary>Does it work on a phone?</summary>
+                <p>Yes. It has its own phone layout, and you can add it to your home screen to open it like an app.</p>
+            </details>
+            <details>
+                <summary>Can I use it offline?</summary>
+                <p>Yes. Open Qwixxer once with a connection and it keeps working without one: the bots run on your device, so there's nothing to download mid-game.</p>
+            </details>
+            <details>
+                <summary>Why don't turns have separate phases?</summary>
+                <p>At the table, the roller first lets everyone use the white sum, then marks a colour. Against a single bot, two steps per roll would only mean more clicks, so on your roll you pick up to two boxes (or the strike box) and confirm once. Qwixxer works out which mark is the white sum and which is the colour; the order never changes the result.</p>
+                <p>On the bot's roll you mark the white sum (or pass) first, then the bot plays the rest of its turn, so a row you lock is already closed to it.</p>
             </details>
         </section>
 
