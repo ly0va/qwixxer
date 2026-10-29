@@ -43,6 +43,10 @@
                 <summary>I don't know the rules.</summary>
                 <p>Read the <a href="https://gamewright.com/pdfs/Rules/QWIXX-01_rules.pdf" target="_blank" rel="noopener noreferrer">official rules</a> (two pages), or just start a game against Newbie: you can only make legal moves, so you'll pick it up as you go.</p>
             </details>
+            <details>
+                <summary>Who made it? How do I report a bug?</summary>
+                <p>Qwixxer is made by Lev Potomkin. Bug reports and ideas are welcome on <a href="https://github.com/ly0va/qwixxer/issues" target="_blank" rel="noopener noreferrer">GitHub</a>.</p>
+            </details>
         </section>
 
         <section>
@@ -69,10 +73,6 @@
                 </dl>
             </details>
             <details>
-                <summary>Who rolls first?</summary>
-                <p>By default you take turns: whoever didn't roll first last game rolls first this time. You can change this under First roll in the ⋯ menu; it applies from your next game.</p>
-            </details>
-            <details>
                 <summary>What is the explorer?</summary>
                 <p>A sandbox. Set up any score sheets and dice, and see every sensible move ranked by its chance to win, with the marks and strikes each one should lead to and how lucky the roll was.</p>
             </details>
@@ -87,10 +87,6 @@
             <details>
                 <summary>What do the percentages and "+3.2" mean?</summary>
                 <p>Percentages are your chance to win the game from that point. A signed number like +3.2 is a change in that chance, in percentage points: a move that costs 3.2 points took you from, say, 55% to 51.8%.</p>
-            </details>
-            <details>
-                <summary>How do I share a game or a position?</summary>
-                <p>Use the link button on the review page, at the end of a game, or in the explorer. The link holds the whole game (every roll and every choice) so anyone who opens it sees exactly what you saw.</p>
             </details>
         </section>
 
@@ -132,10 +128,6 @@
             <details>
                 <summary>Does my game go to a server?</summary>
                 <p>No. The bots run entirely in your browser, so nothing you play leaves your device unless you share a link.</p>
-            </details>
-            <details>
-                <summary>Who made it? How do I report a bug?</summary>
-                <p>Qwixxer is made by Lev Potomkin. Bug reports and ideas are welcome on <a href="https://github.com/ly0va/qwixxer/issues" target="_blank" rel="noopener noreferrer">GitHub</a>.</p>
             </details>
         </section>
     </article>
