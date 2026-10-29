@@ -3,8 +3,30 @@
 // code after a deploy and could mix old and new modules.)
 const CACHE_NAME = 'qwixxer-v3';
 
-self.addEventListener('install', () => {
+// Pages the app links to but never loads itself (the about page): fetched
+// with the files they reference when the worker installs, so they open
+// offline even if never visited. Visits refresh them like everything else.
+const PRECACHE = ['about/'];
+
+async function precache() {
+  const cache = await caches.open(CACHE_NAME);
+  for (const path of PRECACHE) {
+    const url = new URL(path, self.registration.scope);
+    const response = await fetch(url);
+    if (!response.ok) continue;
+    const html = await response.clone().text();
+    await cache.put(url, response);
+    const files = [...html.matchAll(/(?:href|src)="([^"]+\.(?:js|css))"/g)]
+      .map((m) => new URL(m[1], url))
+      .filter((u) => u.origin === self.location.origin);
+    await cache.addAll(files);
+  }
+}
+
+self.addEventListener('install', (event) => {
   self.skipWaiting();
+  // Offline extras: a failure here must not stop the worker installing.
+  event.waitUntil(precache().catch(() => {}));
 });
 
 self.addEventListener('activate', (event) => {
