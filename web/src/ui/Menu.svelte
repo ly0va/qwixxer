@@ -78,7 +78,8 @@
                 <span class="lab"><Icon name="moon" />Dark mode</span>
                 <span class="switch" class:on={c.theme === 'dark'} aria-hidden="true"><span></span></span>
             </button>
-            <a role="menuitem" class="item" href="{import.meta.env.BASE_URL}about/"><span class="lab"><Icon name="info" />About</span></a>
+            <!-- Closed on the way out, so Back (restoring the page from the browser's cache) finds it shut. -->
+            <a role="menuitem" class="item" href="{import.meta.env.BASE_URL}about/" onclick={() => (c.menuOpen = false)}><span class="lab"><Icon name="info" />About</span></a>
             <a role="menuitem" class="item" href="https://gamewright.com/pdfs/Rules/QWIXX-01_rules.pdf" target="_blank" rel="noopener noreferrer"
                 onclick={() => (c.menuOpen = false)}>
                 <span class="lab"><Icon name="book" />Rules</span>
