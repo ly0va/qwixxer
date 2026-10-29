@@ -21,8 +21,10 @@
     const c = new GameController(engine, store);
     const x = new ExplorerController(engine, store);
     const rv = new ReviewController(engine, store);
-    // Spec "Implementation notes · Window sizes": below ~1100 px wide or in portrait, the phone layout.
-    const mq = window.matchMedia('(max-width: 1099px), (orientation: portrait)');
+    // Spec "Implementation notes · Window sizes": below 1000 px wide, under 500 px tall or in
+    // portrait, the phone layout. Landscape tablets (1024 wide) get the desktop scaled
+    // down; landscape phones (at most ~930 × 430) would scale it too small to read or tap.
+    const mq = window.matchMedia('(max-width: 999px), (max-height: 499px), (orientation: portrait)');
     let phone = $state(mq.matches);
     // The phone's bot/log drawer (bound from Phone): page-wide keys must not reach the game under it.
     let drawer = $state(false);

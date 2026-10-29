@@ -309,9 +309,11 @@ real pair-search bot also needs a moment to compute):
   selection. (The design canvas can't bind page-wide keys, so the prototype
   has none.) On the phone, the bot drawer is modal: Escape closes it, and
   Enter / Space don't act on the game while it is open.
-- **Window sizes:** the desktop layout needs about 1280×800; below about
-  1100 px wide, or on a portrait screen, switch to the phone layout. Tablets
-  in landscape get the desktop layout scaled down.
+- **Window sizes:** the desktop layout is 1280 wide and up to 800 tall; a
+  shorter window first gives up the game's empty space and log height (down
+  to 640; the explorer to 760, the review none), then scales the desk down.
+  Below 1000 px wide, under 500 px tall, or on a portrait screen, switch to
+  the phone layout. Tablets in landscape get the desktop layout scaled down.
 - **Log:** scrolls instead of truncating (the prototype shows the last six
   rolls). Decision taken: the log resets with each new game, so there is no
   "Game N" separator.

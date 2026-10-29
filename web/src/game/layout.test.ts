@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { deskScale, explorerPhoneSize, PHONE_FIXED, PHONE_FIXED_SHORT, phoneLayout } from './layout';
+import { deskFit, explorerPhoneSize, PHONE_FIXED, PHONE_FIXED_SHORT, phoneLayout } from './layout';
 
 // Height the phone page needs for a given layout (see layout.ts).
 const needed = (l: ReturnType<typeof phoneLayout>) => (l.short ? PHONE_FIXED_SHORT : PHONE_FIXED) + 12 * l.size;
@@ -37,15 +37,24 @@ describe('phoneLayout', () => {
     });
 });
 
-describe('deskScale', () => {
+describe('deskFit', () => {
     it('keeps the design size when it fits', () => {
-        expect(deskScale(1280, 800)).toBe(1);
-        expect(deskScale(1920, 1080)).toBe(1);
+        expect(deskFit(1280, 800, 640)).toEqual({ scale: 1, height: 800 });
+        expect(deskFit(1920, 1080, 640)).toEqual({ scale: 1, height: 800 });
     });
-    it('scales down to the tighter of width and height', () => {
-        expect(deskScale(1366, 650)).toBe(0.8125); // 1366×768 laptop, browser chrome included
-        expect(deskScale(1100, 700)).toBeCloseTo(0.859375, 6);
-        expect(deskScale(1440, 760)).toBe(0.95);
+    it('gives up height before scaling, down to the view’s minimum', () => {
+        expect(deskFit(1366, 650, 640)).toEqual({ scale: 1, height: 650 }); // 1366×768 laptop, browser chrome included
+        expect(deskFit(1440, 760, 640)).toEqual({ scale: 1, height: 760 });
+        expect(deskFit(1280, 600, 640)).toEqual({ scale: 0.9375, height: 640 });
+    });
+    it('a view that needs the full height scales as before', () => {
+        expect(deskFit(1366, 650, 800)).toEqual({ scale: 0.8125, height: 800 });
+        expect(deskFit(1440, 760, 800)).toEqual({ scale: 0.95, height: 800 });
+    });
+    it('scales to the width, filling the height that leaves', () => {
+        expect(deskFit(1100, 700, 640).scale).toBeCloseTo(0.859375, 6);
+        expect(deskFit(1100, 700, 640).height).toBe(800);
+        expect(deskFit(1024, 600, 640)).toEqual({ scale: 0.8, height: 750 });
     });
 });
 

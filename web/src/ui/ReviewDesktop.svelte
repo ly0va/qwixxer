@@ -1,7 +1,7 @@
 <script lang="ts">
     import { BOT_NAMES } from '../engine/protocol';
     import type { GameController } from '../game/controller.svelte';
-    import { DESK_H, DESK_W, deskScale } from '../game/layout';
+    import { DESK_MIN_H, DESK_W, deskFit } from '../game/layout';
     import { pointValue, positionAt } from '../game/review';
     import type { ReviewController } from '../game/review.svelte';
     import EvalBar from './EvalBar.svelte';
@@ -18,13 +18,13 @@
     let { c, r, nav }: { c: GameController; r: ReviewController; nav: Nav } = $props();
     let w = $state(window.innerWidth);
     let h = $state(window.innerHeight);
-    const scale = $derived(deskScale(w, h));
+    const fit = $derived(deskFit(w, h, DESK_MIN_H.review));
     const at = $derived(r.game ? positionAt(r.game, r.an, r.sel, r.side) : null);
 </script>
 
 <svelte:window bind:innerWidth={w} bind:innerHeight={h} />
-<div class="fit" style="width: {Math.floor(DESK_W * scale)}px; height: {Math.floor(DESK_H * scale)}px">
-<div class="desk" style="transform: scale({scale})">
+<div class="fit" style="width: {Math.floor(DESK_W * fit.scale)}px; height: {Math.floor(fit.height * fit.scale)}px">
+<div class="desk" style="height: {fit.height}px; transform: scale({fit.scale})">
     <header class="head">
         <div class="left">
             <div class="word">Qwixxer</div>
@@ -63,7 +63,7 @@
 
 <style>
     .fit { margin: 0 auto; overflow: hidden; }
-    .desk { width: 1280px; height: 800px; box-sizing: border-box; padding: 22px 32px; display: flex; flex-direction: column; gap: 14px; overflow: hidden; transform-origin: top left; }
+    .desk { width: 1280px; box-sizing: border-box; padding: 22px 32px; display: flex; flex-direction: column; gap: 14px; overflow: hidden; transform-origin: top left; }
     .head { display: flex; align-items: center; justify-content: space-between; height: 44px; flex: none; }
     .left, .right { display: flex; align-items: center; gap: 20px; }
     .right { gap: 10px; }

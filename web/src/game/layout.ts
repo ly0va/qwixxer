@@ -2,13 +2,18 @@
 export const DESK_W = 1280;
 export const DESK_H = 800;
 
+/** The least height each desktop view fits in: the game's empty space and move log give way, the explorer has little slack, the review none. */
+export const DESK_MIN_H = { play: 640, explore: 760, review: 800 } as const;
+
 /**
- * Scale factor for the fixed 1280×800 desktop layout: smaller windows
- * (1366×768 laptops, landscape tablets) get the whole desk scaled down so it
- * fits without scrolling; larger ones keep it at 1.
+ * Fit for the 1280-wide desktop layout. A short window first takes height
+ * from the view (down to `minHeight`, the rest being empty space and
+ * scrolling lists), then scales the whole desk down so it fits without
+ * scrolling. `height` is the desk's height in design pixels, at most 800.
  */
-export function deskScale(innerWidth: number, innerHeight: number): number {
-    return Math.max(0.1, Math.min(1, innerWidth / DESK_W, innerHeight / DESK_H));
+export function deskFit(innerWidth: number, innerHeight: number, minHeight: number): { scale: number; height: number } {
+    const scale = Math.max(0.1, Math.min(1, innerWidth / DESK_W, innerHeight / minHeight));
+    return { scale, height: Math.min(DESK_H, Math.max(minHeight, Math.floor(innerHeight / scale))) };
 }
 
 /**
