@@ -4,13 +4,47 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#F3EDE1" />
-    <title>Qwixxer</title>
+    <title>Qwixxer: play Qwixx online against the strongest bot</title>
+    <meta name="description" content="Play the dice game Qwixx free in your browser against AI bots, from beginner to the strongest Qwixx bot on the internet. Then review your game: was it luck or your moves?" />
+    <link rel="canonical" href="https://ly0va.github.io/qwixxer/" />
     <link rel="manifest" href="/qwixxer/manifest.json" />
     <link rel="icon" href="/qwixxer/favicon.svg" type="image/svg+xml" />
     <link rel="icon" href="/qwixxer/icon-192.png" type="image/png" />
+    <!-- Link previews (chats, social media): absolute URLs, as their crawlers need. -->
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Qwixxer" />
+    <meta property="og:title" content="Qwixxer: play Qwixx online against the strongest bot" />
+    <meta property="og:description" content="Play Qwixx free in your browser against AI bots, then review your game: was it luck or your moves?" />
+    <meta property="og:url" content="https://ly0va.github.io/qwixxer/" />
+    <meta property="og:image" content="https://ly0va.github.io/qwixxer/og.png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image:alt" content="Qwixxer: the strongest Qwixx bot on the internet" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <script type="application/ld+json">
+    {
+        "@context": "https://schema.org",
+        "@type": "WebApplication",
+        "name": "Qwixxer",
+        "url": "https://ly0va.github.io/qwixxer/",
+        "description": "Play the dice game Qwixx in your browser against AI bots, from beginner to the strongest Qwixx bot on the internet, and review your games.",
+        "applicationCategory": "GameApplication",
+        "operatingSystem": "Any (web browser)",
+        "browserRequirements": "Requires JavaScript and WebAssembly",
+        "isAccessibleForFree": true,
+        "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+        "image": "https://ly0va.github.io/qwixxer/og.png"
+    }
+    </script>
 </head>
 <body>
     <div id="app"></div>
+    <!-- The app is drawn by JavaScript; this is what a crawler or a browser without it sees. -->
+    <noscript>
+        <h1>Qwixxer: play Qwixx online against the strongest bot</h1>
+        <p>Play the dice game Qwixx against AI bots, from beginner to the strongest Qwixx bot on the internet, then review your game to see whether luck or your moves decided it. Qwixxer needs JavaScript to run.</p>
+        <p><a href="/qwixxer/about/">About Qwixxer and FAQ</a></p>
+    </noscript>
     <script type="module" src="/src/main.ts"></script>
 </body>
 </html>
