@@ -1,7 +1,6 @@
 <script lang="ts">
     // Desktop Play / Explore / Review switch (spec "Navigation"); the phone uses the ⋯ menu.
-    // On the about page no tab is current.
-    let { current, onPlay, onExplore, onReview }: { current: 'play' | 'explore' | 'review' | 'about'; onPlay: () => void; onExplore: () => void; onReview: () => void } = $props();
+    let { current, onPlay, onExplore, onReview }: { current: 'play' | 'explore' | 'review'; onPlay: () => void; onExplore: () => void; onReview: () => void } = $props();
 </script>
 
 <nav aria-label="Main" class="tabs">

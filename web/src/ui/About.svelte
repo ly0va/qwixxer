@@ -1,20 +1,13 @@
 <script lang="ts">
-    import type { GameController } from '../game/controller.svelte';
-    import Menu from './Menu.svelte';
-    import type { Nav } from './nav';
-    import Tabs from './Tabs.svelte';
-    // The about/FAQ page (draft): one scrolling column on every layout.
-    // Desktop keeps the Play / Explore / Review tabs; the phone reaches them from the ⋯ menu.
-    let { c, nav, phone }: { c: GameController; nav: Nav; phone: boolean } = $props();
+    // The about/FAQ page: a static page of its own (about/index.html), rendered
+    // to HTML at build time so search engines index it. No game state here; the
+    // wordmark leads back to the app.
+    const home = import.meta.env.BASE_URL;
 </script>
 
-<div class="about" class:phone>
+<div class="about">
     <header class="head">
-        <div class="left">
-            <div class="word">Qwixxer</div>
-            {#if !phone}<Tabs current="about" onPlay={nav.play} onExplore={nav.explorer} onReview={nav.review} />{/if}
-        </div>
-        <Menu {c} {nav} tabs={!phone} />
+        <a class="word" href={home}>Qwixxer</a>
     </header>
 
     <article>
@@ -145,14 +138,11 @@
 <style>
     .about { max-width: 720px; margin: 0 auto; box-sizing: border-box; padding: 12px 16px 64px; }
     .head { display: flex; align-items: center; justify-content: space-between; height: 44px; }
-    .left { display: flex; align-items: center; gap: 22px; }
-    .word { font-family: var(--cond); font-weight: 800; font-size: 30px; letter-spacing: 0.5px; }
-    .phone .word { font-size: 26px; }
+    .word { font-family: var(--cond); font-weight: 800; font-size: 30px; letter-spacing: 0.5px; color: var(--ink); text-decoration: none; }
     article { margin-top: 28px; line-height: 1.55; font-size: 16px; }
     h1 { font-family: var(--cond); font-weight: 800; font-size: 40px; line-height: 1.1; margin: 0 0 8px; }
     .lede { font-size: 18px; color: var(--soft); margin: 0 0 8px; }
     section { margin-top: 28px; padding: 6px 20px 14px; border-radius: 14px; background: var(--paper); box-shadow: 0 1px 0 var(--edge); }
-    .phone section { padding: 4px 16px 12px; }
     h2 { font-family: var(--cond); font-weight: 800; font-size: 26px; margin: 14px 0 6px; }
     details { border-top: 1px solid var(--log-bg); }
     h2 + details { border-top: none; }
@@ -162,9 +152,13 @@
     details[open] > summary::after { transform: translateY(2px) rotate(-135deg); }
     details > :last-child { margin-bottom: 14px; }
     p { margin: 0 0 8px; color: var(--soft); }
-    a { color: var(--blue-ink); }
+    article a { color: var(--blue-ink); }
     .bots { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; margin: 8px 0 8px; }
     .bots dt { font-weight: 700; }
     .bots dd { margin: 0; color: var(--soft); }
     .todo { font-style: italic; color: var(--faint); }
+    @media (max-width: 599px) {
+        .word { font-size: 26px; }
+        section { padding: 4px 16px 12px; }
+    }
 </style>

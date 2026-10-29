@@ -16,8 +16,4 @@ describe('parseRoute', () => {
         expect(parseRoute('#/review?g=1BAAAA')).toEqual({ view: 'review', code: '1BAAAA' });
         expect(parseRoute('#/review?x=1')).toEqual({ view: 'review', code: null });
     });
-    it('reads the about page', () => {
-        expect(parseRoute('#/about')).toEqual({ view: 'about' });
-        expect(parseRoute('#/about?x=1')).toEqual({ view: 'play' });
-    });
 });

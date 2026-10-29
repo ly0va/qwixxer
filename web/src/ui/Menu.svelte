@@ -78,7 +78,7 @@
                 <span class="lab"><Icon name="moon" />Dark mode</span>
                 <span class="switch" class:on={c.theme === 'dark'} aria-hidden="true"><span></span></span>
             </button>
-            {#if nav.current !== 'about'}<button type="button" role="menuitem" class="item" onclick={() => { c.menuOpen = false; nav.about(); }}><span class="lab"><Icon name="info" />About &amp; FAQ</span></button>{/if}
+            <a role="menuitem" class="item" href="{import.meta.env.BASE_URL}about/"><span class="lab"><Icon name="info" />About &amp; FAQ</span></a>
             <a role="menuitem" class="item" href="https://gamewright.com/pdfs/Rules/QWIXX-01_rules.pdf" target="_blank" rel="noopener noreferrer"
                 onclick={() => (c.menuOpen = false)}>
                 <span class="lab"><Icon name="book" />Rules</span>
