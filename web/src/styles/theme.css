@@ -37,6 +37,8 @@
 }
 
 html, body { margin: 0; background: var(--ground); color: var(--ink); font-family: var(--text); }
+/* No blue flash on tap (phones): buttons show their own pressed and selected states. Inherited, so it covers every element. */
+html { -webkit-tap-highlight-color: transparent; }
 button, select { font: inherit; }
 
 @keyframes qx-draw { from { stroke-dashoffset: 60; } to { stroke-dashoffset: 0; } }
